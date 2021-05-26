@@ -1,7 +1,3 @@
-use secp256k1::{
-    key::PublicKey,
-    Signature,
-};
 use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Serialize, Deserialize};
 use crate::{account::{Token, WalletAccount}};

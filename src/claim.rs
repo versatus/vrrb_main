@@ -33,6 +33,7 @@ pub struct Claim {
     pub available: bool,
     pub chain_of_custody: HashMap<String, HashMap<String, Option<CustodianInfo>>>,
     pub current_owner: (Option<String>, Option<String>, Option<String>),
+    pub claim_payload: Option<String>,
 }
 
 impl Claim {
@@ -43,6 +44,7 @@ impl Claim {
             available: true,
             chain_of_custody: HashMap::new(),
             current_owner: (None, None, None),
+            claim_payload: None,
         }
     }
 
@@ -53,6 +55,7 @@ impl Claim {
         acquirer: String,
         acquisition_timestamp: u128,
         current_owner: (Option<String>, Option<String>, Option<String>),
+        claim_payload: Option<String>,
     ) -> Self {
         let mut new_custodian = HashMap::new();
         let mut custodian_data = HashMap::new();
@@ -69,6 +72,7 @@ impl Claim {
             available,
             chain_of_custody: new_custodian,
             current_owner: current_owner,
+            claim_payload: claim_payload,
             ..*self
         }
     }
@@ -88,7 +92,7 @@ impl Claim {
         payload.push(',');
         payload.push_str(&serialized_chain_of_custody);
         payload.push(',');
-        let signature = wallet.sign(payload).unwrap();
+        let signature = wallet.sign(payload.clone()).unwrap();
         self.update(
             0, 
             false, 
@@ -96,7 +100,8 @@ impl Claim {
             time.as_nanos(),
             (Some(wallet.address), 
             Some(wallet.public_key.to_string()),
-            Some(signature.to_string()))
+            Some(signature.to_string())),
+            Some(payload)
         )
     }
 }
@@ -109,10 +114,13 @@ impl fmt::Display for Claim {
             price: {}\n \
             available: {}\n \
             chain_of_custody: {:?}\n \
-            current_owner: {:?}", 
+            current_owner: {:?}\n \
+            claim_payload: {:?}", 
             self.maturation_time, 
             self.price, 
             self.available, 
-            self.chain_of_custody, self.current_owner)
+            self.chain_of_custody, 
+            self.current_owner,
+            self.claim_payload)
     }
 }

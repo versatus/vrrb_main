@@ -83,9 +83,18 @@ impl WalletAccount {
         Ok(sig)
     }
 
-    pub fn verify(message: Message, signature: Signature, pk: PublicKey) -> Result<bool, Error> {
+    pub fn verify(message: String, signature: Signature, pk: PublicKey) -> Result<bool, Error> {
+        let message_bytes = message.as_bytes().to_owned();
+        let mut buffer = ByteBuffer::new();
+        buffer.write_bytes(&message_bytes);
+        while buffer.len() < 32 {
+            buffer.write_u8(0);
+        }
+        let new_message = buffer.to_bytes();
+        let message_hash = blake3::hash(&new_message);
+        let message_hash = Message::from_slice(message_hash.as_bytes())?;
         let secp = Secp256k1::new();
-        let valid = secp.verify(&message, &signature, &pk);
+        let valid = secp.verify(&message_hash, &signature, &pk);
         match valid {
             Ok(()) => Ok(true),
             _ => Err(Error::IncorrectSignature),

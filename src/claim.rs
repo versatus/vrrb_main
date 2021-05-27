@@ -81,17 +81,13 @@ impl Claim {
         &self, wallet: WalletAccount
     ) -> Self {
         let time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-        let mut payload = String::new();
         let serialized_chain_of_custody = serde_json::to_string(&self.chain_of_custody).unwrap();
-
-        payload.push_str(&self.maturation_time.to_string());
-        payload.push(',');
-        payload.push_str(&self.price.to_string());
-        payload.push(',');
-        payload.push_str(&self.available.to_string());
-        payload.push(',');
-        payload.push_str(&serialized_chain_of_custody);
-        payload.push(',');
+        let payload = format!("{},{},{},{}", 
+            &self.maturation_time.to_string(),
+            &self.price.to_string(),
+            &self.available.to_string(), 
+            &serialized_chain_of_custody
+        );
         let signature = wallet.sign(payload.clone()).unwrap();
         self.update(
             0, 

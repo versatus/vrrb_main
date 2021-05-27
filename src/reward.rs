@@ -29,7 +29,7 @@ pub enum Category {
     Motherlode(Option<i128>),
 }
 
-#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RewardState {
     pub epoch: u32,
     pub next_epoch_block: u32,
@@ -44,9 +44,9 @@ pub struct RewardState {
     pub n_grains_current_epoch: u32,
 }
 
-#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reward {
-    pub miner: String,
+    pub miner: Option<String>,
     pub category: Category,
     pub amount: i128,
 }
@@ -157,7 +157,7 @@ impl RewardState {
     }
 
 impl Reward {
-    pub fn new(miner: String, reward_state: &RewardState) -> Reward {
+    pub fn new(miner: Option<String>, reward_state: &RewardState) -> Reward {
         let category: Category = Category::new(reward_state);
         Reward {
             miner: miner,

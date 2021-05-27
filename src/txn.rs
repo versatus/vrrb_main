@@ -1,4 +1,5 @@
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::fmt;
 use serde::{Serialize, Deserialize};
 use crate::{account::{Token, WalletAccount}};
 use uuid::Uuid;
@@ -36,5 +37,31 @@ impl Txn {
             txn_amount: amount,
             txn_signature: signature.to_string(),
         }
+    }
+}
+
+impl fmt::Display for Txn {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+
+        write!(
+            f,
+            "Txn(\n \
+            txn_id: {},\n \
+            txn_timestamp: {},\n \
+            sender_address: {},\n \
+            sender_public_key: {},\n \
+            receiver_address: {},\n \
+            txn_token: {:?},\n \
+            txn_amount: {},\n \
+            txn_signature: {}",
+            self.txn_id, 
+            self.txn_timestamp.to_string(), 
+            self.sender_address, 
+            self.sender_public_key,
+            self.receiver_address,
+            self.txn_token,
+            self.txn_amount,
+            self.txn_signature,
+        )
     }
 }

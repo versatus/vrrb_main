@@ -14,9 +14,7 @@ use crate::account::WalletAccount;
 //        the payload is a hashmap in json format with the key of the maturation time
 //        and a value of the chain of custody (which is also a hashmap converted to json format)
 
-
-
-#[derive(Debug, Deserialize, Serialize, Hash, Clone)]
+#[derive(Clone, Debug, Eq, Deserialize, Hash, Serialize, PartialEq)]
 pub enum CustodianInfo {
     Homesteader(bool),
     AcquisitionTimestamp(u128),
@@ -26,7 +24,7 @@ pub enum CustodianInfo {
     Signature(String),
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Clone, Debug, Eq, Deserialize, PartialEq, Serialize)]
 pub struct Claim {
     pub maturation_time: u128,
     pub price: i32,

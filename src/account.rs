@@ -11,9 +11,10 @@ use std::collections::HashMap;
 use std::fmt;
 use uuid::Uuid;
 use serde::{Serialize, Deserialize};
-use crate::claim::Claim;
+use bip39::{Mnemonic, Language};
+use crate::{claim::{Claim, ClaimState}, vrrbcoin::Token, txn::Txn, block::Block};
 
-const STARTING_BALANCE: u128 = 1_000_000_000_000_000_000_000;
+const STARTING_BALANCE: u128 = 1_000;
 
 // TODO: Move to a different module
 // Account State object is effectively the local
@@ -22,49 +23,188 @@ const STARTING_BALANCE: u128 = 1_000_000_000_000_000_000_000;
 // and is "approved" by the network via consensus after
 // each transaction and each block. It requires a hashmap
 // with a vector of hashmaps that contains information for restoring a wallet.
-// It re
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum Token {
-    Name(String),
-    Units(i32),
+
+pub enum StateOption {
+    // TODO: Change WalletAccount usage to tuples of types of 
+    // data from the Wallet needed. Using actual WalletAccount object
+    // is unsafe.
+    NewTxn(Txn),
+    NewAccount(WalletAccount),
+    ClaimAcquired(Claim),
+    ConfirmedTxn((Txn, Vec<WalletAccount>)),
+    Miner((WalletAccount, Block)),
 }
 
+/// The State of all accounts. This is used to track balances
+/// this is also used to track the state of the network in general
+/// along with the ClaimState and RewardState. Will need to adjust
+/// this to account for smart contracts at some point in the future.
+/// 
 #[allow(dead_code)]
-#[derive(Debug)]
-pub struct WalletAccountState {
-    accounts: HashMap<String, String>,
-    coin_balances: HashMap<String, u128>,
-    token_balances: HashMap<String, Vec<(Token, Token)>>,
-    claims_owned: HashMap<String, Claim>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountState {
+    /// Map of account (secret key, mnemoic) hashes to public keys
+    /// This is used to allow users to restore their account.
+    pub accounts_sk: HashMap<String, String>,
+    pub accounts_mk: HashMap<String, String>,
+
+    /// Map of public keys to total balances. This is updated as 
+    /// transactions occur and then are confirmed. 
+    /// Users may only transfer balances less than or
+    /// equal to their available balance.
+    pub total_coin_balances: HashMap<String, u128>,
+
+    /// Map of public keys to avaialbe balances. This is updated
+    /// as transactions occur and then are confirmed.
+    pub available_coin_balances: HashMap<String, u128>,
+
+    /// Map of address to public keys to be able to access public keys from address
+    /// as transactions are mostly conducted via an address, not via the public
+    /// key.
+    pub accounts_address: HashMap<String, String>,
+
+    /// Map of public key to vector of (Token(Ticker), Token(Units)) tuples
+    /// This is effectively a placeholder for non-native tokens, and will be
+    /// adjusted according to Smart Contract token protocols in the future,
+    /// This is currently primarly for test purposes.
+    pub token_balances: HashMap<String, Vec<(Token, Token)>>,
+
+    /// The local claim state.
+    pub claims_owned: ClaimState,
+
+    /// A vector of pending txns that have not been validated
+    /// consider changing this to a vec of (txn_id, txn_hash, signature) thruples
+    /// may speed up txn validation/processing time and save memory.
+    pub pending: Vec<Txn>,
+
+    pub mineable: Vec<Txn>,
+
+    // TODO: Add a state hash, which will sha256 hash the entire state structure for
+    // consensus purposes.
 }
 
 #[derive(Debug, Clone)]
 pub struct WalletAccount {
     private_key: SecretKey,
-    // pub pk_hash: String,
-    // pub mnemonic_hash: String,
     pub address: String,
     pub public_key: PublicKey,
     pub balance: u128,
+    pub available_balance: u128,
     pub tokens: Vec<(Option<Token>, Option<Token>)>,
     pub claims: Vec<Option<Claim>>,
+    skhash: String,
+    mnemonic_hash: String,
+
+    // TODO: Add a secret key hash and mnemonic hash to the struct to be able to identify rightful
+    // owners of a given account when a user is attempting to restore their account.
+}
+
+impl AccountState {
+    pub fn start() -> AccountState {
+
+        AccountState {
+            accounts_sk: HashMap::new(),
+            accounts_mk: HashMap::new(),
+            accounts_address: HashMap::new(),
+            total_coin_balances: HashMap::new(),
+            available_coin_balances: HashMap::new(),
+            token_balances: HashMap::new(),
+            claims_owned: ClaimState { claims: HashMap::new() },
+            pending: vec![],
+            mineable: vec![],
+        }
+    }
+
+    pub fn update(&mut self, value: StateOption) {
+        
+        // Read the purpose and match the purpose to different update types
+        // If the purpose is "new_txn", then StateOption should contain NewTxn(Txn)
+        // Unwrap the Txn, and update the available balance of the account
+        // the txn was sent from, the total balance of the account the txn was
+        // sent to, and place it in the pending vector. If the purpose is
+        // "confirmed_txn", update the total balance of the sender, the
+        // available balance of the receiver and remove it from the pending
+        // vector and place it in the mineable vector.
+        // if the purpose is "new_account", update all relevant fields
+        // if purpose is "claim_acquired" update the claim state (and balance if
+        // the claim was purchased and not homesteaded. If the purpose is "miner",
+        // update the coin balance of the miner account with the block reward.
+       match value {
+            StateOption::NewAccount(wallet) => {
+                self.accounts_sk.entry(wallet.skhash)
+                    .or_insert(wallet.public_key
+                        .to_string());
+                self.accounts_mk.entry(wallet.mnemonic_hash)
+                    .or_insert(wallet.public_key
+                        .to_string());
+                self.accounts_address.entry(wallet.address)
+                    .or_insert(wallet.public_key
+                        .to_string());
+                self.total_coin_balances.entry(wallet.public_key.to_string())
+                    .or_insert(STARTING_BALANCE);
+                self.available_coin_balances.entry(wallet.public_key.to_string())
+                    .or_insert(STARTING_BALANCE);
+            },
+            StateOption::NewTxn(txn) => {
+                let receiver_pk = self.accounts_address.get(&txn.receiver_address).unwrap();
+                let sender_pk = self.accounts_address.get(&txn.sender_address).unwrap();
+
+                let sender_avail_bal = *self.available_coin_balances
+                                                .get_mut(sender_pk)
+                                                .unwrap() - txn.txn_amount;
+                let receiver_total_bal = *self.total_coin_balances
+                                                .get_mut(receiver_pk)
+                                                .unwrap() + txn.txn_amount;
+                self.available_coin_balances.insert(sender_pk.to_owned(), sender_avail_bal);
+                self.total_coin_balances.insert(receiver_pk.to_owned(), receiver_total_bal);
+
+            },
+            StateOption::ClaimAcquired(claim) => {
+                self.claims_owned.claims.entry(claim.maturation_time).or_insert(claim);
+            },
+            StateOption::Miner((miner, block)) => {
+                let reward = block.block_reward.amount;
+                let miner_pk = self.accounts_address.get(&miner.address).unwrap();
+                self.total_coin_balances.insert(
+                    miner_pk.to_owned(), 
+                    self.total_coin_balances[miner_pk] + reward);
+
+            },
+            StateOption::ConfirmedTxn((_txn, _validators)) => {
+                //TODO: distribute txn fees among validators.
+                ()
+            },
+        }
+    }
+
+    pub fn stream<T>(&self, _file: Option<T>) {
+        // TODO stream the account state to a file for maintenance and for restoration.
+    }
+        
 }
 
 impl WalletAccount {
     pub fn new() -> Self {
         let secp = Secp256k1::new();
-        let mut rng = OsRng::new().expect("OsRng");
+        let mut rng = rand::thread_rng();
+        let mut mrng = rand::thread_rng();
         let (secret_key, public_key) = secp.generate_keypair(&mut rng);
         let uid_address = digest_bytes(Uuid::new_v4().to_string().as_bytes());
         let mut address_prefix: String = "0x192".to_string();
+        let mnemonic = Mnemonic::generate_in_with(&mut mrng, Language::English, 24)
+                            .unwrap()
+                            .to_string();
         address_prefix.push_str(&uid_address);
         Self {
             private_key: secret_key,
             public_key: public_key,
             address: address_prefix,
             balance: STARTING_BALANCE,
+            available_balance: STARTING_BALANCE,
             tokens: vec![(None, None)],
             claims: vec![None],
+            skhash: digest_bytes(secret_key.to_string().as_bytes()),
+            mnemonic_hash: digest_bytes(mnemonic.as_bytes()),
         }
     }
 
@@ -105,7 +245,6 @@ impl WalletAccount {
 impl fmt::Display for WalletAccount {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let balance: String = self.balance.to_string();
-
         write!(
             f,
             "Wallet(\n \
@@ -117,3 +256,4 @@ impl fmt::Display for WalletAccount {
         )
     }
 }
+// TODO: Write tests for this module

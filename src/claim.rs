@@ -24,6 +24,15 @@ pub enum CustodianInfo {
     Signature(String),
 }
 
+
+// Claim state is a structure that contains
+// all the relevant information about the 
+// currently outstanding (unmined) claims.
+#[derive(Clone, Debug, Eq, Deserialize, PartialEq, Serialize)]
+pub struct ClaimState {
+    pub claims: HashMap<u128, Claim>,
+}
+
 #[derive(Clone, Debug, Eq, Deserialize, PartialEq, Serialize)]
 pub struct Claim {
     pub maturation_time: u128,
@@ -118,3 +127,4 @@ impl fmt::Display for Claim {
             self.claim_payload)
     }
 }
+// TODO: Write tests for this module

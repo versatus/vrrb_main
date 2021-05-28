@@ -22,11 +22,11 @@ pub const MOTHERLODE_REWARD_RANGE: (u32, u32) = (8u32.pow(4), 8u32.pow(5) - 1u32
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumIter)]
 pub enum Category {
-    Flake(Option<i128>),
-    Grain(Option<i128>),
-    Nugget(Option<i128>),
-    Vein(Option<i128>),
-    Motherlode(Option<i128>),
+    Flake(Option<u128>),
+    Grain(Option<u128>),
+    Nugget(Option<u128>),
+    Vein(Option<u128>),
+    Motherlode(Option<u128>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,7 +48,7 @@ pub struct RewardState {
 pub struct Reward {
     pub miner: Option<String>,
     pub category: Category,
-    pub amount: i128,
+    pub amount: u128,
 }
 
 impl RewardState {
@@ -227,3 +227,4 @@ impl Category {
         }
     }
 }
+// TODO: Write tests for this module

@@ -1,7 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::fmt;
 use serde::{Serialize, Deserialize};
-use crate::{account::{Token, WalletAccount}};
+use crate::{account::{WalletAccount}, vrrbcoin::Token};
 use uuid::Uuid;
 use sha256::digest_bytes;
 
@@ -13,13 +13,13 @@ pub struct Txn {
     pub sender_public_key: String,
     pub receiver_address: String,
     pub txn_token: Option<Token>,
-    pub txn_amount: i128,
+    pub txn_amount: u128,
     pub txn_signature: String,
 }
 
 impl Txn {
 
-    pub fn new(wallet: WalletAccount, receiver: String, amount: i128) -> Txn {
+    pub fn new(wallet: WalletAccount, receiver: String, amount: u128) -> Txn {
         let time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         let payload = format!("{},{},{},{}", 
             &wallet.address.to_string(), 
@@ -65,3 +65,5 @@ impl fmt::Display for Txn {
         )
     }
 }
+
+// TODO: Write tests for this module

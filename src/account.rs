@@ -1,5 +1,4 @@
 use bytebuffer::ByteBuffer;
-use secp256k1::rand::rngs::OsRng;
 use secp256k1::Error;
 use secp256k1::{
     key::{PublicKey, SecretKey},
@@ -41,7 +40,7 @@ pub enum StateOption {
 /// this to account for smart contracts at some point in the future.
 /// 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct AccountState {
     /// Map of account (secret key, mnemoic) hashes to public keys
     /// This is used to allow users to restore their account.
@@ -70,7 +69,7 @@ pub struct AccountState {
     pub token_balances: HashMap<String, Vec<(Token, Token)>>,
 
     /// The local claim state.
-    pub claims_owned: ClaimState,
+    pub claim_state: ClaimState,
 
     /// A vector of pending txns that have not been validated
     /// consider changing this to a vec of (txn_id, txn_hash, signature) thruples
@@ -83,7 +82,7 @@ pub struct AccountState {
     // consensus purposes.
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct WalletAccount {
     private_key: SecretKey,
     pub address: String,
@@ -109,13 +108,13 @@ impl AccountState {
             total_coin_balances: HashMap::new(),
             available_coin_balances: HashMap::new(),
             token_balances: HashMap::new(),
-            claims_owned: ClaimState { claims: HashMap::new() },
+            claim_state: ClaimState::start(),
             pending: vec![],
             mineable: vec![],
         }
     }
 
-    pub fn update(&mut self, value: StateOption) {
+    pub fn update(&mut self, value: StateOption) -> Result<Self, Error> {
         
         // Read the purpose and match the purpose to different update types
         // If the purpose is "new_txn", then StateOption should contain NewTxn(Txn)
@@ -144,6 +143,7 @@ impl AccountState {
                     .or_insert(STARTING_BALANCE);
                 self.available_coin_balances.entry(wallet.public_key.to_string())
                     .or_insert(STARTING_BALANCE);
+                return Ok(self.to_owned());
             },
             StateOption::NewTxn(txn) => {
                 let receiver_pk = self.accounts_address.get(&txn.receiver_address).unwrap();
@@ -157,10 +157,11 @@ impl AccountState {
                                                 .unwrap() + txn.txn_amount;
                 self.available_coin_balances.insert(sender_pk.to_owned(), sender_avail_bal);
                 self.total_coin_balances.insert(receiver_pk.to_owned(), receiver_total_bal);
-
+                return Ok(self.to_owned());
             },
             StateOption::ClaimAcquired(claim) => {
-                self.claims_owned.claims.entry(claim.maturation_time).or_insert(claim);
+                self.claim_state.owned_claims.entry(claim.maturation_time).or_insert(claim);
+                return Ok(self.to_owned());
             },
             StateOption::Miner((miner, block)) => {
                 let reward = block.block_reward.amount;
@@ -168,18 +169,27 @@ impl AccountState {
                 self.total_coin_balances.insert(
                     miner_pk.to_owned(), 
                     self.total_coin_balances[miner_pk] + reward);
+                
+                self.available_coin_balances.insert(
+                    miner_pk.to_owned(), 
+                    self.available_coin_balances[miner_pk] + reward);
+
+                for claim in block.visible_blocks {
+                    self.claim_state.claims.entry(claim.maturation_time).or_insert(claim);
+                }
+                return Ok(self.to_owned());
 
             },
             StateOption::ConfirmedTxn((_txn, _validators)) => {
                 //TODO: distribute txn fees among validators.
-                ()
+                return Ok(self.to_owned());
             },
         }
     }
 
-    pub fn stream<T>(&self, _file: Option<T>) {
-        // TODO stream the account state to a file for maintenance and for restoration.
-    }
+    // pub fn stream(&self, _file: Option<File>) {
+    //     // TODO stream the account state to a file for maintenance and for restoration.
+    // }
         
 }
 
@@ -201,8 +211,8 @@ impl WalletAccount {
             address: address_prefix,
             balance: STARTING_BALANCE,
             available_balance: STARTING_BALANCE,
-            tokens: vec![(None, None)],
-            claims: vec![None],
+            tokens: vec![],
+            claims: vec![],
             skhash: digest_bytes(secret_key.to_string().as_bytes()),
             mnemonic_hash: digest_bytes(mnemonic.as_bytes()),
         }
@@ -240,6 +250,17 @@ impl WalletAccount {
             _ => Err(Error::IncorrectSignature),
         }
     }
+
+    pub fn get_balance(&mut self, account_state: AccountState) -> Result<Self, Error> {
+        let (balance, available_balance) = (
+            account_state.total_coin_balances.get(&self.public_key.to_string()),
+            account_state.available_coin_balances.get(&self.public_key.to_string()));
+        Ok(Self {
+            balance: balance.unwrap().clone(),
+            available_balance: available_balance.unwrap().clone(),
+            ..self.to_owned()
+        })
+    }
 }
 
 impl fmt::Display for WalletAccount {
@@ -256,4 +277,37 @@ impl fmt::Display for WalletAccount {
         )
     }
 }
+
+impl Clone for WalletAccount {
+    fn clone(&self) -> WalletAccount {
+        WalletAccount {
+            private_key: self.private_key,
+            address: self.address.clone(),
+            public_key: self.public_key,
+            balance: self.balance,
+            available_balance: self.available_balance,
+            tokens: self.tokens.clone(),
+            claims: self.claims.clone(),
+            skhash: self.skhash.clone(),
+            mnemonic_hash: self.mnemonic_hash.clone(),
+        }
+    }
+}
+
+impl Clone for AccountState {
+    fn clone(&self) -> Self {
+        AccountState {
+            accounts_sk: self.accounts_sk.clone(),
+            accounts_mk: self.accounts_mk.clone(),
+            total_coin_balances: self.total_coin_balances.clone(),
+            available_coin_balances: self.available_coin_balances.clone(),
+            accounts_address: self.accounts_address.clone(),
+            token_balances: self.token_balances.clone(),
+            claim_state: self.claim_state.clone(),
+            pending: self.pending.clone(),
+            mineable: self.mineable.clone(),
+        }
+    }
+}
+
 // TODO: Write tests for this module

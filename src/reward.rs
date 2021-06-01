@@ -14,12 +14,12 @@ pub const N_BLOCKS_PER_EPOCH: u32 = 16000000;
 pub const NUGGET_FINAL_EPOCH: u16 = 300;
 pub const VEIN_FINAL_EPOCH: u8 = 200;
 pub const MOTHERLODE_FINAL_EPOCH: u8 = 100;
-pub const FLAKE_REWARD_RANGE: (u32, u32) = (8u32.pow(0), 8u32.pow(1) - 1u32);
-pub const GRAIN_REWARD_RANGE: (u32, u32) = (8u32.pow(1), 8u32.pow(2) - 1u32);
-pub const NUGGET_REWARD_RANGE: (u32, u32) = (8u32.pow(2), 8u32.pow(3) - 1u32);
-pub const VEIN_REWARD_RANGE: (u32, u32) = (8u32.pow(3), 8u32.pow(4) - 1u32);
-pub const MOTHERLODE_REWARD_RANGE: (u32, u32) = (8u32.pow(4), 8u32.pow(5) - 1u32);
-
+pub const FLAKE_REWARD_RANGE: (u32, u32) = (1, 7);
+pub const GRAIN_REWARD_RANGE: (u32, u32) = (8, 63);
+pub const NUGGET_REWARD_RANGE: (u32, u32) = (64, 511);
+pub const VEIN_REWARD_RANGE: (u32, u32) = (512, 4095);
+pub const MOTHERLODE_REWARD_RANGE: (u32, u32) = (4096, 32768);
+pub const GENESIS_REWARD: u32 = 200_000_000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumIter)]
 pub enum Category {
     Flake(Option<u128>),
@@ -27,6 +27,7 @@ pub enum Category {
     Nugget(Option<u128>),
     Vein(Option<u128>),
     Motherlode(Option<u128>),
+    Genesis(Option<u128>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -158,7 +159,7 @@ impl RewardState {
 
 impl Reward {
     pub fn new(miner: Option<String>, reward_state: &RewardState) -> Reward {
-        let category: Category = Category::new(reward_state);
+        let category: Category = Category::new(*reward_state);
         Reward {
             miner: miner,
             category: category,
@@ -172,14 +173,25 @@ impl Reward {
             },
         }
     }
+    pub fn genesis(miner: Option<String>) -> Reward {
+        let category = Category::Genesis(Some(GENESIS_REWARD as u128));
+        Reward {
+            miner,
+            category,
+            amount: match category {
+                Category::Genesis(Some(amount)) => amount,
+                _ => 0,
+            } 
+        }
+    }
 }
 
 impl Category {
-    pub fn new(reward_state: &RewardState) -> Category {
+    pub fn new(reward_state: RewardState) -> Category {
         Category::generate_category(reward_state).amount()
     }
 
-    pub fn generate_category(reward_state: &RewardState) -> Category {
+    pub fn generate_category(reward_state: RewardState) -> Category {
         let items = vec![
             (Category::Flake(None), reward_state.n_flakes_current_epoch),
             (Category::Grain(None), reward_state.n_grains_current_epoch),
@@ -196,9 +208,9 @@ impl Category {
     pub fn amount(&self) -> Category {
         match self {
             Self::Flake(None) => Category::Flake(Some(
-                rand::thread_rng()
-                    .gen_range(FLAKE_REWARD_RANGE.0, FLAKE_REWARD_RANGE.1)
-                    .into(),
+                rand::thread_rng().gen_range(
+                    FLAKE_REWARD_RANGE.0, 
+                    FLAKE_REWARD_RANGE.1).into(),
             )),
             Self::Grain(None) => Category::Flake(Some(
                 rand::thread_rng()

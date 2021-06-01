@@ -3,7 +3,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::fmt;
-use crate::account::WalletAccount;
+use std::io::Error;
+// use std::sync::{Arc, Mutex};
+use crate::account::{WalletAccount, AccountState, StateOption};
+
 //  Claim receives
 //      - a maturation time (UNIX Timestamp in nanoseconds)
 //      - a price (starts at 0, i32)
@@ -28,12 +31,14 @@ pub enum CustodianInfo {
 // Claim state is a structure that contains
 // all the relevant information about the 
 // currently outstanding (unmined) claims.
-#[derive(Clone, Debug, Eq, Deserialize, PartialEq, Serialize)]
+#[derive(Debug, Eq, Deserialize, PartialEq, Serialize)]
 pub struct ClaimState {
     pub claims: HashMap<u128, Claim>,
+    pub owned_claims: HashMap<u128, Claim>
+
 }
 
-#[derive(Clone, Debug, Eq, Deserialize, PartialEq, Serialize)]
+#[derive(Debug, Eq, Deserialize, PartialEq, Serialize)]
 pub struct Claim {
     pub maturation_time: u128,
     pub price: i32,
@@ -41,6 +46,20 @@ pub struct Claim {
     pub chain_of_custody: HashMap<String, HashMap<String, Option<CustodianInfo>>>,
     pub current_owner: (Option<String>, Option<String>, Option<String>),
     pub claim_payload: Option<String>,
+}
+
+impl ClaimState {
+    pub fn start() -> ClaimState {
+        ClaimState {
+            claims: HashMap::new(),
+            owned_claims: HashMap::new(),
+        }
+    }
+
+    pub fn update(&mut self, claim: &Claim) {
+        self.claims.insert(claim.clone().maturation_time, claim.clone());
+        self.owned_claims.insert(claim.clone().maturation_time, claim.clone());
+    }
 }
 
 impl Claim {
@@ -63,7 +82,9 @@ impl Claim {
         acquisition_timestamp: u128,
         current_owner: (Option<String>, Option<String>, Option<String>),
         claim_payload: Option<String>,
-    ) -> Self {
+        claim_state: &mut ClaimState,
+        account_state: &mut AccountState,
+    ) -> Result<(Self, ClaimState, AccountState), Error> {
         let mut new_custodian = HashMap::new();
         let mut custodian_data = HashMap::new();
         custodian_data
@@ -74,38 +95,62 @@ impl Claim {
             .or_insert(Some(CustodianInfo::AcquisitionTimestamp(acquisition_timestamp)));
         new_custodian.entry(acquirer).or_insert(custodian_data);
 
-        Self {
+        let updated_claim = Self {
             price,
             available,
             chain_of_custody: new_custodian,
             current_owner: current_owner,
             claim_payload: claim_payload,
             ..*self
-        }
+        };
+        claim_state.update(&updated_claim.clone());
+        account_state.update(StateOption::ClaimAcquired(updated_claim.clone())).unwrap();
+        Ok((updated_claim, claim_state.to_owned(), account_state.to_owned()))
+
     }
 
     pub fn homestead(
-        &self, wallet: WalletAccount
-    ) -> Self {
-        let time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-        let serialized_chain_of_custody = serde_json::to_string(&self.chain_of_custody).unwrap();
-        let payload = format!("{},{},{},{}", 
-            &self.maturation_time.to_string(),
-            &self.price.to_string(),
-            &self.available.to_string(), 
-            &serialized_chain_of_custody
-        );
-        let signature = wallet.sign(payload.clone()).unwrap();
-        self.update(
-            0, 
-            false, 
-            wallet.address.clone(), 
-            time.as_nanos(),
-            (Some(wallet.address), 
-            Some(wallet.public_key.to_string()),
-            Some(signature.to_string())),
-            Some(payload)
-        )
+        &self, wallet: &mut WalletAccount, claim_state: &mut ClaimState, 
+        account_state: &mut AccountState,
+    ) -> Option<(Self, WalletAccount, AccountState, ClaimState)> {
+        if self.available {
+            let time = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap();
+            let serialized_chain_of_custody = serde_json::to_string(&self.chain_of_custody)
+                                                                .unwrap();
+            let payload = format!("{},{},{},{}", 
+                &self.maturation_time.to_string(),
+                &self.price.to_string(),
+                &self.available.to_string(), 
+                &serialized_chain_of_custody
+            );
+            let mut cloned_wallet = wallet.clone();
+            let signature = wallet.sign(payload.clone()).unwrap();
+            let (claim, claim_state, account_state) = self.update(
+                0, 
+                false, 
+                wallet.address.clone(), 
+                time.as_nanos(),
+                (Some(wallet.address.clone()), 
+                Some(wallet.public_key.to_string()),
+                Some(signature.to_string())),
+                Some(payload),
+                claim_state,
+                account_state,
+            ).unwrap();
+            cloned_wallet.claims.push(Some(claim.clone()));
+            return Some(
+                (
+                    claim, 
+                    cloned_wallet.to_owned(), 
+                    account_state.to_owned(), 
+                    claim_state.to_owned()
+                )
+            );
+        } else {
+            return None;
+        }
     }
 }
 
@@ -127,4 +172,27 @@ impl fmt::Display for Claim {
             self.claim_payload)
     }
 }
+
+impl Clone for Claim {
+    fn clone(&self) -> Claim {
+        Claim {
+            maturation_time: self.maturation_time,
+            price: self.price,
+            available: self.available,
+            chain_of_custody: self.chain_of_custody.clone(),
+            current_owner: self.current_owner.clone(),
+            claim_payload: self.claim_payload.clone(),
+        }
+    }
+}
+
+impl Clone for ClaimState {
+    fn clone(&self) -> ClaimState {
+        ClaimState {
+            claims: self.claims.clone(),
+            owned_claims: self.owned_claims.clone(),
+        }
+    }
+}
+
 // TODO: Write tests for this module

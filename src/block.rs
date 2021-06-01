@@ -2,15 +2,15 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 use crate::{
-    account::WalletAccount, 
+    account::{WalletAccount, AccountState, StateOption}, 
     claim::{Claim, ClaimState}, 
     txn::Txn, 
-    reward::{RewardState, Reward}
+    reward::{RewardState, Reward},
 };
-use secp256k1::{key::PublicKey, Signature};
+use secp256k1::{Signature};
 use serde::{Deserialize, Serialize};
 use sha256::digest_bytes;
-
+use std::io::Error;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Block {
     pub timestamp: u128,
@@ -26,35 +26,48 @@ pub struct Block {
 }
 
 impl Block {
-    pub fn genesis(reward_state: &RewardState, miner: Option<String>) -> Block {
+    pub fn genesis(
+        reward_state: RewardState, 
+        miner: &mut WalletAccount, 
+        account_state: &mut AccountState
+    ) -> Result<(Block, AccountState), Error> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         let mut visible_blocks: Vec<Claim> = Vec::with_capacity(20);
         let mut next_time = now.as_nanos();
-        for _ in 0..=20 {
+        for _ in 0..20 {
             visible_blocks.push(Claim::new(next_time));
             next_time = next_time + 5;
         }
-        Block {
+        let genesis = Block {
             timestamp: now.as_nanos(),
             last_block_hash: digest_bytes("Genesis_Last_Block_Hash".to_string().as_bytes()),
             data: HashMap::new(),
             claim: Claim::new(now.as_nanos()),
-            block_reward: Reward::new(miner.clone(), reward_state),
+            block_reward: Reward::genesis(Some(miner.address.clone())),
             block_signature: "Genesis_Signature".to_string(),
             block_hash: digest_bytes("Genesis_Block_Hash".to_string().as_bytes()),
-            next_block_reward: Reward::new(miner.clone(), reward_state),
-            miner: miner.clone().unwrap(),
-            visible_blocks: visible_blocks,
-        }
+            next_block_reward: Reward::new(None, &reward_state),
+            miner: miner.address.clone(),
+            visible_blocks,
+        };
+
+        let updated_account_state = account_state
+                                                    .update(StateOption::Miner((miner.clone(), 
+                                                        genesis.clone())))
+                                                    .unwrap();
+
+        Ok((genesis, updated_account_state))
+
     }
     pub fn mine(
         reward_state: &RewardState,
         claim: Claim,
         last_block: Block,
         data: HashMap<String, Txn>,
-        miner: String,
+        miner: &mut WalletAccount,
+        account_state: &mut AccountState,
         claim_state: &ClaimState,
-    ) -> Option<Block> {
+    ) -> Option<Result<(Block, AccountState), Error>> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         let claim_signature: Signature = Signature::from_str(
             &claim.clone()
@@ -62,8 +75,6 @@ impl Block {
                 .unwrap())
                 .ok()
                 .unwrap();
-        let public_key = PublicKey::from_str(&miner)
-                                        .ok().unwrap();
         let next_block_reward = Reward::new(None, reward_state);
         let block_payload = format!("{},{},{},{},{},{},{}", 
                         now.as_nanos().to_string(), 
@@ -74,6 +85,8 @@ impl Block {
                         miner.clone(), 
                         serde_json::to_string(&next_block_reward.clone()).unwrap()
                     );
+
+        println!("{} <= {}", claim.maturation_time.clone(), now.as_nanos().clone());
         if claim.maturation_time <= now.as_nanos() {
             let mut visible_blocks: Vec<Claim> = Vec::with_capacity(20);
             let mut furthest_visible_block: u128 = Block::get_furthest_visible_block(claim_state);
@@ -86,29 +99,38 @@ impl Block {
                 .clone()
                 .claim_payload.unwrap(), 
                 claim_signature, 
-                public_key
+                miner.public_key.clone()
             ) {
                 Ok(_t) => {
-                    return Some(Block {
+                    let new_block = Block {
                         timestamp: now.as_nanos(),
                         last_block_hash: last_block.block_hash,
                         data: data,
                         claim: claim
                                 .clone()
                                 .to_owned(),
-                        block_reward: Reward { miner: Some(miner.clone()), ..last_block.next_block_reward },
+                        block_reward: Reward { miner: Some(
+                            miner.address.clone()
+                        ), ..last_block.next_block_reward },
                         block_hash: digest_bytes(block_payload.as_bytes()),
                         next_block_reward: Reward::new(None, reward_state),
-                        miner: miner,
+                        miner: miner.address.clone(),
                         block_signature: claim_signature.to_string(),
-                        visible_blocks: visible_blocks,
+                        visible_blocks,
 
-                    })
+                    };
+                    let updated_account_state = account_state
+                                                    .update(StateOption::Miner((miner.clone(), 
+                                                        new_block.clone())))
+                                                    .unwrap();
+        
+  
+                    return Some(Ok((new_block, updated_account_state)));
                 },
-                Err(e) => println!("Claim is not valid {}", e),
+                Err(_e) => ()
             }
         }
-        None
+        None   
     }
 
     fn get_furthest_visible_block(claim_state: &ClaimState) -> u128 {

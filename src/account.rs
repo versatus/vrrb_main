@@ -11,7 +11,7 @@ use std::fmt;
 use uuid::Uuid;
 use serde::{Serialize, Deserialize};
 use bip39::{Mnemonic, Language};
-use crate::{claim::{Claim, ClaimState}, vrrbcoin::Token, txn::Txn, block::Block};
+use crate::{claim::{Claim, ClaimState}, vrrbcoin::Token, txn::Txn, block::Block, state::NetworkState};
 
 const STARTING_BALANCE: u128 = 1_000;
 
@@ -22,7 +22,6 @@ const STARTING_BALANCE: u128 = 1_000;
 // and is "approved" by the network via consensus after
 // each transaction and each block. It requires a hashmap
 // with a vector of hashmaps that contains information for restoring a wallet.
-
 pub enum StateOption {
     // TODO: Change WalletAccount usage to tuples of types of 
     // data from the Wallet needed. Using actual WalletAccount object
@@ -38,7 +37,6 @@ pub enum StateOption {
 /// this is also used to track the state of the network in general
 /// along with the ClaimState and RewardState. Will need to adjust
 /// this to account for smart contracts at some point in the future.
-/// 
 #[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AccountState {
@@ -114,7 +112,7 @@ impl AccountState {
         }
     }
 
-    pub fn update(&mut self, value: StateOption) -> Result<Self, Error> {
+    pub fn update(&mut self, value: StateOption, network_state: &mut NetworkState) -> Result<Self, Error> {
         
         // Read the purpose and match the purpose to different update types
         // If the purpose is "new_txn", then StateOption should contain NewTxn(Txn)
@@ -143,6 +141,7 @@ impl AccountState {
                     .or_insert(STARTING_BALANCE);
                 self.available_coin_balances.entry(wallet.public_key.to_string())
                     .or_insert(STARTING_BALANCE);
+                network_state.update(self.clone(), "account_state");
                 return Ok(self.to_owned());
             },
             StateOption::NewTxn(txn) => {
@@ -152,15 +151,21 @@ impl AccountState {
                 let sender_avail_bal = *self.available_coin_balances
                                                 .get_mut(sender_pk)
                                                 .unwrap() - txn.txn_amount;
+                if sender_avail_bal < txn.txn_amount {
+                    return Err(Error::InvalidMessage);
+                }
                 let receiver_total_bal = *self.total_coin_balances
                                                 .get_mut(receiver_pk)
                                                 .unwrap() + txn.txn_amount;
                 self.available_coin_balances.insert(sender_pk.to_owned(), sender_avail_bal);
                 self.total_coin_balances.insert(receiver_pk.to_owned(), receiver_total_bal);
+                self.pending.push(txn);
+                network_state.update(self.clone(), "account_state");
                 return Ok(self.to_owned());
             },
             StateOption::ClaimAcquired(claim) => {
                 self.claim_state.owned_claims.entry(claim.maturation_time).or_insert(claim);
+                network_state.update(self.clone(), "account_state");
                 return Ok(self.to_owned());
             },
             StateOption::Miner((miner, block)) => {
@@ -174,9 +179,17 @@ impl AccountState {
                     miner_pk.to_owned(), 
                     self.available_coin_balances[miner_pk] + reward);
 
-                for claim in block.visible_blocks {
+                for claim in block.clone().visible_blocks {
                     self.claim_state.claims.entry(claim.maturation_time).or_insert(claim);
                 }
+
+                self.claim_state.claims.remove_entry(&block.claim.maturation_time).unwrap();
+                match self.claim_state.owned_claims.remove_entry(&block.clone().claim.maturation_time) {
+                    Some(_) => println!("Removed claim from owned"),
+                    None => println!("Couldn't find claim in owned"),
+                }
+                network_state.update(self.clone(), "account_state");
+                
                 return Ok(self.to_owned());
 
             },
@@ -261,19 +274,41 @@ impl WalletAccount {
             ..self.to_owned()
         })
     }
+
+    pub fn remove_mined_claims(&mut self, block: &Block) -> Self {
+        self.claims.iter()
+            .position(|x| x.clone().unwrap() == block.clone().claim)
+            .map(|e| self.claims.remove(e));
+        
+        self.clone()
+
+    }
+
+    pub fn send_txn(
+        &mut self, 
+        account_state: &mut AccountState, 
+        receivers: (String, u128),
+        network_state: &mut NetworkState
+    ) -> Result<(Self, AccountState), Error> {
+        let txn = Txn::new(self.clone(), receivers.0, receivers.1);
+        let updated_account_state = account_state.update(StateOption::NewTxn(txn), network_state).unwrap();
+        Ok((self.to_owned(), updated_account_state.to_owned()))
+    }
 }
 
 impl fmt::Display for WalletAccount {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let balance: String = self.balance.to_string();
+        let available_balance: String = self.available_balance.to_string();
         write!(
             f,
             "Wallet(\n \
             address: {:?},\n \
             balance: {},\n \
+            available_balance: {},\n \
             tokens: {:?},\n \
-            claims: {:?}",
-            self.address, balance, self.tokens, self.claims
+            claims: {}",
+            self.address, balance, available_balance, self.tokens, self.claims.len()
         )
     }
 }

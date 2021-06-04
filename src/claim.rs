@@ -6,6 +6,7 @@ use std::fmt;
 use std::io::Error;
 // use std::sync::{Arc, Mutex};
 use crate::account::{WalletAccount, AccountState, StateOption};
+use crate::state::NetworkState;
 
 //  Claim receives
 //      - a maturation time (UNIX Timestamp in nanoseconds)
@@ -84,6 +85,7 @@ impl Claim {
         claim_payload: Option<String>,
         claim_state: &mut ClaimState,
         account_state: &mut AccountState,
+        network_state: &mut NetworkState,
     ) -> Result<(Self, ClaimState, AccountState), Error> {
         let mut new_custodian = HashMap::new();
         let mut custodian_data = HashMap::new();
@@ -104,15 +106,15 @@ impl Claim {
             ..*self
         };
         claim_state.update(&updated_claim.clone());
-        account_state.update(StateOption::ClaimAcquired(updated_claim.clone())).unwrap();
+        account_state.update(StateOption::ClaimAcquired(updated_claim.clone()), network_state).unwrap();
         Ok((updated_claim, claim_state.to_owned(), account_state.to_owned()))
 
     }
 
     pub fn homestead(
         &self, wallet: &mut WalletAccount, claim_state: &mut ClaimState, 
-        account_state: &mut AccountState,
-    ) -> Option<(Self, WalletAccount, AccountState, ClaimState)> {
+        account_state: &mut AccountState, network_state: &mut NetworkState,
+    ) -> Option<(WalletAccount, AccountState)> {
         if self.available {
             let time = SystemTime::now()
                                 .duration_since(UNIX_EPOCH)
@@ -127,7 +129,7 @@ impl Claim {
             );
             let mut cloned_wallet = wallet.clone();
             let signature = wallet.sign(payload.clone()).unwrap();
-            let (claim, claim_state, account_state) = self.update(
+            let (claim, _claim_state, account_state) = self.update(
                 0, 
                 false, 
                 wallet.address.clone(), 
@@ -138,14 +140,13 @@ impl Claim {
                 Some(payload),
                 claim_state,
                 account_state,
+                network_state,
             ).unwrap();
             cloned_wallet.claims.push(Some(claim.clone()));
             return Some(
-                (
-                    claim, 
+                ( 
                     cloned_wallet.to_owned(), 
                     account_state.to_owned(), 
-                    claim_state.to_owned()
                 )
             );
         } else {

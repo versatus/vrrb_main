@@ -1,7 +1,4 @@
-use rand::{
-    distributions::{Distribution, WeightedIndex},
-    Rng,
-};
+use rand::{Rng, distributions::{Distribution, WeightedIndex}, thread_rng};
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 use crate::utils::decay_calculator;
@@ -14,11 +11,11 @@ pub const N_BLOCKS_PER_EPOCH: u32 = 16000000;
 pub const NUGGET_FINAL_EPOCH: u16 = 300;
 pub const VEIN_FINAL_EPOCH: u8 = 200;
 pub const MOTHERLODE_FINAL_EPOCH: u8 = 100;
-pub const FLAKE_REWARD_RANGE: (u32, u32) = (1, 7);
-pub const GRAIN_REWARD_RANGE: (u32, u32) = (8, 63);
-pub const NUGGET_REWARD_RANGE: (u32, u32) = (64, 511);
-pub const VEIN_REWARD_RANGE: (u32, u32) = (512, 4095);
-pub const MOTHERLODE_REWARD_RANGE: (u32, u32) = (4096, 32768);
+pub const FLAKE_REWARD_RANGE: (u32, u32) = (1, 8);
+pub const GRAIN_REWARD_RANGE: (u32, u32) = (8, 64);
+pub const NUGGET_REWARD_RANGE: (u32, u32) = (64, 512);
+pub const VEIN_REWARD_RANGE: (u32, u32) = (512, 4096);
+pub const MOTHERLODE_REWARD_RANGE: (u32, u32) = (4096, 32769);
 pub const GENESIS_REWARD: u32 = 200_000_000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumIter)]
 pub enum Category {
@@ -206,36 +203,35 @@ impl Category {
     }
 
     pub fn amount(&self) -> Category {
+        let mut rng = thread_rng();
         match self {
+            Self::Genesis(None) => Category::Genesis(None),
             Self::Flake(None) => Category::Flake(Some(
-                rand::thread_rng().gen_range(
-                    FLAKE_REWARD_RANGE.0, 
-                    FLAKE_REWARD_RANGE.1).into(),
+                rng.gen_range(FLAKE_REWARD_RANGE.0, FLAKE_REWARD_RANGE.1)
+                    .into(),
             )),
-            Self::Grain(None) => Category::Flake(Some(
-                rand::thread_rng()
-                    .gen_range(GRAIN_REWARD_RANGE.0, GRAIN_REWARD_RANGE.1)
+            Self::Grain(None) => Category::Grain(Some(
+                rng.gen_range(GRAIN_REWARD_RANGE.0, GRAIN_REWARD_RANGE.1)
                     .into(),
             )),
             Self::Nugget(None) => Category::Nugget(Some(
-                rand::thread_rng()
-                    .gen_range(NUGGET_REWARD_RANGE.0, NUGGET_REWARD_RANGE.1)
+                rng.gen_range(NUGGET_REWARD_RANGE.0, NUGGET_REWARD_RANGE.1)
                     .into(),
             )),
             Self::Vein(None) => Category::Vein(Some(
-                rand::thread_rng()
-                    .gen_range(VEIN_REWARD_RANGE.0, VEIN_REWARD_RANGE.1)
+                rng.gen_range(VEIN_REWARD_RANGE.0, VEIN_REWARD_RANGE.1)
                     .into(),
             )),
             Self::Motherlode(None) => Category::Motherlode(Some(
-                rand::thread_rng()
-                    .gen_range(MOTHERLODE_REWARD_RANGE.0, MOTHERLODE_REWARD_RANGE.1)
+                rng.gen_range(MOTHERLODE_REWARD_RANGE.0, MOTHERLODE_REWARD_RANGE.1)
                     .into(),
             )),
-            _ => Category::Flake(Some(rand::thread_rng()
-                                        .gen_range(FLAKE_REWARD_RANGE.0, FLAKE_REWARD_RANGE.1)
-                                        .into()
-            ))
+            Self::Genesis(Some(amount)) => Self::Genesis(Some(*amount)),
+            Self::Flake(Some(amount)) => Self::Flake(Some(*amount)),
+            Self::Grain(Some(amount)) => Self::Grain(Some(*amount)),
+            Self::Nugget(Some(amount)) => Self::Nugget(Some(*amount)),
+            Self::Vein(Some(amount)) => Self::Vein(Some(*amount)),
+            Self::Motherlode(Some(amount)) => Self::Motherlode(Some(*amount)),
         }
     }
 }

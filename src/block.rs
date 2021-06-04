@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
+use crate::state::NetworkState;
 use crate::{
     account::{WalletAccount, AccountState, StateOption}, 
     claim::{Claim, ClaimState}, 
@@ -11,6 +12,7 @@ use secp256k1::{Signature};
 use serde::{Deserialize, Serialize};
 use sha256::digest_bytes;
 use std::io::Error;
+use std::fmt;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Block {
     pub timestamp: u128,
@@ -29,7 +31,8 @@ impl Block {
     pub fn genesis(
         reward_state: RewardState, 
         miner: &mut WalletAccount, 
-        account_state: &mut AccountState
+        account_state: &mut AccountState,
+        network_state: &mut NetworkState,
     ) -> Result<(Block, AccountState), Error> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         let mut visible_blocks: Vec<Claim> = Vec::with_capacity(20);
@@ -53,7 +56,7 @@ impl Block {
 
         let updated_account_state = account_state
                                                     .update(StateOption::Miner((miner.clone(), 
-                                                        genesis.clone())))
+                                                        genesis.clone())), network_state)
                                                     .unwrap();
 
         Ok((genesis, updated_account_state))
@@ -67,6 +70,7 @@ impl Block {
         miner: &mut WalletAccount,
         account_state: &mut AccountState,
         claim_state: &ClaimState,
+        network_state: &mut NetworkState,
     ) -> Option<Result<(Block, AccountState), Error>> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         let claim_signature: Signature = Signature::from_str(
@@ -86,10 +90,9 @@ impl Block {
                         serde_json::to_string(&next_block_reward.clone()).unwrap()
                     );
 
-        println!("{} <= {}", claim.maturation_time.clone(), now.as_nanos().clone());
         if claim.maturation_time <= now.as_nanos() {
             let mut visible_blocks: Vec<Claim> = Vec::with_capacity(20);
-            let mut furthest_visible_block: u128 = Block::get_furthest_visible_block(claim_state);
+            let mut furthest_visible_block: u128 = Block::get_furthest_visible_block(&mut claim_state.clone());
             for _ in 0..=20 {
                 furthest_visible_block += 5;
                 visible_blocks.push(Claim::new(furthest_visible_block));
@@ -121,10 +124,8 @@ impl Block {
                     };
                     let updated_account_state = account_state
                                                     .update(StateOption::Miner((miner.clone(), 
-                                                        new_block.clone())))
+                                                        new_block.clone())), network_state)
                                                     .unwrap();
-        
-  
                     return Some(Ok((new_block, updated_account_state)));
                 },
                 Err(_e) => ()
@@ -133,11 +134,27 @@ impl Block {
         None   
     }
 
-    fn get_furthest_visible_block(claim_state: &ClaimState) -> u128 {
-        claim_state.claims
-            .values()
-            .max_by_key(|c| c.maturation_time)
-            .unwrap().maturation_time
+    fn get_furthest_visible_block(claim_state: &mut ClaimState) -> u128 {
+        let (key, _value) = claim_state.claims
+            .iter_mut()
+            .max_by_key(|entry| entry.0)
+            .unwrap();
+        *key
+    }
+}
+
+impl fmt::Display for Block {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "Block(\n \
+            reward: {:?},\n \
+            next_block_reward: {:?}\n \
+            claim: {:?}",
+            self.block_reward,
+            self.next_block_reward,
+            self.claim,
+        )
     }
 }
 

@@ -1,7 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::fmt;
 use serde::{Serialize, Deserialize};
-use crate::{account::{WalletAccount}, vrrbcoin::Token};
+use crate::{account::WalletAccount, vrrbcoin::Token};
 use uuid::Uuid;
 use sha256::digest_bytes;
 

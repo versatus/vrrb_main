@@ -1,33 +1,63 @@
 use pickledb::{PickleDb, PickleDbDumpPolicy, SerializationMethod};
 use serde::{Serialize};
 pub struct NetworkState {
-    state: PickleDb
+    pub state: PickleDb
 }
 
 impl NetworkState {
-    pub fn new() -> NetworkState {
-        let db = PickleDb::new(
-            "vrrb_network_state.db", 
-            PickleDbDumpPolicy::AutoDump, 
-            SerializationMethod::Bin,
-        );
-
-        NetworkState {
-            state: db
-        }
-    }
-
+    
     pub fn update<T: Serialize>(&mut self, state_obj: T, state_obj_type: &str) {
         self.state.set(state_obj_type, &state_obj).unwrap()
     }
 
-    pub fn restore(path: &str) -> Option<NetworkState> {
-        let db = PickleDb::load_bin(path, PickleDbDumpPolicy::AutoDump).unwrap();
+    pub fn restore(path: &str) -> NetworkState {
+        let db = match PickleDb::load_bin(
+            path, 
+            PickleDbDumpPolicy::AutoDump
+            ) {
 
-        //TODO: Add error propagation so that if there's no network state db that exists
-        // it creates a new one.
-        Some(NetworkState {
+                Ok(nst) => nst,
+                Err(_) => PickleDb::new(
+                path, 
+                PickleDbDumpPolicy::AutoDump, 
+                SerializationMethod::Bin)
+        };
+        
+        NetworkState {
             state: db
-        })
+        }    
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_new_network_state() {
+
+    }
+
+    #[test]
+    fn test_restored_network_state() {
+
+    }
+
+    #[test]
+    fn test_valid_network_state() {
+
+    }
+
+    #[test]
+    fn test_invalid_network_state() {
+
+    }
+
+    #[test]
+    fn test_network_state_updated_locally() {
+
+    }
+
+    #[test]
+    fn test_network_state_updated_via_gossip() {
+        
     }
 }

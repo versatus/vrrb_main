@@ -158,4 +158,41 @@ impl fmt::Display for Block {
     }
 }
 
-// TODO: Write tests for this module
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    fn test_genesis_block_creation() {
+
+    }
+
+    #[test]
+    fn test_mine_block_with_immature_claim() {
+
+    }
+
+    #[test]
+    fn test_mine_block_with_invalid_claim_signature() {
+
+    }
+
+    #[test]
+    fn test_mine_block_with_unconfirmed_txns() {
+
+    }
+
+    #[test]
+    fn test_mine_block_with_invalid_miner_signature() {
+
+    }
+
+    #[test]
+    fn test_mine_block_with_invalid_reward() {
+
+    }
+
+    #[test]
+    fn test_mine_block_with_all_valid_data() {
+
+    }
+}

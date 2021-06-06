@@ -57,9 +57,10 @@ impl ClaimState {
         }
     }
 
-    pub fn update(&mut self, claim: &Claim) {
+    pub fn update(&mut self, claim: &Claim, network_state: &mut NetworkState) {
         self.claims.insert(claim.clone().maturation_time, claim.clone());
         self.owned_claims.insert(claim.clone().maturation_time, claim.clone());
+        network_state.update(self.clone(), "claim_state");
     }
 }
 
@@ -105,7 +106,7 @@ impl Claim {
             claim_payload: claim_payload,
             ..*self
         };
-        claim_state.update(&updated_claim.clone());
+        claim_state.update(&updated_claim.clone(), network_state);
         account_state.update(StateOption::ClaimAcquired(updated_claim.clone()), network_state).unwrap();
         Ok((updated_claim, claim_state.to_owned(), account_state.to_owned()))
 
@@ -129,7 +130,7 @@ impl Claim {
             );
             let mut cloned_wallet = wallet.clone();
             let signature = wallet.sign(payload.clone()).unwrap();
-            let (claim, _claim_state, account_state) = self.update(
+            let (claim, claim_state, account_state) = self.update(
                 0, 
                 false, 
                 wallet.address.clone(), 
@@ -142,6 +143,7 @@ impl Claim {
                 account_state,
                 network_state,
             ).unwrap();
+            network_state.update(claim_state, "claim_state");
             cloned_wallet.claims.push(Some(claim.clone()));
             return Some(
                 ( 
@@ -196,4 +198,40 @@ impl Clone for ClaimState {
     }
 }
 
-// TODO: Write tests for this module
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_claim_creation_with_new_block() {
+
+    }
+
+    #[test]
+    fn test_claim_update_after_homestead() {
+
+    }
+
+    #[test]
+    fn test_mature_claim_valid_signature_mines_block() {
+
+    }
+
+    #[test]
+    fn test_immature_claim_valid_signature_doesnt_mine_block() {
+
+    }
+
+    #[test]
+    fn test_mature_claim_invalid_signature_doesnt_mine_block() {
+
+    }
+
+    #[test]
+    fn test_claim_for_sale() {
+
+    }
+
+    #[test]
+    fn test_claim_sold() {
+
+    }
+}

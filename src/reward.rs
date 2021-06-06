@@ -1,7 +1,7 @@
 use rand::{Rng, distributions::{Distribution, WeightedIndex}, thread_rng};
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
-use crate::utils::decay_calculator;
+use crate::{state::NetworkState, utils::decay_calculator};
 
 // Generate a random variable reward to include in new blocks
 pub const TOTAL_NUGGETS: u32 = 80000000;
@@ -50,7 +50,7 @@ pub struct Reward {
 }
 
 impl RewardState {
-    pub fn start() -> RewardState {
+    pub fn start(network_state: &mut NetworkState) -> RewardState {
         let n_nuggets_ce: u32 = (decay_calculator(
             TOTAL_NUGGETS, NUGGET_FINAL_EPOCH as u32) * 
             TOTAL_NUGGETS as f64) as u32;
@@ -64,7 +64,7 @@ impl RewardState {
         let n_flakes_ce: u32 = (remaining_blocks as f64 * 0.6f64) as u32;
         let n_grains_ce: u32 = (remaining_blocks as f64 * 0.4f64) as u32;
 
-        RewardState {
+        let reward_state = RewardState {
             current_block: 0,
             epoch: 1,
             next_epoch_block: 16000000,
@@ -77,9 +77,11 @@ impl RewardState {
             n_flakes_current_epoch: n_flakes_ce,
             n_grains_current_epoch: n_grains_ce,
             
-        }
+        };
+        network_state.update(reward_state, "reward_state");
+        reward_state
     }
-    pub fn update(&self, last_reward: Category) -> Self {
+    pub fn update(&self, last_reward: Category, network_state: &mut NetworkState) -> Self {
         let mut n_nuggets_ce: u32 = self.n_nuggets_current_epoch;
         let mut n_veins_ce: u32 = self.n_veins_current_epoch;
         let mut n_motherlodes_ce: u32 = self.n_motherlodes_current_epoch;
@@ -121,7 +123,8 @@ impl RewardState {
             n_flakes_ce = (remaining_blocks as f64 * 0.6f64) as u32;
             n_grains_ce = (remaining_blocks as f64 * 0.4f64) as u32;
         }
-        Self {
+
+        let updated_reward_state = Self {
             current_block: self.current_block + 1,
             epoch: if self.current_block + 1 != self.next_epoch_block {
                 self.epoch
@@ -150,7 +153,9 @@ impl RewardState {
             n_motherlodes_current_epoch: n_motherlodes_ce,
             n_flakes_current_epoch: n_flakes_ce,
             n_grains_current_epoch: n_grains_ce,
-            }
+            };
+        network_state.update(updated_reward_state, "reward_state");
+        updated_reward_state
         }
     }
 
@@ -235,4 +240,31 @@ impl Category {
         }
     }
 }
-// TODO: Write tests for this module
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_reward_state_starting_point() {
+
+    }
+
+    #[test]
+    fn test_reward_state_updates_after_mined_block() {
+
+    }
+
+    #[test]
+    fn test_restored_reward_state() {
+
+    }
+
+    #[test]
+    fn test_reward_category_valid_amount() {
+
+    }
+    
+    #[test]
+    fn test_reward_category_invalid_amount() {
+
+    }
+}

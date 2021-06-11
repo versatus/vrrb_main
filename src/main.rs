@@ -2,29 +2,116 @@ use vrrb_main::{account::{
         AccountState, 
         WalletAccount
     }, block::Block, claim::{ClaimState}, reward::{RewardState}, state::NetworkState};
-use std::{collections::HashMap};
+use std::{collections::HashMap, sync::mpsc, thread};
 fn main() {
-
+    println!("Welcome to VRRB");
     let mut account_state = AccountState::start();
     let mut network_state = NetworkState::restore("vrrb_network_state.db");
-    let mut _reward_state = RewardState::start(&mut network_state);
-    println!("{:?}", _reward_state);
-    let db_iter = network_state.state.iter();
-    for i in db_iter {
-        match i.get_value::<AccountState>() {
-            Some(ast) => account_state = ast,
-            None => (),
-        }
-        match i.get_value::<RewardState>() {
-            Some(rst) => _reward_state = rst,
-            None => (),
-        }
-    }
-    let _claim_state = account_state.claim_state.clone();
-    let (_wallet, updated_account_state) = WalletAccount::new(&mut account_state, &mut network_state);
+    let mut reward_state = RewardState::start(&mut network_state);
+
+    let (mut wallet, updated_account_state) = WalletAccount::new(
+        &mut account_state, 
+        &mut network_state
+    );
     account_state = updated_account_state;
 
-    println!("{:?}\n\n", &account_state);
+    let (genesis_block, updated_account_state) = Block::genesis(
+        reward_state, 
+        &mut wallet, 
+        &mut account_state, 
+        &mut network_state    
+    ).unwrap();
+
+    account_state = updated_account_state;
+    wallet = wallet.get_balance(account_state.clone()).unwrap();
+
+    let mut last_block = genesis_block;
+    
+    loop {
+        
+
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let mut thread_account_state = account_state;
+            let mut thread_wallet = wallet;
+            let mut thread_network_state = network_state;
+
+            for (_ts, claim) in thread_account_state.clone().claim_state.claims {
+                let result = claim.homestead(
+                    &mut thread_wallet, 
+                    &mut thread_account_state.clone().claim_state, 
+                    &mut thread_account_state, 
+                    &mut thread_network_state
+                );
+
+                let (updated_wallet, updated_account_state) = result.unwrap();
+                thread_wallet = updated_wallet;
+                thread_account_state = updated_account_state;
+            }
+
+            tx.send((thread_wallet, thread_account_state, thread_network_state)).unwrap();
+
+        }).join().unwrap();
+
+        let (mut loop_wallet, loop_account_state, loop_network_state) = rx.recv().unwrap();
+        loop_wallet = loop_wallet.get_balance(loop_account_state.clone()).unwrap();
+
+        println!("{}\n\n", &loop_wallet);
+
+        wallet = loop_wallet;
+        account_state = loop_account_state;
+        network_state = loop_network_state;
+
+        let (tx, rx) = mpsc::channel();
+
+        thread::spawn(move || {
+            let mut thread_account_state = account_state.clone();
+            let mut thread_wallet = wallet;
+            let mut thread_network_state = network_state;
+            let thread_reward_state = reward_state;
+            let mut last_block = last_block;
+
+            for claim in &thread_wallet.clone().claims {
+                let new_block = Block::mine(
+                    &thread_reward_state, 
+                    claim.clone().unwrap(), 
+                    last_block, 
+                    HashMap::new(), 
+                    &mut thread_wallet,
+                    &mut thread_account_state,
+                    &mut thread_network_state
+                );
+                let (block, updated_account_state) = new_block.unwrap().unwrap();
+                
+                println!("{}\n\n", &block);
+                last_block = block;
+                thread_wallet = thread_wallet.remove_mined_claims(&last_block);
+                thread_account_state = updated_account_state;
+            }
+
+            tx.send((thread_wallet, thread_account_state, thread_network_state, thread_reward_state, last_block)).unwrap();
+
+        }).join().unwrap();
+
+        let (
+            mut loop_wallet, 
+            loop_account_state, 
+            loop_network_state,
+            loop_reward_state,
+            loop_last_block
+        ) = rx.recv().unwrap();
+    
+        loop_wallet = loop_wallet.get_balance(loop_account_state.clone()).unwrap();
+        
+        println!("{}\n\n", &loop_wallet);
+
+        wallet = loop_wallet;
+        account_state = loop_account_state;
+        network_state = loop_network_state;
+        reward_state = loop_reward_state;
+        last_block = loop_last_block;
+
+    }
 }
 
 
@@ -75,6 +162,7 @@ fn test_wallet_restore(pk: &str, account_state: AccountState) {
     let restored_pk = account_state
         .accounts_sk
         .get(pk);
+    
     println!("{:?}", &restored_pk);
 }
 
@@ -120,7 +208,7 @@ fn test_mine_blocks(
             data, 
             &mut wallet.clone(), 
             &mut account_state.clone(), 
-            &mut account_state.clone().claim_state.clone(), &mut network_state)
+            &mut network_state)
                 .unwrap()
                 .unwrap();
         last_block = new_block;

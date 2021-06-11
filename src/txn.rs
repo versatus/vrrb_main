@@ -1,7 +1,9 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::fmt;
 use serde::{Serialize, Deserialize};
+use crate::verifiable::Verifiable;
 use crate::{account::WalletAccount, vrrbcoin::Token};
+use crate::{claim::ClaimOption};
 use uuid::Uuid;
 use sha256::digest_bytes;
 
@@ -19,14 +21,22 @@ pub struct Txn {
 
 impl Txn {
 
-    pub fn new(wallet: WalletAccount, receiver: String, amount: u128) -> Txn {
+    pub fn new(
+        wallet: WalletAccount, 
+        receiver: String, 
+        amount: u128
+    ) -> Txn 
+    {
         let time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+    
         let payload = format!("{},{},{},{}", 
             &wallet.address.to_string(), 
             &wallet.public_key.to_string(), 
             &receiver, &amount.to_string()
         );
+    
         let signature = wallet.sign(payload).unwrap();
+    
         Txn {
             txn_id: digest_bytes(Uuid::new_v4().to_string().as_bytes()),
             txn_timestamp: time.as_nanos(),
@@ -37,6 +47,12 @@ impl Txn {
             txn_amount: amount,
             txn_signature: signature.to_string(),
         }
+    }
+}
+
+impl Verifiable for Txn {
+    fn is_valid(&self, _options: Option<ClaimOption>) -> Option<bool> {
+        Some(true)
     }
 }
 

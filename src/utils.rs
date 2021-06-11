@@ -1,5 +1,5 @@
 
-pub fn decay_calculator(initial: u32, epochs: u32) -> f64 {
+pub fn decay_calculator(initial: u128, epochs: u128) -> f64 {
     let b: f64 = 1.0f64 / initial as f64;
     let ln_b = b.log10();
 

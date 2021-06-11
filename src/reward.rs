@@ -4,19 +4,19 @@ use strum_macros::EnumIter;
 use crate::{state::NetworkState, utils::decay_calculator};
 
 // Generate a random variable reward to include in new blocks
-pub const TOTAL_NUGGETS: u32 = 80000000;
-pub const TOTAL_VEINS: u32 = 1400000;
-pub const TOTAL_MOTHERLODES: u32 = 20000;
-pub const N_BLOCKS_PER_EPOCH: u32 = 16000000;
-pub const NUGGET_FINAL_EPOCH: u16 = 300;
-pub const VEIN_FINAL_EPOCH: u8 = 200;
-pub const MOTHERLODE_FINAL_EPOCH: u8 = 100;
-pub const FLAKE_REWARD_RANGE: (u32, u32) = (1, 8);
-pub const GRAIN_REWARD_RANGE: (u32, u32) = (8, 64);
-pub const NUGGET_REWARD_RANGE: (u32, u32) = (64, 512);
-pub const VEIN_REWARD_RANGE: (u32, u32) = (512, 4096);
-pub const MOTHERLODE_REWARD_RANGE: (u32, u32) = (4096, 32769);
-pub const GENESIS_REWARD: u32 = 200_000_000;
+pub const TOTAL_NUGGETS: u128 = 80000000;
+pub const TOTAL_VEINS: u128 = 1400000;
+pub const TOTAL_MOTHERLODES: u128 = 20000;
+pub const N_BLOCKS_PER_EPOCH: u128 = 16000000;
+pub const NUGGET_FINAL_EPOCH: u128 = 300;
+pub const VEIN_FINAL_EPOCH: u128 = 200;
+pub const MOTHERLODE_FINAL_EPOCH: u128 = 100;
+pub const FLAKE_REWARD_RANGE: (u128, u128) = (1, 8);
+pub const GRAIN_REWARD_RANGE: (u128, u128) = (8, 64);
+pub const NUGGET_REWARD_RANGE: (u128, u128) = (64, 512);
+pub const VEIN_REWARD_RANGE: (u128, u128) = (512, 4096);
+pub const MOTHERLODE_REWARD_RANGE: (u128, u128) = (4096, 32769);
+pub const GENESIS_REWARD: u128 = 200_000_000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumIter)]
 pub enum Category {
     Flake(Option<u128>),
@@ -29,17 +29,17 @@ pub enum Category {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RewardState {
-    pub epoch: u32,
-    pub next_epoch_block: u32,
-    pub current_block: u32,
-    pub n_nuggets_remaining: u32,
-    pub n_veins_remaining: u32,
-    pub n_motherlodes_remaining: u32,
-    pub n_nuggets_current_epoch: u32,
-    pub n_veins_current_epoch: u32,
-    pub n_motherlodes_current_epoch: u32,
-    pub n_flakes_current_epoch: u32,
-    pub n_grains_current_epoch: u32,
+    pub epoch: u128,
+    pub next_epoch_block: u128,
+    pub current_block: u128,
+    pub n_nuggets_remaining: u128,
+    pub n_veins_remaining: u128,
+    pub n_motherlodes_remaining: u128,
+    pub n_nuggets_current_epoch: u128,
+    pub n_veins_current_epoch: u128,
+    pub n_motherlodes_current_epoch: u128,
+    pub n_flakes_current_epoch: u128,
+    pub n_grains_current_epoch: u128,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,18 +51,18 @@ pub struct Reward {
 
 impl RewardState {
     pub fn start(network_state: &mut NetworkState) -> RewardState {
-        let n_nuggets_ce: u32 = (decay_calculator(
-            TOTAL_NUGGETS, NUGGET_FINAL_EPOCH as u32) * 
-            TOTAL_NUGGETS as f64) as u32;
-        let n_veins_ce: u32 = (decay_calculator(
-            TOTAL_NUGGETS, NUGGET_FINAL_EPOCH as u32) * 
-            TOTAL_NUGGETS as f64) as u32;
-        let n_motherlodes_ce: u32 = (decay_calculator(
-            TOTAL_NUGGETS, NUGGET_FINAL_EPOCH as u32) * 
-            TOTAL_NUGGETS as f64) as u32;
+        let n_nuggets_ce: u128 = (decay_calculator(
+            TOTAL_NUGGETS, NUGGET_FINAL_EPOCH) * 
+            TOTAL_NUGGETS as f64) as u128;
+        let n_veins_ce: u128 = (decay_calculator(
+            TOTAL_NUGGETS, NUGGET_FINAL_EPOCH) * 
+            TOTAL_NUGGETS as f64) as u128;
+        let n_motherlodes_ce: u128 = (decay_calculator(
+            TOTAL_NUGGETS, NUGGET_FINAL_EPOCH) * 
+            TOTAL_NUGGETS as f64) as u128;
         let remaining_blocks = N_BLOCKS_PER_EPOCH - (n_nuggets_ce + n_veins_ce + n_motherlodes_ce);
-        let n_flakes_ce: u32 = (remaining_blocks as f64 * 0.6f64) as u32;
-        let n_grains_ce: u32 = (remaining_blocks as f64 * 0.4f64) as u32;
+        let n_flakes_ce: u128 = (remaining_blocks as f64 * 0.6f64) as u128;
+        let n_grains_ce: u128 = (remaining_blocks as f64 * 0.4f64) as u128;
 
         let reward_state = RewardState {
             current_block: 0,
@@ -82,12 +82,12 @@ impl RewardState {
         reward_state
     }
     pub fn update(&self, last_reward: Category, network_state: &mut NetworkState) -> Self {
-        let mut n_nuggets_ce: u32 = self.n_nuggets_current_epoch;
-        let mut n_veins_ce: u32 = self.n_veins_current_epoch;
-        let mut n_motherlodes_ce: u32 = self.n_motherlodes_current_epoch;
-        let mut n_flakes_ce: u32 = self.n_flakes_current_epoch;
-        let mut n_grains_ce: u32 = self.n_grains_current_epoch;
-        let remaining_blocks_in_ce: u32 = self.next_epoch_block - (self.current_block + 1);
+        let mut n_nuggets_ce: u128 = self.n_nuggets_current_epoch;
+        let mut n_veins_ce: u128 = self.n_veins_current_epoch;
+        let mut n_motherlodes_ce: u128 = self.n_motherlodes_current_epoch;
+        let mut n_flakes_ce: u128 = self.n_flakes_current_epoch;
+        let mut n_grains_ce: u128 = self.n_grains_current_epoch;
+        let remaining_blocks_in_ce: u128 = self.next_epoch_block - (self.current_block + 1);
         if remaining_blocks_in_ce != 0 {
             n_nuggets_ce = match last_reward {
                 Category::Nugget(Some(_)) => n_nuggets_ce - 1,
@@ -111,17 +111,17 @@ impl RewardState {
             };
         } else {
             n_nuggets_ce = (decay_calculator(
-            TOTAL_NUGGETS, NUGGET_FINAL_EPOCH as u32) * 
-            self.n_nuggets_remaining as f64) as u32;
+            TOTAL_NUGGETS, NUGGET_FINAL_EPOCH) * 
+            self.n_nuggets_remaining as f64) as u128;
             n_veins_ce = (decay_calculator(
-                TOTAL_NUGGETS, NUGGET_FINAL_EPOCH as u32) * 
-                self.n_veins_remaining as f64) as u32;
+                TOTAL_NUGGETS, NUGGET_FINAL_EPOCH) * 
+                self.n_veins_remaining as f64) as u128;
             n_motherlodes_ce = (decay_calculator(
-                TOTAL_NUGGETS, NUGGET_FINAL_EPOCH as u32) * 
-                self.n_motherlodes_remaining as f64) as u32;
+                TOTAL_NUGGETS, NUGGET_FINAL_EPOCH) * 
+                self.n_motherlodes_remaining as f64) as u128;
             let remaining_blocks = N_BLOCKS_PER_EPOCH - (n_nuggets_ce + n_veins_ce + n_motherlodes_ce);
-            n_flakes_ce = (remaining_blocks as f64 * 0.6f64) as u32;
-            n_grains_ce = (remaining_blocks as f64 * 0.4f64) as u32;
+            n_flakes_ce = (remaining_blocks as f64 * 0.6f64) as u128;
+            n_grains_ce = (remaining_blocks as f64 * 0.4f64) as u128;
         }
 
         let updated_reward_state = Self {

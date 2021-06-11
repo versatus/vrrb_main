@@ -1,9 +1,11 @@
+use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::fmt;
+use secp256k1::{PublicKey, Signature};
 use serde::{Serialize, Deserialize};
+use crate::validator::ValidatorOptions;
 use crate::verifiable::Verifiable;
 use crate::{account::WalletAccount, vrrbcoin::Token};
-use crate::{claim::ClaimOption};
 use uuid::Uuid;
 use sha256::digest_bytes;
 
@@ -25,8 +27,7 @@ impl Txn {
         wallet: WalletAccount, 
         receiver: String, 
         amount: u128
-    ) -> Txn 
-    {
+    ) -> Txn {
         let time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
     
         let payload = format!("{},{},{},{}", 
@@ -48,10 +49,52 @@ impl Txn {
             txn_signature: signature.to_string(),
         }
     }
+
+    pub fn to_message(&self) -> String {
+        serde_json::to_string(&self).unwrap()
+    }
 }
 
 impl Verifiable for Txn {
-    fn is_valid(&self, _options: Option<ClaimOption>) -> Option<bool> {
+    fn is_valid(
+        &self, 
+        _options: Option<ValidatorOptions>,
+    ) -> Option<bool> 
+    {
+        let message = self.to_message();
+        let signature = Signature::from_str(&self.txn_signature).unwrap();
+        let pk = PublicKey::from_str(&self.sender_public_key).unwrap();
+
+        if WalletAccount::verify(message, signature, pk).unwrap() == false {
+            return Some(false);
+        }
+
+        match _options {
+            
+            Some(ValidatorOptions::Transaction(account_state)) => {
+                let balance = account_state.available_coin_balances.get(&self.sender_public_key);
+                match balance {
+                    Some(bal) => {
+                        if bal < &self.txn_amount {
+                            return Some(false)
+                        }
+                    },
+                    None => {
+                        return Some(false)
+                    }
+                }
+
+                let receiver = account_state.accounts_address.get(&self.receiver_address); 
+                
+                if receiver == None {
+                    return Some(false)
+                }
+                
+            },
+            None => panic!("Message structure is invalid"),
+            _ => panic!("Message Option is invalid")
+        }
+
         Some(true)
     }
 }
@@ -81,5 +124,3 @@ impl fmt::Display for Txn {
         )
     }
 }
-
-// TODO: Write tests for this module

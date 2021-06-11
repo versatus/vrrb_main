@@ -2,10 +2,11 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 use crate::state::NetworkState;
+use crate::validator::ValidatorOptions;
 use crate::verifiable::Verifiable;
 use crate::{
     account::{WalletAccount, AccountState, StateOption::{Miner}}, 
-    claim::{Claim, ClaimOption}, 
+    claim::{Claim}, 
     txn::Txn, 
     reward::{RewardState, Reward},
 };
@@ -14,6 +15,9 @@ use serde::{Deserialize, Serialize};
 use sha256::digest_bytes;
 use std::io::Error;
 use std::fmt;
+use secp256k1::{
+    key::{PublicKey}
+};
 
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -205,7 +209,7 @@ impl Block {
                 .clone()
                 .claim_payload.unwrap(), 
                 claim_signature, 
-                miner.public_key.clone()
+                PublicKey::from_str(&miner.public_key.clone()).unwrap(),
             ) {
                 // if it is indeed owned by the miner attempting to mine this block
                 Ok(_t) => {
@@ -290,7 +294,7 @@ impl fmt::Display for Block {
 }
 
 impl Verifiable for Block {
-    fn is_valid(&self, options: Option<ClaimOption>) -> Option<bool> {
+    fn is_valid(&self, options: Option<ValidatorOptions>) -> Option<bool> {
         match options {
             Some(_claim_option) => {
                 panic!("Invalid options for block");

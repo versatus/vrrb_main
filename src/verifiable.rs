@@ -1,5 +1,11 @@
-use crate::claim::ClaimOption;
+use crate::validator::ValidatorOptions;
 
 pub trait Verifiable {
-    fn is_valid(&self, _options: Option<ClaimOption>) -> Option<bool> { Some(false) }
+    fn is_valid(
+        &self, 
+        _options: Option<ValidatorOptions>
+    ) -> Option<bool> 
+    { 
+        Some(false) 
+    }
 }

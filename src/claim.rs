@@ -6,6 +6,7 @@ use std::fmt;
 use std::io::Error;
 use crate::account::{WalletAccount, AccountState, StateOption::ClaimAcquired};
 use crate::state::NetworkState;
+use crate::validator::ValidatorOptions;
 use crate::verifiable::Verifiable;
 
 //  Claim receives
@@ -27,14 +28,6 @@ pub enum CustodianInfo {
     PublicKey(String),
     Signature(String),
 }
-
-pub enum ClaimOption {
-    Homestead,
-    Acquire,
-    Sell,
-    Stake,
-}
-
 
 // Claim state is a structure that contains
 // all the relevant information about the 
@@ -214,14 +207,16 @@ impl Claim {
     {
         account_state.claim_state.staked_claims.entry(
             wallet.public_key.to_string()).or_insert(HashMap::new());
-        let mut staked_claims = account_state.claim_state.staked_claims[&wallet.public_key.to_string()].clone();
+        let mut staked_claims = account_state
+            .claim_state
+            .staked_claims[&wallet.public_key.to_string()]
+            .clone();
         staked_claims.entry(self.maturation_time).or_insert(self.clone());
         account_state.claim_state.staked_claims.insert(wallet.public_key.to_string(), staked_claims);
         
         // TODO: Convert this to an account_state.update() need to add a matching arm
         // on the account state, and a StateOption::ClaimStaked.
         account_state.to_owned()
-
     }
 }
 
@@ -273,15 +268,25 @@ impl Clone for ClaimState {
 }
 
 impl Verifiable for Claim {
-    fn is_valid(&self, options: Option<ClaimOption>) -> Option<bool> {
+    fn is_valid(&self, options: Option<ValidatorOptions>) -> Option<bool> {
         match options {
             Some(claim_option) => {
                 match claim_option {
 
-                    ClaimOption::Homestead => { return Some(true) },
-                    ClaimOption::Acquire => { return Some(true) },
-                    ClaimOption::Sell => { return Some(true) },
-                    ClaimOption::Stake => { return Some(true) },
+                    ValidatorOptions::ClaimHomestead => { 
+                        return Some(true) 
+                    },
+                    ValidatorOptions::ClaimAcquire => { 
+                        return Some(true) 
+                    },
+                    ValidatorOptions::ClaimSell => { 
+                        return Some(true) 
+                    },
+                    ValidatorOptions::ClaimStake => { 
+                        return Some(true) 
+                    },
+                    _ => panic!("Message allocated to wrong process")
+
                 }
             },
             None => {
@@ -350,43 +355,6 @@ mod tests {
 
     #[test]
     fn test_claim_update_after_homestead() {
-
-        let mut network_state = NetworkState::restore("claim_test2_state.db");
-        let reward_state = RewardState::start(&mut network_state);
-        let mut account_state = AccountState::start();
-        let mut _claim_state = ClaimState::start();
-
-        let new_wallet = WalletAccount::new(&mut account_state, &mut network_state);
-        account_state = new_wallet.1;
-        let mut wallet = new_wallet.0;
-
-        let genesis = Block::genesis(
-            reward_state,
-            &mut wallet, 
-            &mut account_state, 
-            &mut network_state).unwrap();
-
-        let account_state = genesis.1;
-        let mut _last_block = genesis.0;
-        let mut largest_key = 0;
-        for (k, v) in account_state.claim_state.claims {
-            println!("{} -> {:?}", k, v);
-            if k > largest_key {
-                largest_key = k;
-            }
-        }
-
-        println!("{}", largest_key);
-            // .homestead(
-            //     &mut wallet, 
-            //     &mut claim_state, 
-            //     &mut account_state, 
-            //     &mut network_state)
-            // .unwrap();
-        
-        // assert_ne!(new_account_state.claim_state.claims, account_state.claim_state.claims);
-        // assert!(!new_account_state.claim_state.owned_claims.is_empty());
-        // assert!(claim_to_homestead.available, true);
     }
 
     #[test]

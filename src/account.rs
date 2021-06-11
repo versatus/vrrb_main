@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::fmt;
 use uuid::Uuid;
 use serde::{Serialize, Deserialize};
+// use crate::validator::Validator;
 use crate::{claim::{Claim, ClaimState}, vrrbcoin::Token, txn::Txn, block::Block, state::NetworkState};
 
 const STARTING_BALANCE: u128 = 1_000;
@@ -22,6 +23,7 @@ const STARTING_BALANCE: u128 = 1_000;
 // and is "approved" by the network via consensus after
 // each transaction and each block. It requires a hashmap
 // with a vector of hashmaps that contains information for restoring a wallet.
+#[derive(Serialize, Deserialize)]
 pub enum StateOption {
     // TODO: Change WalletAccount usage to tuples of types of 
     // data from the Wallet needed. Using actual WalletAccount object
@@ -29,7 +31,7 @@ pub enum StateOption {
     NewTxn(Txn),
     NewAccount(WalletAccount),
     ClaimAcquired(Claim),
-    ConfirmedTxn((Txn, Vec<WalletAccount>)),
+    ConfirmedTxn((Txn, Vec<String>)),
     Miner((WalletAccount, Block)),
 }
 
@@ -90,11 +92,11 @@ pub struct AccountState {
 /// also used to sign transactions, claims and mined blocks for network validation.
 /// Private key signatures can be verified with the wallet's public key, the message that was
 /// signed and the signature.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct WalletAccount {
-    private_key: SecretKey,
+    private_key: String,
     pub address: String,
-    pub public_key: PublicKey,
+    pub public_key: String,
     pub balance: u128,
     pub available_balance: u128,
     pub tokens: Vec<(Option<Token>, Option<Token>)>,
@@ -352,13 +354,12 @@ impl WalletAccount {
     ) -> (Self, AccountState) 
     
     {
-
         // Initialize a new Secp256k1 context
         let secp = Secp256k1::new();
 
         // Generate a random number used to seed the new keypair for the wallet
         // TODO: Instead of using the rng, use a mnemonic seed.
-        let mut rng = rand::thread_rng();
+        let mut rng  = rand::thread_rng();
         
         // Generate a new secret/public key pair using the random seed.
         let (secret_key, public_key) = secp.generate_keypair(&mut rng);
@@ -379,8 +380,8 @@ impl WalletAccount {
 
         // Generate a wallet struct by assigning the variables to the fields.
         let wallet = Self {
-            private_key: secret_key,
-            public_key: public_key,
+            private_key: secret_key.to_string(),
+            public_key: public_key.to_string(),
             address: address_prefix,
             balance: STARTING_BALANCE,
             available_balance: STARTING_BALANCE,
@@ -443,12 +444,12 @@ impl WalletAccount {
         let claims = vec![];
         
         // Restore the private key from the private key string.
-        let private_key = SecretKey::from_str(&private_key).unwrap();
+        let private_key = SecretKey::from_str(&private_key).unwrap().to_string();
         
         // Return a restored wallet.
         WalletAccount {
-            private_key: private_key,
-            public_key: PublicKey::from_str(&public_key).unwrap(),
+            private_key: private_key.clone(),
+            public_key: public_key.clone(),
             address: address.to_owned(),
             balance: *balance,
             available_balance: *available_balance,
@@ -478,8 +479,8 @@ impl WalletAccount {
         let message_hash = Message::from_slice(message_hash.as_bytes())?;
         
         let secp = Secp256k1::new();
-        
-        let sig = secp.sign(&message_hash, &self.private_key);
+        let sk = SecretKey::from_str(&self.private_key).unwrap();
+        let sig = secp.sign(&message_hash, &sk);
         
         Ok(sig)
     }
@@ -621,9 +622,9 @@ impl Clone for WalletAccount {
     
     {
         WalletAccount {
-            private_key: self.private_key,
+            private_key: self.private_key.clone(),
             address: self.address.clone(),
-            public_key: self.public_key,
+            public_key: self.public_key.clone(),
             balance: self.balance,
             available_balance: self.available_balance,
             tokens: self.tokens.clone(),
@@ -727,8 +728,8 @@ mod test {
             let wallet_to_restore_balance = account_state.total_coin_balances.get(wallet_to_restore_pk).unwrap();
             let wallet_to_restore_available_balance = account_state.available_coin_balances.get(wallet_to_restore_pk).unwrap();
             let restored_wallet = WalletAccount {
-                private_key: *secret_key_for_restoration,
-                public_key: PublicKey::from_str(&wallet_to_restore_pk).unwrap(),
+                private_key: secret_key_for_restoration.clone(),
+                public_key: wallet_to_restore_pk.clone(),
                 address: wallet_to_restore_address.to_owned(),
                 balance: wallet_to_restore_balance.to_owned(),
                 available_balance: wallet_to_restore_available_balance.to_owned(),

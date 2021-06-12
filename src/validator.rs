@@ -45,6 +45,15 @@ use serde::{Serialize, Deserialize};
 //              
 //         - Smart Contract Deployed
 //              * TODO: ALL Contract functionality requires development of VVM.
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum InvalidMessageError {
+    InvalidTxnError(String),
+    InvalidClaimAcquisition(String),
+    InvalidClaimHomesteading(String),
+    InvalidBlock(String),
+}
+
 pub enum ValidatorOptions {
     ClaimHomestead,
     ClaimAcquire,
@@ -315,25 +324,293 @@ mod tests {
     #[test]
     fn test_invalid_simple_transaction_bad_signature() {
 
+                let mut account_state = AccountState::start();
+        let mut network_state = NetworkState::restore("test_invalid_signature_transaction.db");
+        let _reward_state = RewardState::start(&mut network_state);
+        
+        let (
+            mut wallet_1, 
+            updated_account_state
+        ) = WalletAccount::new(
+            &mut account_state, 
+            &mut network_state
+        );
+        
+        account_state = updated_account_state;
+
+        let (
+            mut wallet_2,
+            updated_account_state
+        ) = WalletAccount::new(
+            &mut account_state,
+            &mut network_state,
+        );
+
+        account_state = updated_account_state;
+
+        wallet_1 = wallet_1.get_balance(account_state.clone()).unwrap();
+        wallet_2 = wallet_2.get_balance(account_state.clone()).unwrap();
+
+        let result = wallet_1.send_txn(
+            &mut account_state, 
+            (wallet_2.address.clone(), 15 as u128), 
+            &mut network_state);
+
+        match result {
+            Ok((updated_wallet, updated_account_state)) => {
+                wallet_1 = updated_wallet;
+                account_state = updated_account_state;
+
+                println!("{}", wallet_1);
+            }
+            Err(e) => println!("Error attempting to send txn to receiver: {} -> {}", 
+                wallet_2.address.clone(), 
+                e
+            )
+        }
+        let mut txn = account_state.pending[0].clone();
+        txn.txn_signature = "Malicious_Signature".to_string();
+
+        let (
+            validator_wallet, 
+            validator_account_state
+        ) = WalletAccount::new(
+            &mut account_state, 
+            &mut network_state
+        );
+
+        account_state = validator_account_state.clone();
+
+        println!("{:?}", account_state);
+
+        let validator = Validator::new(Message::Txn(txn), validator_wallet, validator_account_state);
+
+        match validator {
+            Some(validator) => {
+                let processed = validator.validate();
+                assert_eq!(processed.valid, false);
+            },
+            None => println!("Issue with validator, returned none")
+        }
     }
 
     #[test]
     fn test_invalid_simple_transaction_amount_exceeds_balance() {
 
+        let mut account_state = AccountState::start();
+        let mut network_state = NetworkState::restore("test_simple_invalid_amount_txn.db");
+        let _reward_state = RewardState::start(&mut network_state);
+        
+        let (
+            mut wallet_1, 
+            updated_account_state
+        ) = WalletAccount::new(
+            &mut account_state, 
+            &mut network_state
+        );
+        
+        account_state = updated_account_state;
+
+        let (
+            mut wallet_2,
+            updated_account_state
+        ) = WalletAccount::new(
+            &mut account_state,
+            &mut network_state,
+        );
+
+        account_state = updated_account_state;
+
+        wallet_1 = wallet_1.get_balance(account_state.clone()).unwrap();
+        wallet_2 = wallet_2.get_balance(account_state.clone()).unwrap();
+
+        let result = wallet_1.send_txn(
+            &mut account_state, 
+            (wallet_2.address.clone(), 50 as u128), 
+            &mut network_state);
+
+        match result {
+            Ok((updated_wallet, updated_account_state)) => {
+                wallet_1 = updated_wallet;
+                account_state = updated_account_state;
+
+                println!("{}", wallet_1);
+            }
+            Err(e) => println!("Error attempting to send txn to receiver: {} -> {}", 
+                wallet_2.address.clone(), 
+                e
+            )
+        }
+        let mut txn = account_state.pending[0].clone();
+
+        txn.txn_amount = 1005;
+
+        let (
+            validator_wallet, 
+            validator_account_state
+        ) = WalletAccount::new(
+            &mut account_state, 
+            &mut network_state
+        );
+
+        account_state = validator_account_state.clone();
+
+        println!("{:?}", account_state);
+
+        let validator = Validator::new(Message::Txn(txn), validator_wallet, validator_account_state);
+
+        match validator {
+            Some(validator) => {
+                let processed = validator.validate();
+                assert_eq!(processed.valid, false);
+            },
+            None => println!("Issue with validator, returned none")
+        }
     }
 
     #[test]
     fn test_invalid_simple_transaction_double_spend_attack() {
+
     }
 
     #[test]
     fn test_invalid_simple_transaction_non_existent_receiver() {
+        
+        let mut account_state = AccountState::start();
+        let mut network_state = NetworkState::restore("test_invalid_receiver_simple_txn.db");
+        let _reward_state = RewardState::start(&mut network_state);
+        
+        let (
+            mut wallet_1, 
+            updated_account_state
+        ) = WalletAccount::new(
+            &mut account_state, 
+            &mut network_state
+        );
+        
+        account_state = updated_account_state;
 
+        let (
+            mut wallet_2,
+            _updated_account_state
+        ) = WalletAccount::new(
+            &mut account_state,
+            &mut network_state,
+        );
+
+        wallet_1 = wallet_1.get_balance(account_state.clone()).unwrap();
+        wallet_2 = wallet_2.get_balance(account_state.clone()).unwrap();
+
+        let result = wallet_1.send_txn(
+            &mut account_state, 
+            (wallet_2.address.clone(), 15 as u128), 
+            &mut network_state);
+
+        match result {
+            Ok((updated_wallet, updated_account_state)) => {
+                wallet_1 = updated_wallet;
+                account_state = updated_account_state;
+
+                println!("{}", wallet_1);
+            }
+            Err(e) => println!("Error attempting to send txn to receiver: {} -> {}", 
+                wallet_2.address.clone(), 
+                e
+            )
+        }
+        
+        let txn = account_state.pending[0].clone();
+
+        let (
+            validator_wallet, 
+            validator_account_state
+        ) = WalletAccount::new(
+            &mut account_state, 
+            &mut network_state
+        );
+
+        account_state = validator_account_state.clone();
+
+        println!("{:?}", account_state);
+
+        let validator = Validator::new(Message::Txn(txn), validator_wallet, validator_account_state);
+
+        match validator {
+            Some(validator) => {
+                let processed = validator.validate();
+                assert_eq!(processed.valid, false);
+            },
+            None => println!("Issue with validator, returned none")
+        }
     }
 
     #[test]
     fn test_invalid_simple_transaction_non_existent_sender_in_last_confirmed_state() {
 
+        let mut account_state = AccountState::start();
+        let mut network_state = NetworkState::restore("test_invalid_receiver_simple_txn.db");
+        let _reward_state = RewardState::start(&mut network_state);
+        
+        let (
+            mut wallet_1, 
+            updated_account_state
+        ) = WalletAccount::new(
+            &mut account_state, 
+            &mut network_state
+        );
+
+        let (
+            mut wallet_2,
+            updated_account_state
+        ) = WalletAccount::new(
+            &mut account_state,
+            &mut network_state,
+        );
+        account_state = updated_account_state;
+
+        wallet_2 = wallet_2.get_balance(account_state.clone()).unwrap();
+
+        let result = wallet_1.send_txn(
+            &mut account_state, 
+            (wallet_2.address.clone(), 15 as u128), 
+            &mut network_state);
+
+        match result {
+            Ok((updated_wallet, updated_account_state)) => {
+                wallet_1 = updated_wallet;
+                account_state = updated_account_state;
+
+                println!("{}", wallet_1);
+            }
+            Err(e) => println!("Error attempting to send txn to receiver: {} -> {}", 
+                wallet_2.address.clone(), 
+                e
+            )
+        }
+        
+        let txn = account_state.pending[0].clone();
+
+        let (
+            validator_wallet, 
+            validator_account_state
+        ) = WalletAccount::new(
+            &mut account_state, 
+            &mut network_state
+        );
+
+        account_state = validator_account_state.clone();
+
+        println!("{:?}", account_state);
+
+        let validator = Validator::new(Message::Txn(txn), validator_wallet, validator_account_state);
+
+        match validator {
+            Some(validator) => {
+                let processed = validator.validate();
+                assert_eq!(processed.valid, false);
+            },
+            None => println!("Issue with validator, returned none")
+        }
     }
 
     #[test]
@@ -370,6 +647,4 @@ mod tests {
     fn test_invalid_block_contains_invalid_transactions() {
 
     }
-
-
 }

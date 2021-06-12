@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::fmt;
 use uuid::Uuid;
 use serde::{Serialize, Deserialize};
+use crate::validator::InvalidMessageError;
 // use crate::validator::Validator;
 use crate::{claim::{Claim, ClaimState}, vrrbcoin::Token, txn::Txn, block::Block, state::NetworkState};
 
@@ -136,7 +137,7 @@ impl AccountState {
         &mut self, 
         value: StateOption, 
         network_state: &mut NetworkState
-    ) -> Result<Self, Error> 
+    ) -> Result<Self, InvalidMessageError> 
     
     {
        match value {
@@ -186,69 +187,80 @@ impl AccountState {
                 
                 // get the receiver's public key from the AccountState accounts_address field
                 // which is a hashmap containing the address as the key and the public key as the value
-                let receiver_pk = self.accounts_address.get(&txn.receiver_address).unwrap();
-                
-                // get the sender's public key from the AccountState accounts_address field
-                // which is a hashmap containing the address as the key and the public key as the value
-                let sender_pk = self.accounts_address.get(&txn.sender_address).unwrap();
+                let receiver = self.accounts_address.get(&txn.receiver_address);
+                match receiver {
+                    Some(receiver_pk) => {
+                        let receiver_pk = receiver_pk;
 
-                // get the sender's coin balance as mutable, from the availabe_coin_balances field
-                // in the account_state object, which takes the public key as the key and the
-                // available balance as the value, 
-                
-                let mut sender_avail_bal = *self.available_coin_balances
-                                                .get_mut(sender_pk)
-                                                .unwrap();
+                        // get the sender's public key from the AccountState accounts_address field
+                        // which is a hashmap containing the address as the key and the public key as the value
 
-                // Check if the available balance is less than or equal to the transaction amount + txn fee
-                // if not return an error subtract the tranasaction amount and 
-                // set the resulting value (senders available balance - transaction amount)
-                // and assign it to the sender_avail_balance variable
-                
-                // TODO: include the transaction fee in the calculation to ensure balance
-                // is greater than or equal to transaction amount + tx fee.
-                
-                // TODO: all of this can be done by the validator component when built, this
-                // should simply check whether the transaction has the correct number of validators
-                // to be confirmed and eligible for mining, or needs to be confirmed, in which case
-                // it will be set to the validator pool and allocated to validators if it hasn't
-                // already been. 
-                
-                // TODO: need to think through the txn allocation to validators
-                // to ensure that all validators are allocated an equal number of transactions.
-                
-                // TODO: if an error is propagated, there is no need to panic, this should be handled
-                // by simply informing the sender wallet that it attempted to send more than it had.
-                if sender_avail_bal < txn.txn_amount {
-                    return Err(Error::InvalidMessage);
-                } else {
+                        // get the sender's coin balance as mutable, from the availabe_coin_balances field
+                        // in the account_state object, which takes the public key as the key and the
+                        // available balance as the value, 
+                        let sender = self.accounts_address.get(&txn.sender_address);
 
-                    // If there available balance is greater than the txn amount + txn fee (TODO)
-                    // then subtract the amount from the balance.
-                    sender_avail_bal -= txn.txn_amount;
+                        match sender {
+                            
+                            Some(sender_pk) => {
+                                let sender_pk = sender_pk;
 
-                    // Add the amount to the receiver balance by getting the entry in the
-                    // total_coin_balances field in the AccountState for the receiver
-                    // public key as mutable, add the transaction fee and set it to
-                    // the receiver total balance variable being initalized
-                    let receiver_total_bal = *self.total_coin_balances
-                                                .get_mut(receiver_pk)
-                                                .unwrap() + txn.txn_amount;
+                                let sender_avail_bal = *self.available_coin_balances
+                                                                .get_mut(sender_pk)
+                                                                .unwrap();
+                                
+                                let balance_check = sender_avail_bal.checked_sub(txn.txn_amount);
 
-                    // Update the available balance of the sender
-                    self.available_coin_balances.insert(sender_pk.to_owned(), sender_avail_bal);
+                                match balance_check {
 
-                    // update the total balance of the receiver
-                    self.total_coin_balances.insert(receiver_pk.to_owned(), receiver_total_bal);
-                    
-                    // Push the transaction to pending transactions to be confirmed by validators.
-                    self.pending.push(txn);
-                    
-                    // Update the network state (the pickle db) with the updated account state information.
-                    network_state.update(self.clone(), "account_state");
-                    
-                    // Return the updated account state wrapped in an Ok() Result variant.
-                    return Ok(self.to_owned());
+                                    Some(bal) => {
+                                        // Add the amount to the receiver balance by getting the entry in the
+                                        // total_coin_balances field in the AccountState for the receiver
+                                        // public key as mutable, add the transaction fee and set it to
+                                        // the receiver total balance variable being initalized
+                                        let receiver_total_bal = self.total_coin_balances
+                                                                        .get_mut(receiver_pk)
+                                                                        .unwrap()
+                                                                        .checked_add(txn.txn_amount)
+                                                                        .unwrap();
+
+                                        // Update the available balance of the sender
+                                        self.available_coin_balances
+                                            .insert(sender_pk.to_owned(), bal);
+
+                                        // update the total balance of the receiver
+                                        self.total_coin_balances
+                                            .insert(
+                                                receiver_pk.to_owned(), 
+                                                receiver_total_bal
+                                            );
+                                        
+                                        // Push the transaction to pending transactions to be confirmed by validators.
+                                        self.pending.push(txn);
+                                        
+                                        // Update the network state (the pickle db) with the updated account state information.
+                                        network_state
+                                            .update(
+                                                self.clone(), 
+                                                "account_state"
+                                            );
+                                        
+                                        // Return the updated account state wrapped in an Ok() Result variant.
+                                        return Ok(self.to_owned());
+                                    },
+                                None => {
+                                    return Err(InvalidMessageError::InvalidTxnError("Amount Exceeds Balance".to_string()));
+                                    }
+                                }
+                            },
+                            None => {
+                                return Err(InvalidMessageError::InvalidTxnError("Sender is non-existent".to_string()))
+                            }
+                        }
+                    },
+                    None => {
+                        return Err(InvalidMessageError::InvalidTxnError("The receiver is non-existent".to_string()));
+                    }
                 }
             },
 
@@ -398,11 +410,22 @@ impl WalletAccount {
             StateOption::NewAccount(
                 wallet.clone()), 
                 network_state
-            ).unwrap();
+            );
+
+        match updated_account_state {
+            Ok(acccount_state) => {
+                let updated_account_state = acccount_state;
+                return (wallet, updated_account_state)
+            },
+            Err(invalid_txn) => {
+                println!("{:?}", invalid_txn);
+                return (wallet, account_state.clone());
+            }
+        }
         
         // Return the wallet and account state
         // TODO: Return a Result for error propagation and handling.
-        (wallet, updated_account_state)
+
     }
 
     // method for restoring a wallet from the private key

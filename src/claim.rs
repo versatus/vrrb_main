@@ -1,13 +1,17 @@
+use bytebuffer::ByteBuffer;
+use secp256k1::{Secp256k1, Message, Error};
+use secp256k1::{PublicKey, Signature};
 use serde::{Serialize, Deserialize};
+use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::fmt;
-use std::io::Error;
 use crate::account::{WalletAccount, AccountState, StateOption::ClaimAcquired};
 use crate::state::NetworkState;
 use crate::validator::ValidatorOptions;
 use crate::verifiable::Verifiable;
+use crate::arbiter::Arbiter;
 
 //  Claim receives
 //      - a maturation time (UNIX Timestamp in nanoseconds)
@@ -27,6 +31,7 @@ pub enum CustodianInfo {
     Address(String),
     PublicKey(String),
     Signature(String),
+    AcquiredFrom(String),
 }
 
 // Claim state is a structure that contains
@@ -44,11 +49,12 @@ pub struct ClaimState {
 #[derive(Debug, Eq, Deserialize, PartialEq, Serialize)]
 pub struct Claim {
     pub maturation_time: u128,
-    pub price: i32,
+    pub price: u32,
     pub available: bool,
     pub chain_of_custody: HashMap<String, HashMap<String, Option<CustodianInfo>>>,
     pub current_owner: (Option<String>, Option<String>, Option<String>),
     pub claim_payload: Option<String>,
+    pub acquisition_time: Option<u128>,
 }
 
 impl ClaimState {
@@ -87,17 +93,19 @@ impl Claim {
             chain_of_custody: HashMap::new(),
             current_owner: (None, None, None),
             claim_payload: None,
+            acquisition_time: None,
         }
     }
 
     pub fn update(
         &self,
-        price: i32,
+        price: u32,
         available: bool,
         acquirer: String,
         acquisition_timestamp: u128,
         current_owner: (Option<String>, Option<String>, Option<String>),
         claim_payload: Option<String>,
+        acquisition_time: Option<u128>,
         claim_state: &mut ClaimState,
         account_state: &mut AccountState,
         network_state: &mut NetworkState,
@@ -124,6 +132,7 @@ impl Claim {
             chain_of_custody: new_custodian,
             current_owner: current_owner,
             claim_payload: claim_payload,
+            acquisition_time,
             ..*self
         };
         
@@ -163,7 +172,7 @@ impl Claim {
 
             let mut cloned_wallet = wallet.clone();
             
-            let signature = wallet.sign(payload.clone()).unwrap();
+            let signature = wallet.sign(&payload.clone()).unwrap();
             
             let (
                 claim, 
@@ -177,6 +186,7 @@ impl Claim {
                 Some(wallet.public_key.to_string()),
                 Some(signature.to_string())),
                 Some(payload),
+                Some(time.as_nanos()),
                 claim_state,
                 account_state,
                 network_state,
@@ -218,6 +228,44 @@ impl Claim {
         // on the account state, and a StateOption::ClaimStaked.
         account_state.to_owned()
     }
+
+    pub fn to_message(&self) -> String {
+        serde_json::to_string(&self).unwrap()
+    }
+
+    pub fn verify(&self,
+        signature: &Signature,
+        pk: &PublicKey
+    ) -> Result<bool, Error> 
+    
+    {
+        let message_bytes = self.claim_payload.clone().unwrap().as_bytes().to_owned();
+
+        let mut buffer = ByteBuffer::new();
+        
+        buffer.write_bytes(&message_bytes);
+        
+        while buffer.len() < 32 {
+            buffer.write_u8(0);
+        }
+        
+        let new_message = buffer.to_bytes();
+        
+        let message_hash = blake3::hash(&new_message);
+        
+        let message_hash = Message::from_slice(message_hash.as_bytes())?;
+        
+        let secp = Secp256k1::new();
+        
+        let valid = secp.verify(&message_hash, signature, pk);
+        
+        match valid {
+
+            Ok(()) => Ok(true),
+            _ => Err(Error::IncorrectSignature),
+        
+        }
+    }
 }
 
 impl fmt::Display for Claim {
@@ -250,6 +298,7 @@ impl Clone for Claim {
             chain_of_custody: self.chain_of_custody.clone(),
             current_owner: self.current_owner.clone(),
             claim_payload: self.claim_payload.clone(),
+            acquisition_time: self.acquisition_time.clone(),
         }
     }
 }
@@ -273,20 +322,116 @@ impl Verifiable for Claim {
             Some(claim_option) => {
                 match claim_option {
 
-                    ValidatorOptions::ClaimHomestead => { 
+                    ValidatorOptions::ClaimHomestead(account_state) => {
+                        let signature = Signature::from_str(&self.clone().current_owner.2.unwrap()).unwrap();
+                        let pk = PublicKey::from_str(&self.clone().current_owner.1.unwrap()).unwrap();
+                        let valid_signature = self.verify(&signature, &pk).unwrap();
+
+                        if valid_signature == false {
+                            return Some(false);
+                        }
+
+                        let valid_timestamp_unowned = account_state.claim_state.owned_claims
+                                                                     .get(&self.maturation_time);
+                        
+                        match valid_timestamp_unowned {
+                            Some(claim) => {
+                                if self.current_owner != claim.current_owner {
+                                    if self.acquisition_time > claim.acquisition_time {
+                                        return Some(false)
+                                    } else if self.acquisition_time == claim.acquisition_time {
+                                        println!("this is a tie, Tie handling procedure to commence");
+                                        let addresses = vec![self.clone().current_owner.1.unwrap(), claim.clone().current_owner.1.unwrap()];
+                                        let mut arbiter = Arbiter::new(addresses);
+                                        arbiter.tie_handler();
+                                        match arbiter.winner {
+                                            Some((pubkey, _coin_flip)) => {
+                                                if pubkey == self.clone().current_owner.1.unwrap() {
+                                                    return Some(true)
+                                                }
+                                            }, None => {
+                                                panic!("Something went wrong. The arbiter should always contain a winner!");
+                                            }
+                                        }
+
+                                    } else {
+                                        println!("There is a current owner, but you homesteaded first, your claim is valid");
+                                        return Some(true)  
+                                    }
+                                    return Some(false)
+                                }
+                            },
+                            None => { return Some(false); }
+                        }
+
+                        return Some(true)
+                    },
+                    ValidatorOptions::ClaimAcquire(account_state, acquirer_pk) => {
+                        let signature = Signature::from_str(&self.clone().current_owner.2.unwrap()).unwrap();
+                        let pk = PublicKey::from_str(&self.clone().current_owner.1.unwrap()).unwrap();
+                        let valid_signature = self.verify(&signature, &pk).unwrap();
+
+                        if self.available == false {
+                            return Some(false)
+                        }
+
+                        match account_state.clone().available_coin_balances.get(&acquirer_pk) {
+                            Some(bal) => {
+                                if *bal < self.price as u128 {
+                                    return Some(false)
+                                }
+                            },
+                            None => {
+                                return Some(false)
+                            }
+                        }
+
+                        if valid_signature == false {
+                            return Some(false);
+                        }
+
+                        let valid_timestamp_owned = account_state.claim_state.owned_claims
+                                                                     .get(&self.maturation_time);
+
+                        match valid_timestamp_owned {
+                            Some(claim) => {
+                                if claim.current_owner != self.clone().current_owner {
+                                    return Some(false)
+                                }
+
+                                if claim.maturation_time >= 
+                                SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() {
+                                    return Some(false)
+                                }
+
+                                let is_staked = account_state.claim_state.staked_claims.get(&pk.to_string());
+                                match is_staked {
+                                    Some(map) => {
+                                        let matched_claim = map.get(&self.maturation_time);
+                                        match matched_claim {
+                                            Some(_claim) => {
+                                                return Some(false)
+                                            },
+                                            None => {}
+                                        }
+                                    },
+                                    None => {}
+                                }
+                            },
+                            None => {
+                                return Some(false)
+                            }
+                        }
                         return Some(true) 
                     },
-                    ValidatorOptions::ClaimAcquire => { 
+                    ValidatorOptions::ClaimSell(account_state) => {
+
                         return Some(true) 
                     },
-                    ValidatorOptions::ClaimSell => { 
-                        return Some(true) 
-                    },
-                    ValidatorOptions::ClaimStake => { 
+                    ValidatorOptions::ClaimStake(account_state) => { 
                         return Some(true) 
                     },
                     _ => panic!("Message allocated to wrong process")
-
                 }
             },
             None => {
@@ -297,7 +442,6 @@ impl Verifiable for Claim {
 }
 
 #[cfg(test)]
-
 mod tests {
     use super::*;
     use crate::{reward::RewardState, block::Block};

@@ -4,14 +4,14 @@ use secp256k1::{
     key::{PublicKey, SecretKey},
     Signature,
 };
-use std::str::FromStr;
+use std::str::{FromStr};
 use secp256k1::{Message, Secp256k1};
 use sha256::digest_bytes;
 use std::collections::HashMap;
 use std::fmt;
 use uuid::Uuid;
 use serde::{Serialize, Deserialize};
-use crate::validator::InvalidMessageError;
+use crate::validator::{InvalidMessageError, Validator};
 // use crate::validator::Validator;
 use crate::{claim::{Claim, ClaimState}, vrrbcoin::Token, txn::Txn, block::Block, state::NetworkState};
 
@@ -32,7 +32,7 @@ pub enum StateOption {
     NewTxn(Txn),
     NewAccount(WalletAccount),
     ClaimAcquired(Claim),
-    ConfirmedTxn((Txn, Vec<String>)),
+    ConfirmedTxn((Txn, Vec<Validator>)),
     Miner((WalletAccount, Block)),
 }
 
@@ -74,14 +74,11 @@ pub struct AccountState {
     /// The local claim state.
     pub claim_state: ClaimState,
 
-    /// A vector of pending txns that have not been validated
-    /// consider changing this to a vec of (txn_id, txn_hash, signature) thruples
-    /// may speed up txn validation/processing time and save memory.
-    pub pending: Vec<Txn>,
+    /// A HashMap of txn_id -> (txn, Vec<Validator>)
+    pub pending: HashMap<String, (Txn, Vec<Validator>)>,
 
-    /// A vector of validated transactions that have not been included in a block.
-    /// All of these transactions are eligible to be included in the next block.
-    pub mineable: Vec<Txn>,
+    /// A HashMap of confirmed Txn's (Txn's with 2/3 Validator's valid_field == true)
+    pub mineable: HashMap<String, (Txn, Vec<Validator>)>,
 
     // TODO: Add a state hash, which will sha256 hash the entire state structure for
     // consensus purposes.
@@ -125,8 +122,8 @@ impl AccountState {
             available_coin_balances: HashMap::new(),
             token_balances: HashMap::new(),
             claim_state: ClaimState::start(),
-            pending: vec![],
-            mineable: vec![],
+            pending: HashMap::new(),
+            mineable: HashMap::new(),
         }
     }
 
@@ -236,7 +233,11 @@ impl AccountState {
                                             );
                                         
                                         // Push the transaction to pending transactions to be confirmed by validators.
-                                        self.pending.push(txn);
+                                        self.pending
+                                            .entry(
+                                                txn.clone().txn_id)
+                                                    .or_insert(
+                                                        (txn.clone(), vec![]));
                                         
                                         // Update the network state (the pickle db) with the updated account state information.
                                         network_state
@@ -483,7 +484,7 @@ impl WalletAccount {
     }
 
     /// Sign a message (transaction, claim, block, etc.)
-    pub fn sign(&self, message: String) -> Result<Signature, Error> {
+    pub fn sign(&self, message: &String) -> Result<Signature, Error> {
         
         let message_bytes = message.as_bytes().to_owned();
         
@@ -553,6 +554,7 @@ impl WalletAccount {
         &mut self, 
         account_state: AccountState
     ) -> Result<Self, Error> 
+
     {
         let (
             balance, 
@@ -585,9 +587,7 @@ impl WalletAccount {
             .map(|e| self.claims.remove(e));
         
         self.clone()
-    }
-
-    
+    }   
 
     pub fn send_txn(
         &mut self, 
@@ -610,6 +610,31 @@ impl WalletAccount {
                 updated_account_state.to_owned()
             )
         )
+    }
+
+    pub fn sell_claim(
+        &mut self, 
+        maturity_timestamp: u128, 
+        account_state: &mut AccountState,
+        price: u32,
+    ) -> Option<(Claim, AccountState)> {
+
+        let claim_to_sell = self.claims[
+            self.claims.iter()
+                .position(|x| x.clone().unwrap().maturation_time == maturity_timestamp).unwrap()]
+                .clone();
+
+        match claim_to_sell {
+            Some(mut claim) => {
+                claim.available = true;
+                claim.price = price;
+                // TODO: Add account state option to Update claim when claim goes up for sale.
+                return Some((claim, account_state.clone()))
+            },
+            None => {
+               return None
+            }
+        }
     }
 }
 

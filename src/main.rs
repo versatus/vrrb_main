@@ -37,7 +37,7 @@ fn main() {
             let mut thread_network_state = network_state;
 
             for (_ts, claim) in thread_account_state.clone().claim_state.claims {
-                let result = claim.homestead(
+                let result = claim.to_owned().homestead(
                     &mut thread_wallet, 
                     &mut thread_account_state.clone().claim_state, 
                     &mut thread_account_state, 
@@ -177,7 +177,7 @@ fn test_homestead_claims(
         let (
             updated_wallet, 
             updated_account_state
-            ) = claim.homestead(
+            ) = claim.to_owned().homestead(
                     &mut wallet.clone(), 
                     &mut claim_state.clone(), 
                     &mut account_state.clone(), 

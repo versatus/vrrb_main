@@ -338,7 +338,7 @@ mod tests {
         account_state = validator_account_state.clone();
         
         for (_ts, claim) in account_state.clone().claim_state.claims.iter() {
-            let (new_wallet, updated_account_state) = claim.homestead(
+            let (new_wallet, updated_account_state) = claim.to_owned().homestead(
                 &mut validator_wallet, 
                 &mut account_state.clone().claim_state, 
                 &mut account_state.clone(), 
@@ -441,7 +441,7 @@ mod tests {
         account_state = validator_account_state.clone();
         
         for (_ts, claim) in account_state.clone().claim_state.claims.iter() {
-            let (new_wallet, updated_account_state) = claim.homestead(
+            let (new_wallet, updated_account_state) = claim.to_owned().homestead(
                 &mut validator_wallet, 
                 &mut account_state.clone().claim_state, 
                 &mut account_state.clone(), 
@@ -543,7 +543,7 @@ mod tests {
         account_state = validator_account_state.clone();
         
         for (_ts, claim) in account_state.clone().claim_state.claims.iter() {
-            let (new_wallet, updated_account_state) = claim.homestead(
+            let (new_wallet, updated_account_state) = claim.to_owned().homestead(
                 &mut validator_wallet, 
                 &mut account_state.clone().claim_state, 
                 &mut account_state.clone(), 
@@ -656,7 +656,7 @@ mod tests {
         account_state = validator_account_state.clone();
 
         for (_ts, claim) in account_state.clone().claim_state.claims.iter() {
-            let (new_wallet, updated_account_state) = claim.homestead(
+            let (new_wallet, updated_account_state) = claim.to_owned().homestead(
                 &mut validator_wallet, 
                 &mut account_state.clone().claim_state, 
                 &mut account_state.clone(), 
@@ -779,7 +779,7 @@ mod tests {
         account_state = validator_account_state.clone();
         
         for (_ts, claim) in account_state.clone().claim_state.claims.iter() {
-            let (new_wallet, updated_account_state) = claim.homestead(
+            let (new_wallet, updated_account_state) = claim.to_owned().homestead(
                 &mut validator_wallet, 
                 &mut account_state.clone().claim_state, 
                 &mut account_state.clone(), 
@@ -873,7 +873,7 @@ mod tests {
         account_state = validator_account_state.clone();
         
         for (_ts, claim) in account_state.clone().claim_state.claims.iter() {
-            let (new_wallet, updated_account_state) = claim.homestead(
+            let (new_wallet, updated_account_state) = claim.to_owned().homestead(
                 &mut validator_wallet, 
                 &mut account_state.clone().claim_state, 
                 &mut account_state.clone(), 
@@ -957,7 +957,7 @@ mod tests {
         println!("{:?}", &claim_to_validate);
 
         for (_ts, claim) in account_state.clone().claim_state.claims.iter() {
-            let (new_wallet, updated_account_state) = claim.homestead(
+            let (new_wallet, updated_account_state) = claim.to_owned().homestead(
                 &mut validator_wallet, 
                 &mut account_state.clone().claim_state, 
                 &mut account_state.clone(), 

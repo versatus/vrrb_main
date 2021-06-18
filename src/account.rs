@@ -276,10 +276,10 @@ impl AccountState {
                 // struct itself as the value.
                 // TODO: break down PendingClaimAcquired and ConfirmedClaimAcquired as claim acquisition
                 // has to be validated before it can be set into the account_state's claim_state.
-                self.claim_state.owned_claims.entry(claim.maturation_time.clone()).or_insert(claim.clone());
+                self.claim_state.owned_claims.insert(claim.maturation_time.clone(),claim.clone());
                 
                 // Remove the claim from the account_state's claim_state's claims field since it is now owned
-                self.claim_state.claims.remove_entry(&claim.maturation_time).unwrap();
+                self.claim_state.claims.remove_entry(&claim.maturation_time);
                 
                 // update the network state.
                 network_state.update(self.clone(), "account_state");
@@ -623,12 +623,13 @@ impl WalletAccount {
             self.claims.iter()
                 .position(|x| x.clone().unwrap().maturation_time == maturity_timestamp).unwrap()]
                 .clone();
-
         match claim_to_sell {
             Some(mut claim) => {
                 claim.available = true;
                 claim.price = price;
                 // TODO: Add account state option to Update claim when claim goes up for sale.
+                account_state.claim_state.owned_claims.insert(claim.clone().maturation_time, claim.clone());
+
                 return Some((claim, account_state.clone()))
             },
             None => {

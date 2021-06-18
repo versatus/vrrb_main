@@ -88,6 +88,67 @@ impl Claim {
         }
     }
 
+    pub fn acquire(
+        &mut self,
+        acquirer: &mut WalletAccount,
+        account_state: &mut AccountState,
+        network_state: &mut NetworkState,
+    ) -> Option<(WalletAccount, AccountState)> 
+    {
+        if self.available {
+            let time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+            let seller_pk = self.clone().current_owner.1.unwrap();
+            let serialized_chain_of_custody =
+                serde_json::to_string(&self.chain_of_custody).unwrap();
+
+            let payload = format!(
+                "{},{},{},{}",
+                &self.maturation_time.to_string(),
+                &self.price.to_string(),
+                &self.available.to_string(),
+                &serialized_chain_of_custody
+            );
+
+            let mut cloned_wallet = acquirer.clone();
+
+            let signature = acquirer.sign(&payload.clone()).unwrap();
+
+            let (claim, claim_state, _updated_account_state) = self
+                .update(
+                    0,
+                    false,
+                    acquirer.address.clone(),
+                    time.as_nanos(),
+                    (
+                        Some(acquirer.address.clone()),
+                        Some(acquirer.public_key.to_string()),
+                        Some(signature.to_string()),
+                    ),
+                    Some(payload),
+                    Some(time.as_nanos()),
+                    &mut account_state.claim_state.clone(),
+                    account_state,
+                    network_state,
+                ).unwrap();
+            
+            if let Some(bal) = account_state.available_coin_balances.get_mut(&acquirer.public_key.to_string()) {
+                *bal += self.price as u128;
+            };
+
+            if let Some(bal) = account_state.total_coin_balances.get_mut(&seller_pk) {
+                *bal += self.price as u128;
+            }
+
+            network_state.update(claim_state, "claim_state");
+
+            cloned_wallet.claims.push(Some(claim.clone()));
+
+            return Some((cloned_wallet.to_owned(), account_state.to_owned()));
+        } else {
+            return None;
+        }
+    }
+
     pub fn valid_chain_of_custody(&self, current_owner: String) -> Option<bool> {
         let current_owner_custody = self.chain_of_custody
                                                                         .get(&current_owner).unwrap();
@@ -135,43 +196,36 @@ impl Claim {
         account_state: &mut AccountState,
         network_state: &mut NetworkState,
     ) -> Result<(Self, ClaimState, AccountState), Error> {
+
         let mut custodian_data = HashMap::new();
 
         let previous_owners = self.chain_of_custody.keys().len() as u32;
 
         if self.chain_of_custody.is_empty() {
             custodian_data
-                .entry("homesteader".to_string())
-                .or_insert(Some(CustodianInfo::Homesteader(true)));
+                .insert("homesteader".to_string(),Some(CustodianInfo::Homesteader(true)));
         } else {
             custodian_data
-                .entry("homesteader".to_string())
-                .or_insert(Some(CustodianInfo::Homesteader(false)));
+                .insert("homesteader".to_string(),Some(CustodianInfo::Homesteader(false)));
         }
 
         custodian_data
-            .entry("acquisition_timestamp".to_string())
-            .or_insert(Some(CustodianInfo::AcquisitionTimestamp(
-                acquisition_timestamp,
-            )));
+            .insert("acquisition_timestamp".to_string(), Some(
+                CustodianInfo::AcquisitionTimestamp(acquisition_timestamp)));
 
         custodian_data
-            .entry("acquired_from".to_string())
-            .or_insert(Some(CustodianInfo::AcquiredFrom(
+            .insert("acquired_from".to_string(),Some(CustodianInfo::AcquiredFrom(
                 self.clone().current_owner,
             )));
 
         custodian_data
-            .entry("acquisition_price".to_string())
-            .or_insert(Some(CustodianInfo::AcquisitionPrice(self.clone().price)));
+            .insert("acquisition_price".to_string(),Some(CustodianInfo::AcquisitionPrice(self.clone().price)));
 
         custodian_data
-            .entry("owner_number".to_string())
-            .or_insert(Some(CustodianInfo::OwnerNumber(previous_owners + 1)));
+            .insert("owner_number".to_string(), Some(CustodianInfo::OwnerNumber(previous_owners + 1)));
 
         self.chain_of_custody
-            .entry(acquirer)
-            .or_insert(custodian_data);
+            .insert(acquirer, custodian_data);
 
         let updated_claim = Self {
             price,
@@ -375,11 +429,13 @@ impl Verifiable for Claim {
 
                         // check the validity of the signature (verify method gets the payload
                         // from the subject (in this case the claim).
-                        let valid_signature = self.verify(&signature, &pk).unwrap();
+                        let valid_signature = self.verify(&signature, &pk);
 
                         // If the signature is invalid, the validator will return Some(false)
-                        if valid_signature == false {
-                            return Some(false);
+                        match valid_signature {
+                            Ok(false) => { return Some(false) },
+                            Err(_e) => { return Some(false)},
+                            _ => {},
                         }
 
                         // Extract the subject's maturation time from the account state's claim state field's own claims field
@@ -441,39 +497,39 @@ impl Verifiable for Claim {
                                     }
                                 }
                             }
-                            None => {}
+                            None => { return Some(false) }
                         }
                         // If nothing else returns false, then return true.
                         return Some(true);
                     }
-                    ValidatorOptions::ClaimAcquire(account_state, acquirer_pk) => {
+                    ValidatorOptions::ClaimAcquire(account_state, acquirer_address) => {
                         let signature =
                             Signature::from_str(&self.clone().current_owner.2.unwrap()).unwrap();
 
                         let pk =
                             PublicKey::from_str(&self.clone().current_owner.1.unwrap()).unwrap();
 
-                        let valid_signature = self.verify(&signature, &pk).unwrap();
-
-                        if self.available == false {
-                            return Some(false);
+                        let valid_signature = self.verify(&signature, &pk);
+                        
+                        match valid_signature {
+                            Ok(false) => { println!("invalid_signature"); return Some(false) },
+                            Err(_e) => { println!("invalid_signature"); return Some(false)},
+                            _ => {println!("Signature Valid!")},
                         }
-
+                        let acquirer_pk = account_state.accounts_address.get(&acquirer_address).unwrap();
                         match account_state
                             .clone()
                             .available_coin_balances
-                            .get(&acquirer_pk)
+                            .get(acquirer_pk)
                         {
                             Some(bal) => {
                                 if *bal < self.price as u128 {
                                     return Some(false);
+                                } else {
+                                    println!("Valid balance!")
                                 }
                             }
-                            None => return Some(false),
-                        }
-
-                        if valid_signature == false {
-                            return Some(false);
+                            None => {println!("Buyer not found!"); return Some(false)},
                         }
 
                         let valid_timestamp_owned = account_state
@@ -484,7 +540,10 @@ impl Verifiable for Claim {
                         match valid_timestamp_owned {
                             Some(claim) => {
                                 if claim.current_owner != self.clone().current_owner {
+                                    println!("Owner mismatch");
                                     return Some(false);
+                                } else {
+                                    println!("Valid owner!")
                                 }
 
                                 if claim.maturation_time
@@ -493,33 +552,56 @@ impl Verifiable for Claim {
                                         .unwrap()
                                         .as_nanos()
                                 {
+                                    println!("Claim Mature already");
                                     return Some(false);
+                                } else {
+                                    println!("Valid Timestamp!");
                                 }
 
+
+
+                                let previous_owner = self.chain_of_custody
+                                    .get(&acquirer_address)
+                                    .unwrap().get("acquired_from").unwrap();
+                                
+                                let previous_owner_pk = match previous_owner {
+                                    Some(CustodianInfo::AcquiredFrom(
+                                            (
+                                            _prev_owner_address, 
+                                            prev_owner_pk, 
+                                            _prev_owner_sig
+                                        ))) => { prev_owner_pk.clone().unwrap() },
+                                    None => { return Some(false) }
+                                    _ => panic!("Incorrect Formatting of Chain of Custody")
+                                };
+
                                 let is_staked =
-                                    account_state.claim_state.staked_claims.get(&pk.to_string());
+                                    account_state.claim_state.staked_claims.get(&previous_owner_pk);
                                 match is_staked {
                                     Some(map) => {
                                         let matched_claim = map.get(&self.maturation_time);
                                         match matched_claim {
-                                            Some(_claim) => return Some(false),
-                                            None => {}
+                                            Some(_claim) => {println!("claim is staked"); return Some(false)},
+                                            None => { println!("Claim not staked!")}
                                         }
                                     }
-                                    None => {}
+                                    None => {println!("Claim not staked!")}
+                                }
+
+                                let valid_chain_of_custody = self.valid_chain_of_custody(acquirer_address);
+
+                                match valid_chain_of_custody {
+                                    Some(false) => {println!("Invalid chain of custody"); return Some(false)},
+                                    None => {println!("Chain of custody check returned None"); return Some(false)}
+                                    _ => {}
                                 }
                             }
-                            None => return Some(false),
+                            None => { println!("Claim is unowned"); return Some(false)},
                         }
+                        println!("All checks passed!");
                         return Some(true);
-                    }
-                    ValidatorOptions::ClaimSell(_account_state) => {
-                        // Check that the owner placing the claim for sale is the current owner
-
-                        return Some(true);
-                    }
-                    ValidatorOptions::ClaimStake(_account_state) => return Some(true),
-                    _ => panic!("Message allocated to wrong process"),
+                    },
+                    _ => panic!("Allocated to the wrong process")
                 }
             }
             None => {

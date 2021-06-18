@@ -132,7 +132,7 @@ impl Claim {
                 ).unwrap();
             
             if let Some(bal) = account_state.available_coin_balances.get_mut(&acquirer.public_key.to_string()) {
-                *bal += self.price as u128;
+                *bal -= self.price as u128;
             };
 
             if let Some(bal) = account_state.total_coin_balances.get_mut(&seller_pk) {
@@ -151,35 +151,40 @@ impl Claim {
 
     pub fn valid_chain_of_custody(&self, current_owner: String) -> Option<bool> {
         let current_owner_custody = self.chain_of_custody
-                                                                        .get(&current_owner).unwrap();
-        let previous_owner = current_owner_custody.get("acquired_from").unwrap();
-
-        if previous_owner.clone().unwrap() == CustodianInfo::AcquiredFrom((None, None, None)) {
-            match self.chain_of_custody
-                .get(&current_owner)
-                .unwrap()
-                .get("homesteader")
-                .unwrap() {
-                
-                Some(custodian_info) => {
-                    match custodian_info {
-                        &CustodianInfo::Homesteader(true) => { return Some(true); },
-                        &CustodianInfo::Homesteader(false) => { return Some(false); },
-                        _ => { println!("Invalid Format!"); return Some(false); }
+                                                                        .get(&current_owner);
+        match current_owner_custody {
+            Some(map) => {
+                let previous_owner = current_owner_custody.unwrap().get("acquired_from").unwrap();
+            
+                if previous_owner.clone().unwrap() == CustodianInfo::AcquiredFrom((None, None, None)) {
+                    match self.chain_of_custody
+                        .get(&current_owner)
+                        .unwrap()
+                        .get("homesteader")
+                        .unwrap() {
+                        
+                        Some(custodian_info) => {
+                            match custodian_info {
+                                &CustodianInfo::Homesteader(true) => { return Some(true); },
+                                &CustodianInfo::Homesteader(false) => { return Some(false); },
+                                _ => { println!("Invalid Format!"); return Some(false); }
+                            }
+                        }, None => { println!("Something went wrong!"); return Some(false); }
                     }
-                }, None => { println!("Something went wrong!"); return Some(false); }
-            }
-        } else {
-            match previous_owner{
-                Some(custodian_info) => {
-                    match custodian_info {
-                        CustodianInfo::AcquiredFrom(
-                            (address, _pubkey, _signature)
-                        ) => { self.valid_chain_of_custody(address.clone().unwrap()) },
-                        _ => { println!("Invalid format!"); return None}
+                } else {
+                    match previous_owner{
+                        Some(custodian_info) => {
+                            match custodian_info {
+                                CustodianInfo::AcquiredFrom(
+                                    (address, _pubkey, _signature)
+                                ) => { self.valid_chain_of_custody(address.clone().unwrap()) },
+                                _ => { println!("Invalid format!"); return None }
+                            }
+                        }, None => { println!("Something went wrong"); return None }
                     }
-                }, None => { println!("Something went wrong"); return None }
-            }
+                }
+            },
+            None => { return Some(false) }
         }
     }
 
@@ -519,14 +524,14 @@ impl Verifiable for Claim {
                         let acquirer_pk = account_state.accounts_address.get(&acquirer_address).unwrap();
                         match account_state
                             .clone()
-                            .available_coin_balances
+                            .total_coin_balances
                             .get(acquirer_pk)
                         {
                             Some(bal) => {
                                 if *bal < self.price as u128 {
                                     return Some(false);
                                 } else {
-                                    println!("Valid balance!")
+                                    println!("Valid balance!");
                                 }
                             }
                             None => {println!("Buyer not found!"); return Some(false)},

@@ -243,6 +243,8 @@ impl Validator {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use super::*;
     use crate::{
         account::{
@@ -251,6 +253,7 @@ mod tests {
         }, 
         state::NetworkState,
         reward::RewardState,
+        claim::CustodianInfo,
     };
 
     #[test]
@@ -1540,8 +1543,6 @@ mod tests {
         let (mut acquirer_wallet, updated_account_state) = WalletAccount::new(&mut account_state, &mut network_state);
 
         account_state = updated_account_state;
-        println!("{:?}", &account_state);
-        println!("{}", &acquirer_wallet);
 
         if let Some(mut claim) = claim {
             let (updated_wallet, updated_account_state) = claim.acquire(
@@ -1641,62 +1642,11 @@ mod tests {
         
         let claim = homesteader_wallet.clone().claims.pop().unwrap();
 
-
-        // Currently panics! Should change to ensure that a malicious acquirer can't get through
-        // the validator.
         if let Some(mut claim) = claim {
             let (_updated_wallet, _updated_account_state) = claim.acquire(
                 &mut acquirer_wallet, &mut account_state, &mut network_state).unwrap();
-            
-            // acquirer_wallet = updated_wallet;
-            // account_state = updated_account_state;
+
         }
-
-        // let (
-        //     mut validator_wallet, 
-        //     updated_account_state
-        // ) = WalletAccount::new(
-        //         &mut account_state, &mut network_state
-        // );
-        
-        // account_state = updated_account_state;
-
-        // let claim_to_validate = account_state.clone().claim_state.owned_claims.get(ts).unwrap().to_owned();
-
-        // for (_ts, claim) in account_state.clone().claim_state.claims.iter() {
-        //     let (new_wallet, updated_account_state) = claim.to_owned().homestead(
-        //         &mut validator_wallet, 
-        //         &mut account_state.clone().claim_state, 
-        //         &mut account_state.clone(), 
-        //         &mut network_state
-        //     ).unwrap();
-
-        //     validator_wallet = new_wallet;
-        //     account_state = updated_account_state;
-        // }
-
-        // for claim in validator_wallet.clone().claims.iter() {
-        //     let updated_account_state = claim.clone().unwrap().stake(validator_wallet.clone(), &mut account_state);
-        //     account_state = updated_account_state;
-        // }
-
-        // let validator = Validator::new(
-        //                                     Message::ClaimAcquired(
-        //                                         claim_to_validate.clone(), 
-        //                                         homesteader_wallet.public_key, 
-        //                                         account_state.clone(), 
-        //                                         acquirer_wallet.address), 
-        //                                         validator_wallet, 
-        //                                         account_state.clone()
-        //                                     );
-
-        // match validator {
-        //     Some(validator) => {
-        //         let processed = validator.validate();
-        //         assert_eq!(processed.valid, true);
-        //     },
-        //     None => println!("Issue with validator, returned none")
-        // }
     }
 
     #[test]
@@ -1814,17 +1764,263 @@ mod tests {
             },
             None => println!("Issue with validator, returned none")
         }
-
     }
-
+    
     #[test]
     fn test_invalid_claim_acquire_invalid_balance() {
+        let mut account_state = AccountState::start();
+        let mut network_state = NetworkState::restore("test_invalid_claim_staked.db");
+        let reward_state = RewardState::start(&mut network_state);
+        
+
+        let (mut homesteader_wallet, updated_account_state) = WalletAccount::new(
+            &mut account_state, &mut network_state);
+
+        account_state = updated_account_state;
+
+        let (_genesis_block, updated_account_state) = Block::genesis(
+            reward_state, 
+            &mut homesteader_wallet.clone(), 
+            &mut account_state, 
+            &mut network_state
+        ).unwrap();
+
+        account_state = updated_account_state;
+
+        let claim_state = account_state.clone().claim_state;
+        let (ts, claim_to_homestead) = claim_state.claims
+                                                        .iter()
+                                                        .min_by_key(|x| x.0)
+                                                        .unwrap();
+
+        let (updated_wallet, updated_account_state) = claim_to_homestead.clone().homestead(
+                                                        &mut homesteader_wallet, 
+                                                        &mut account_state.clone().claim_state, 
+                                                        &mut account_state.clone(), 
+                                                        &mut network_state).unwrap();
+        
+        homesteader_wallet = updated_wallet;
+        account_state = updated_account_state;
+
+
+
+        let (claim, updated_account_state) = match homesteader_wallet.sell_claim(
+            *ts, 
+            &mut account_state,
+             10
+            ) 
+            {
+                Some((claim, account_state)) => {
+                    (Some(claim), account_state)
+                },
+                None => {(None, account_state)}
+        };
+
+        account_state = updated_account_state;
+        println!("{:?}", &account_state);
+
+        let (mut acquirer_wallet, updated_account_state) = WalletAccount::new(
+            &mut account_state, 
+            &mut network_state
+        );
+
+        account_state = updated_account_state;
+
+        if let Some(mut claim) = claim {
+            let (updated_wallet, _updated_account_state) = claim.acquire(
+                &mut acquirer_wallet, &mut account_state, &mut network_state).unwrap();
+            
+            acquirer_wallet = updated_wallet;
+        }
+
+        let (
+            mut validator_wallet, 
+            updated_account_state
+        ) = WalletAccount::new(
+                &mut account_state, &mut network_state
+            );
+        
+        account_state = updated_account_state;
+
+        let mut claim_to_validate = account_state.clone().claim_state.owned_claims.get(ts).unwrap().to_owned();
+        
+        claim_to_validate.price = 15000;
+
+        for (_ts, claim) in account_state.clone().claim_state.claims.iter() {
+            let (new_wallet, updated_account_state) = claim.to_owned().homestead(
+                &mut validator_wallet, 
+                &mut account_state.clone().claim_state, 
+                &mut account_state.clone(), 
+                &mut network_state
+            ).unwrap();
+
+            validator_wallet = new_wallet;
+            account_state = updated_account_state;
+        }
+
+        for claim in validator_wallet.clone().claims.iter() {
+            let updated_account_state = claim.clone().unwrap().stake(validator_wallet.clone(), &mut account_state);
+            account_state = updated_account_state;
+        }
+
+        let validator = Validator::new(
+                                            Message::ClaimAcquired(
+                                                claim_to_validate.clone(), 
+                                                homesteader_wallet.public_key, 
+                                                account_state.clone(), 
+                                                acquirer_wallet.address), 
+                                                validator_wallet, 
+                                                account_state.clone()
+                                            );
+
+        match validator {
+            Some(validator) => {
+                let processed = validator.validate();
+                assert_eq!(processed.valid, false);
+            },
+            None => println!("Issue with validator, returned none")
+        }
 
     }
 
     #[test]
     fn test_invalid_claim_acquire_invalid_chain_of_custody() {
+        let mut account_state = AccountState::start();
+        let mut network_state = NetworkState::restore("test_valid_claim_acquired.db");
+        let reward_state = RewardState::start(&mut network_state);
+        
 
+        let (mut homesteader_wallet, updated_account_state) = WalletAccount::new(
+            &mut account_state, &mut network_state);
+
+        account_state = updated_account_state;
+
+        let (_genesis_block, updated_account_state) = Block::genesis(
+            reward_state, 
+            &mut homesteader_wallet.clone(), 
+            &mut account_state, 
+            &mut network_state
+        ).unwrap();
+
+        account_state = updated_account_state;
+
+        let claim_state = account_state.clone().claim_state;
+        let (ts, claim_to_homestead) = claim_state.claims
+                                                        .iter()
+                                                        .min_by_key(|x| x.0)
+                                                        .unwrap();
+
+        let (updated_wallet, updated_account_state) = claim_to_homestead.clone().homestead(
+                                                        &mut homesteader_wallet, 
+                                                        &mut account_state.clone().claim_state, 
+                                                        &mut account_state.clone(), 
+                                                        &mut network_state).unwrap();
+        
+        homesteader_wallet = updated_wallet;
+        account_state = updated_account_state;
+
+        let (claim, updated_account_state) = match homesteader_wallet.sell_claim(
+            *ts, 
+            &mut account_state,
+             10
+            ) 
+            {
+                Some((claim, account_state)) => {
+                    (Some(claim), account_state)
+                },
+                None => {(None, account_state)}
+        };
+
+        account_state = updated_account_state;
+
+        let (mut acquirer_wallet, updated_account_state) = WalletAccount::new(&mut account_state, &mut network_state);
+
+        account_state = updated_account_state;
+
+        if let Some(mut claim) = claim {
+            let (updated_wallet, updated_account_state) = claim.acquire(
+                &mut acquirer_wallet, &mut account_state, &mut network_state).unwrap();
+            
+            acquirer_wallet = updated_wallet;
+            account_state = updated_account_state;
+        }
+
+        let (
+            mut validator_wallet, 
+            updated_account_state
+        ) = WalletAccount::new(
+                &mut account_state, &mut network_state
+            );
+        
+        account_state = updated_account_state;
+
+        let mut claim_to_validate = account_state.clone().claim_state.owned_claims.get(ts).unwrap().to_owned();
+        
+        let mut coc = claim_to_validate.clone().chain_of_custody;
+        
+        let (malicious_acquirer_wallet, updated_account_state) = WalletAccount::new(&mut account_state, &mut network_state);
+        
+        account_state = updated_account_state;
+        
+        println!("{:?}", &account_state.accounts_address);
+        println!("{}", &malicious_acquirer_wallet.address);
+
+        let mut malicious_acquirer = HashMap::new();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+
+        malicious_acquirer
+            .insert("acquisition_timestamp".to_string(), Some(
+                CustodianInfo::AcquisitionTimestamp(now.as_nanos())));
+
+        malicious_acquirer
+            .insert("acquired_from".to_string(),Some(CustodianInfo::AcquiredFrom(
+                (Some("seller".to_string()), Some("seller_pubkey".to_string()), Some("Seller_signature".to_string())),
+            )));
+
+        malicious_acquirer
+            .insert("acquisition_price".to_string(),Some(CustodianInfo::AcquisitionPrice(claim_to_validate.clone().price)));
+
+        malicious_acquirer
+            .insert("owner_number".to_string(), Some(CustodianInfo::OwnerNumber(2 + 1)));
+
+        coc.insert(malicious_acquirer_wallet.address.clone(), malicious_acquirer);
+        
+        claim_to_validate.chain_of_custody = coc;
+
+        for (_ts, claim) in account_state.clone().claim_state.claims.iter() {
+            let (new_wallet, updated_account_state) = claim.to_owned().homestead(
+                &mut validator_wallet, 
+                &mut account_state.clone().claim_state, 
+                &mut account_state.clone(), 
+                &mut network_state
+            ).unwrap();
+
+            validator_wallet = new_wallet;
+            account_state = updated_account_state;
+        }
+
+        for claim in validator_wallet.clone().claims.iter() {
+            let updated_account_state = claim.clone().unwrap().stake(validator_wallet.clone(), &mut account_state);
+            account_state = updated_account_state;
+        }
+
+        let validator = Validator::new(
+                                            Message::ClaimAcquired(
+                                                claim_to_validate.clone(), 
+                                                homesteader_wallet.public_key, 
+                                                account_state.clone(), 
+                                                malicious_acquirer_wallet.address.clone()), 
+                                                validator_wallet, 
+                                                account_state.clone()
+                                            );
+
+        match validator {
+            Some(validator) => {
+                let processed = validator.validate();
+                assert_eq!(processed.valid, false);
+            },
+            None => println!("Issue with validator, returned none")
+        }
     }
 
     #[test]

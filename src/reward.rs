@@ -78,7 +78,13 @@ impl RewardState {
             n_grains_current_epoch: n_grains_ce,
             
         };
-        network_state.update(reward_state, "reward_state");
+        let state_result = network_state.update(reward_state, "reward_state");
+        
+        match state_result {
+            Ok(()) => {},
+            Err(e) => { println!("Error in updating network state: {:?}", e) }
+        }
+        
         reward_state
     }
     pub fn update(&self, last_reward: Category, network_state: &mut NetworkState) -> Self {
@@ -154,7 +160,13 @@ impl RewardState {
             n_flakes_current_epoch: n_flakes_ce,
             n_grains_current_epoch: n_grains_ce,
             };
-        network_state.update(updated_reward_state, "reward_state");
+        let state_result = network_state.update(updated_reward_state, "reward_state");
+        
+        match state_result {
+            Ok(()) => {},
+            Err(e) => { println!("Error in updating network state: {:?}", e)}
+        }
+        
         updated_reward_state
         }
     }

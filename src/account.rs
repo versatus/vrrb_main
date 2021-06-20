@@ -172,8 +172,11 @@ impl AccountState {
                 // The .update() method for the  network state sets a state object (struct)
                 // either account_state, claim_state or reward state) into the pickle db
                 // that represents the network state.
-                network_state.update(self.clone(), "account_state");
-                
+                let state_result = network_state.update(self.clone(), "account_state");
+                match state_result {
+                    Err(e) => { println!("Error in updating network state: {:?}", e)},
+                    _ => {}
+                }
                 return Ok(self.to_owned());
             },
 
@@ -240,11 +243,16 @@ impl AccountState {
                                                         (txn.clone(), vec![]));
                                         
                                         // Update the network state (the pickle db) with the updated account state information.
-                                        network_state
+                                        let state_result = network_state
                                             .update(
                                                 self.clone(), 
                                                 "account_state"
                                             );
+
+                                        match state_result {
+                                            Err(e) => { println!("Error in updating network state: {:?}", e)},
+                                            _ => {}
+                                        }
                                         
                                         // Return the updated account state wrapped in an Ok() Result variant.
                                         return Ok(self.to_owned());
@@ -282,8 +290,13 @@ impl AccountState {
                 self.claim_state.claims.remove_entry(&claim.maturation_time);
                 
                 // update the network state.
-                network_state.update(self.clone(), "account_state");
+                let state_result = network_state.update(self.clone(), "account_state");
                 
+                match state_result {
+                    Err(e) => { println!("Error in updating network state: {:?}", e)},
+                    _ => {}
+                }
+
                 // return an Ok() variant of the Result enum with the account state in it.
                 return Ok(self.to_owned());
             },
@@ -339,7 +352,12 @@ impl AccountState {
                 // miner.remove_mined_claims(&block);
 
                 // Update the network's (confirmed) state to account for the mined block.
-                network_state.update(self.clone(), "account_state");
+                let state_result= network_state.update(self.clone(), "account_state");
+
+                match state_result {
+                    Ok(()) => {},
+                    Err(e) => { println!("Error in updating network state: {:?}", e) }
+                }
 
                 // Return the account state.                
                 return Ok(self.to_owned());

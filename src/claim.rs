@@ -71,7 +71,13 @@ impl ClaimState {
         self.owned_claims
             .insert(claim.clone().maturation_time, claim.clone());
 
-        network_state.update(self.clone(), "claim_state");
+        let state_result = network_state.update(self.clone(), "claim_state");
+        
+        match state_result {
+            Err(e) => { println!("Error in updating network state: {:?}", e)},
+            _ => {}
+        }
+    
     }
 }
 
@@ -139,7 +145,12 @@ impl Claim {
                 *bal += self.price as u128;
             }
 
-            network_state.update(claim_state, "claim_state");
+            let state_result = network_state.update(claim_state, "claim_state");
+            
+            match state_result {
+                Err(e) => { println!("Error in updating network state: {:?}", e)},
+                _ => {}
+            }
 
             cloned_wallet.claims.push(Some(claim.clone()));
 
@@ -299,7 +310,12 @@ impl Claim {
                 )
                 .unwrap();
 
-            network_state.update(claim_state, "claim_state");
+            let state_result = network_state.update(claim_state, "claim_state");
+            
+            match state_result {
+                Err(e) => { println!("Error in updating network state: {:?}", e)},
+                _ => {}
+            }
 
             cloned_wallet.claims.push(Some(claim.clone()));
 

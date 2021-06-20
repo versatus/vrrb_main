@@ -153,9 +153,9 @@ impl Claim {
         let current_owner_custody = self.chain_of_custody
                                                                         .get(&current_owner);
         match current_owner_custody {
-            Some(map) => {
+            Some(_map) => {
                 let previous_owner = current_owner_custody.unwrap().get("acquired_from").unwrap();
-            
+
                 if previous_owner.clone().unwrap() == CustodianInfo::AcquiredFrom((None, None, None)) {
                     match self.chain_of_custody
                         .get(&current_owner)
@@ -634,7 +634,7 @@ mod tests {
 
         let genesis = Block::genesis(
             reward_state,
-            &mut wallet,
+            wallet.address.clone(),
             &mut account_state,
             &mut network_state,
         )
@@ -667,7 +667,6 @@ mod tests {
                 claim_obj,
                 last_block,
                 HashMap::new(),
-                &mut wallet,
                 &mut account_state,
                 &mut network_state,
             )

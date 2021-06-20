@@ -33,7 +33,7 @@ pub enum StateOption {
     NewAccount(WalletAccount),
     ClaimAcquired(Claim),
     ConfirmedTxn((Txn, Vec<Validator>)),
-    Miner((WalletAccount, Block)),
+    Miner((String, Block)),
 }
 
 /// The State of all accounts. This is used to track balances
@@ -294,7 +294,7 @@ impl AccountState {
             // TODO: mined blocks need to be validated by the network before they're confirmed
             // If it has not yet been confirmed there should be a PendingMiner variant as well
             // as a ConfirmedMiner variant. The logic in this block would be for a ConfirmedMiner
-            StateOption::Miner((mut miner, block)) => {
+            StateOption::Miner((miner, block)) => {
                 
                 // get the public key of the miner from the address. This is set up
                 // so that the entire wallet no longer gets passed through to this variant
@@ -308,7 +308,7 @@ impl AccountState {
                 // would be mining a block, but possible, especially if it acquired a claim or received a claim
                 // This would mean, very likely that the current account state is out of consensus and would
                 // need to request the latest confirmed account state from the network.
-                let miner_pk = self.accounts_address.get(&miner.address).unwrap();
+                let miner_pk = self.accounts_address.get(&miner).unwrap();
                 
                 // update the miner's total (confirmed) coin balance to include the reward
                 self.total_coin_balances.insert(
@@ -336,7 +336,7 @@ impl AccountState {
                 // TODO: this will only work if it's the current node's wallet
                 // This can be removed, as the account state updates, if it's the current
                 // wallet's claim being mined this can be handled in a method in the wallet.
-                miner.remove_mined_claims(&block);
+                // miner.remove_mined_claims(&block);
 
                 // Update the network's (confirmed) state to account for the mined block.
                 network_state.update(self.clone(), "account_state");

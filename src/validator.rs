@@ -57,7 +57,7 @@ pub enum InvalidMessageError {
 pub enum ValidatorOptions {
     ClaimHomestead(AccountState),
     ClaimAcquire(AccountState, String),
-    NewBlock(NetworkState, AccountState, RewardState),
+    NewBlock(Block, Block, String, AccountState, RewardState),
     Transaction(AccountState)
 }
 
@@ -65,15 +65,16 @@ pub enum ValidatorOptions {
 pub enum Message {
     ClaimAcquired(Claim, String, AccountState, String),
     ClaimHomesteaded(Claim, String, AccountState),
-    NewBlock(Block, String),
+    NewBlock(Block, Block, String, NetworkState, AccountState, RewardState),
     Txn(Txn, AccountState),
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Validator {
     node_wallet: WalletAccount,
-    staked_claims: HashMap<u128, Claim>,
-    message: Message,
-    valid: bool,
+    pub staked_claims: HashMap<u128, Claim>,
+    pub message: Message,
+    pub valid: bool,
 }
 
 impl Validator {
@@ -210,18 +211,38 @@ impl Validator {
                     }, 
                 }
             },
-            Message::NewBlock(block, pubkey) => {
+            Message::NewBlock(
+                last_block,
+                block, 
+                pubkey, 
+                network_state, 
+                account_state, 
+                reward_state
+            ) => {
                 // If a message is a new block, then check that the block is
                 // valid, by calling the block.is_valid() method and passing None
                 // as the options, as only Claim validation requires an option
-                match block.is_valid(None) {
+                match block.is_valid(Some(ValidatorOptions::NewBlock(
+                    last_block.clone(),
+                    block.clone(), 
+                    pubkey.clone(), 
+                    account_state.clone(), 
+                    reward_state.clone()
+                ))) {
                     // If the is_valid() method returns Some(true)
                     // then the block is valid, and the validator
                     // should have it's valid field set to true
                     Some(true) => {
                         return Self {
                             valid: true,
-                            message: Message::NewBlock(block, pubkey),
+                            message: Message::NewBlock(
+                                last_block.clone(),
+                                block.clone(), 
+                                pubkey.clone(), 
+                                network_state.clone(), 
+                                account_state.clone(), 
+                                reward_state.clone()
+                            ),
                             ..self.clone()
                         }
                     },
@@ -307,7 +328,7 @@ mod tests {
         let mut validators_vec = account_state.clone().pending.get(&txn_id).unwrap().1.clone();
 
         let (_block, updated_account_state) = Block::genesis(
-            reward_state, &mut wallet_1, &mut account_state, &mut network_state).unwrap();
+            reward_state, wallet_1.address.clone(), &mut account_state, &mut network_state).unwrap();
 
         account_state = updated_account_state;
 
@@ -411,7 +432,7 @@ mod tests {
         txn.txn_signature = wallet_1.sign(&"Malicious_Signature".to_string()).unwrap().to_string();
 
         let (_block, updated_account_state) = Block::genesis(
-            reward_state, &mut wallet_1, &mut account_state, &mut network_state).unwrap();
+            reward_state, wallet_1.address.clone(), &mut account_state, &mut network_state).unwrap();
 
         account_state = updated_account_state;
 
@@ -513,7 +534,7 @@ mod tests {
         txn.txn_amount = 1005;
 
         let (_block, updated_account_state) = Block::genesis(
-            reward_state, &mut wallet_1, &mut account_state, &mut network_state).unwrap();
+            reward_state, wallet_1.address.clone(), &mut account_state, &mut network_state).unwrap();
 
         account_state = updated_account_state;
 
@@ -626,7 +647,7 @@ mod tests {
         double_spend_txn.receiver_address = wallet_3.address.to_string();
 
         let (_block, updated_account_state) = Block::genesis(
-            reward_state, &mut wallet_1, &mut account_state, &mut network_state).unwrap();
+            reward_state, wallet_1.address.clone(), &mut account_state, &mut network_state).unwrap();
 
         account_state = updated_account_state;
 
@@ -909,7 +930,7 @@ mod tests {
 
         let (_genesis_block, updated_account_state) = Block::genesis(
             reward_state, 
-            &mut homesteader_wallet.clone(), 
+            homesteader_wallet.address.clone(), 
             &mut account_state, 
             &mut network_state
         ).unwrap();
@@ -989,7 +1010,7 @@ mod tests {
 
         let (_genesis_block, updated_account_state) = Block::genesis(
             reward_state, 
-            &mut homesteader_wallet.clone(), 
+            homesteader_wallet.address.clone(), 
             &mut account_state, 
             &mut network_state
         ).unwrap();
@@ -1069,7 +1090,7 @@ mod tests {
 
         let (_genesis_block, updated_account_state) = Block::genesis(
             reward_state, 
-            &mut homesteader_wallet.clone(), 
+            homesteader_wallet.address.clone(), 
             &mut account_state, 
             &mut network_state
         ).unwrap();
@@ -1155,7 +1176,7 @@ mod tests {
 
         let (_genesis_block, updated_account_state) = Block::genesis(
             reward_state, 
-            &mut homesteader_wallet_1.clone(), 
+            homesteader_wallet_1.address.clone(), 
             &mut account_state, 
             &mut network_state
         ).unwrap();
@@ -1254,7 +1275,7 @@ mod tests {
 
         let (_genesis_block, updated_account_state) = Block::genesis(
             reward_state, 
-            &mut homesteader_wallet.clone(), 
+            homesteader_wallet.address.clone(), 
             &mut account_state, 
             &mut network_state
         ).unwrap();
@@ -1335,7 +1356,7 @@ mod tests {
 
         let (_genesis_block, updated_account_state) = Block::genesis(
             reward_state, 
-            &mut homesteader_wallet.clone(), 
+            homesteader_wallet.address.clone(), 
             &mut account_state, 
             &mut network_state
         ).unwrap();
@@ -1418,7 +1439,7 @@ mod tests {
 
         let (_genesis_block, _updated_account_state) = Block::genesis(
             reward_state, 
-            &mut homesteader1_wallet.clone(), 
+            homesteader1_wallet.address.clone(), 
             &mut account_state, 
             &mut network_state
         ).unwrap();
@@ -1504,7 +1525,7 @@ mod tests {
 
         let (_genesis_block, updated_account_state) = Block::genesis(
             reward_state, 
-            &mut homesteader_wallet.clone(), 
+            homesteader_wallet.address.clone(), 
             &mut account_state, 
             &mut network_state
         ).unwrap();
@@ -1614,7 +1635,7 @@ mod tests {
 
         let (_genesis_block, updated_account_state) = Block::genesis(
             reward_state, 
-            &mut homesteader_wallet.clone(), 
+            homesteader_wallet.address.clone(), 
             &mut account_state, 
             &mut network_state
         ).unwrap();
@@ -1664,7 +1685,7 @@ mod tests {
 
         let (_genesis_block, updated_account_state) = Block::genesis(
             reward_state, 
-            &mut homesteader_wallet.clone(), 
+            homesteader_wallet.address.clone(), 
             &mut account_state, 
             &mut network_state
         ).unwrap();
@@ -1780,7 +1801,7 @@ mod tests {
 
         let (_genesis_block, updated_account_state) = Block::genesis(
             reward_state, 
-            &mut homesteader_wallet.clone(), 
+            homesteader_wallet.address.clone(), 
             &mut account_state, 
             &mut network_state
         ).unwrap();
@@ -1883,6 +1904,7 @@ mod tests {
 
     }
 
+    #[allow(unused_assignments)]
     #[test]
     fn test_invalid_claim_acquire_invalid_chain_of_custody() {
         let mut account_state = AccountState::start();
@@ -1897,7 +1919,7 @@ mod tests {
 
         let (_genesis_block, updated_account_state) = Block::genesis(
             reward_state, 
-            &mut homesteader_wallet.clone(), 
+            homesteader_wallet.address.clone(), 
             &mut account_state, 
             &mut network_state
         ).unwrap();

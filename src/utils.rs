@@ -21,7 +21,7 @@ pub fn claim_test_setup() -> Option<(WalletAccount, AccountState, NetworkState, 
 
         let (_genesis_block, updated_account_state) = Block::genesis(
             reward_state, 
-            &mut homesteader_wallet.clone(), 
+            homesteader_wallet.address.clone(), 
             &mut account_state, 
             &mut network_state
         ).unwrap();

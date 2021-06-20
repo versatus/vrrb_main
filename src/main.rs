@@ -17,7 +17,7 @@ fn main() {
 
     let (genesis_block, updated_account_state) = Block::genesis(
         reward_state, 
-        &mut wallet, 
+        wallet.address.clone(), 
         &mut account_state, 
         &mut network_state    
     ).unwrap();
@@ -77,7 +77,6 @@ fn main() {
                     claim.clone().unwrap(), 
                     last_block, 
                     HashMap::new(), 
-                    &mut thread_wallet,
                     &mut thread_account_state,
                     &mut thread_network_state
                 );
@@ -148,7 +147,7 @@ fn test_mine_genesis(
 ) {
     let (genesis_block, updated_account_state) = Block::genesis(
         reward_state.clone(), 
-        wallet, 
+        wallet.address.clone(), 
         account_state, 
         network_state
     ).unwrap();
@@ -205,8 +204,7 @@ fn test_mine_blocks(
             &reward_state, 
             claim.clone().unwrap(), 
             last_block, 
-            data, 
-            &mut wallet.clone(), 
+            data,
             &mut account_state.clone(), 
             &mut network_state)
                 .unwrap()

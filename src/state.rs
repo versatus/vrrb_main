@@ -16,6 +16,7 @@ use serde::{
         SerializeMap, 
         Serializer,
     }};
+use sha256::digest_bytes;
 use std::collections::HashMap;
 
 pub struct NetworkState {
@@ -51,6 +52,28 @@ impl NetworkState {
         NetworkState {
             state: db
         }    
+    }
+
+    pub fn hash(&self) -> String {
+        let account_state = self.state.get::<AccountState>("account_state");
+        let reward_state = self.state.get::<RewardState>("reward_state");
+
+        let account_state_string = match account_state {
+            Some(account_state) => {
+                format!("account_state: {}", serde_json::to_string(&account_state).unwrap())
+            }
+            None => panic!("Something went wrong when retrieving account state from network state")
+        };
+
+        let reward_state_string = match reward_state {
+            Some(reward_state) => {
+                format!("reward_state: {}", serde_json::to_string(&reward_state).unwrap())
+            },
+            None => panic!("Something went wrong when retrieving account state from network state")
+        };
+
+        digest_bytes(format!("network_state: {}, {}", account_state_string, reward_state_string).as_bytes())
+
     }
 }
 

@@ -4,47 +4,8 @@ use crate::{account::{
         WalletAccount
     }, block::Block, claim::{
         Claim
-    }, reward::{RewardState}, state::NetworkState, txn::Txn, verifiable::Verifiable};
+    }, mpu, reward::{RewardState}, state::NetworkState, txn::Txn};
 use serde::{Serialize, Deserialize};
-
-// Validator is the core unit of the network's consensus model. The validator
-// checks if the validator owns a claim, is staking the claim, and then
-// allocates it messages to process.
-// Validator can only process messages that have a trait bound of Verifiable
-// this means that they have a signature, essentially.
-// The validator must go through the checks based on the kind of message it's validating
-//
-//          - Simple Transactions:
-//              * Signature must be verified
-//              * Amount + Txn Fee must be less than sender available balance
-//              * Receiver must exist in the most recent CONFIRMED state of the network.
-//
-//          - New Block:
-//              * Signature must be verified
-//              * Reward must match last block next block reward
-//              * State Hash must be valid
-//              * Claim ownership must be verified
-//              * Claim chain of custody must be valid
-//              * All transactions must be validated
-//
-//         - Claim Homesteaded
-//              * Signature must be verified
-//              * Claim must have a valid maturity timestamp
-//              * Claim must have been either not been owned before, or abandoned.
-//              * If claim already has owner in local state, acquisition time must be compared
-//              * If the claim acquisition time is a perfect tie (to the nanosecond), 
-//                then tie handling must occur first
-//
-//         - Claim Acquired
-//              * Claim availability must be valid
-//              * Claim previous owner signature must be verified
-//              * Claim acquirer signature must be verified.
-//              * Claim chain of custody must be valid going back to original owner (homesteader)
-//              * Claim must NOT be currently staked
-//              * Claim must NOT be mature already.
-//              
-//         - Smart Contract Deployed
-//              * TODO: ALL Contract functionality requires development of VVM.
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum InvalidMessageError {
@@ -57,7 +18,7 @@ pub enum InvalidMessageError {
 pub enum ValidatorOptions {
     ClaimHomestead(AccountState),
     ClaimAcquire(AccountState, String),
-    NewBlock(Block, Block, String, AccountState, RewardState),
+    NewBlock(Block, Block, String, AccountState, RewardState, NetworkState),
     Transaction(AccountState)
 }
 
@@ -71,7 +32,7 @@ pub enum Message {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Validator {
-    node_wallet: WalletAccount,
+    pub node_wallet: WalletAccount,
     pub staked_claims: HashMap<u128, Claim>,
     pub message: Message,
     pub valid: bool,
@@ -102,163 +63,7 @@ impl Validator {
     }
 
     pub fn validate(&self) -> Self {
-        // Match the message type. Message type can be one of 4 options
-        // Txn, NewBlock, ClaimAcquired or ClaimHomesteaded
-        // If a message's subject (transaction, claim transaction, or new block)
-        // the valid field in needs to be changed to true
-        // the validator struct get's pushed to an external vector.
-        match self.message.clone() {
-            Message::Txn(txn, account_state) => { 
-                // If the Message variant is a transaction
-                // then it needs to be processed.
-                // All of the variant inners implement the Verifiable trait
-                // which has an is_valid method, which receives an option (for claims)
-                // which is either None or Some(ClaimOption). For Txns and Blocks it should
-                // always be None. For claims it should always be some.
-                // Is valid returns an Option<bool> which can either be Some(true), Some(false) or None,
-                // a None option is an error, and should propagate an invalid message error.
-                match txn.is_valid(Some(ValidatorOptions::Transaction(account_state.clone()))) {
-                    // If the transaction is valid
-                    // return the validator structure
-                    // with the valid field set to true
-                    // and the message variant, the rest of the validator
-                    // remains the same (node_wallet, and staked_claims).
-                    Some(true) => {
-
-                        return Self {
-                            valid: true,
-                            message: Message::Txn(txn, account_state.clone()),
-                            ..self.clone()
-                        };
-                    },
-                    // Validators default to invalid (valid field set to false)
-                    // So if it is indeed invalid, then just return the validator struct as is
-                    Some(false) => {
-                        return Self {
-                            ..self.clone()
-                        };
-                    },
-                    // If None, there's an error, true or false should ALWAYS be returned
-                    // by the is_valid() method.
-                    // TODO: convert to error propagation to be handled by the thread calling the
-                    // method.
-                    None => {
-                        panic!("Invalid Transaction Message");
-                    }
-                }
-            },
-            Message::ClaimAcquired(
-                claim, 
-                seller_pubkey, 
-                account_state, 
-                buyer_pubkey
-            ) => {
-                // Claim acquisition is one of two types of claim messages that needs
-                // to be validated. The claim.is_valid() method receives
-                // a Some(ClaimOption::Acquire) option, so that it knows
-                // that it is to validate the claim that is being acquired
-                // not homestaeded.
-                match claim.is_valid(Some(ValidatorOptions::ClaimAcquire(account_state.clone(), buyer_pubkey.clone()))) {
-                    Some(true) => {
-                        return Self {
-                            valid: true,
-                            message: Message::ClaimAcquired(claim, seller_pubkey.clone(), account_state, buyer_pubkey.clone()),
-                            ..self.clone()
-                        }
-                    }
-                    // Validator defaults to invalid so if the message
-                    // subject is invalid just return the validator as is
-                    Some(false) => {
-                        return self.clone()
-                    },
-                    // If the is_valid() method returns none, something has gone wrong
-                    // TODO: propagate custom error for main to handle
-                    None => {
-                        panic!("Invalid Claim Acquisition Message!")
-                    }
-                }               
-
-            },
-            Message::ClaimHomesteaded(claim, pubkey, account_state) => {
-                // If the message is a claim homesteading message
-                // the message will contain a claim and the wallet which
-                // is attempting to homestead the claim's public key
-                // Pass the claim.is_valid() method Some(ClaimOption::Homestead)
-                // so that the method knows to implement logic related to validating
-                // a homesteaded claim not an acquired claim.
-                match claim.is_valid(Some(ValidatorOptions::ClaimHomestead(account_state.clone()))) {
-                    // If the claim is validly homesteaded, return 
-                    // the validator with the valid field set to tru
-                    // and the message.
-                    Some(true) => { 
-                        return Self {
-                            valid: true,
-                            message: Message::ClaimHomesteaded(claim, pubkey, account_state.clone()),
-                            ..self.clone()
-                        }
-                    },
-                    // If the claim is invalidly homesteaded
-                    // then return the validator as is
-                    Some(false) => { 
-                        return self.clone()
-                    },
-                    // If the is_valid() method returns none, then something
-                    // went wrong.
-                    // TODO: propogate a custom error to provide a message to be handled
-                    // by the main.
-                    None => {
-                        panic!("Invalid Claim Homesteading Message!")
-                    }, 
-                }
-            },
-            Message::NewBlock(
-                last_block,
-                block, 
-                pubkey, 
-                network_state, 
-                account_state, 
-                reward_state
-            ) => {
-                // If a message is a new block, then check that the block is
-                // valid, by calling the block.is_valid() method and passing None
-                // as the options, as only Claim validation requires an option
-                match block.is_valid(Some(ValidatorOptions::NewBlock(
-                    last_block.clone(),
-                    block.clone(), 
-                    pubkey.clone(), 
-                    account_state.clone(), 
-                    reward_state.clone()
-                ))) {
-                    // If the is_valid() method returns Some(true)
-                    // then the block is valid, and the validator
-                    // should have it's valid field set to true
-                    Some(true) => {
-                        return Self {
-                            valid: true,
-                            message: Message::NewBlock(
-                                last_block.clone(),
-                                block.clone(), 
-                                pubkey.clone(), 
-                                network_state.clone(), 
-                                account_state.clone(), 
-                                reward_state.clone()
-                            ),
-                            ..self.clone()
-                        }
-                    },
-                    // If the is_valid() method returns Some(false)
-                    // then return the validator as is.
-                    Some(false) => {
-                        return self.clone()
-                    },
-                    // If the is_valid() method returns None something has gone wrong
-                    // TODO: propagate error.
-                    None => {
-                        panic!("Invalid Block Message!")
-                    }
-                }
-            }
-        }
+        mpu::message_processor(self.clone())
     }
 }
 
@@ -267,71 +72,24 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
-    use crate::{
-        account::{
+    use crate::{account::{
             AccountState, 
             WalletAccount
-        }, 
-        state::NetworkState,
-        reward::RewardState,
-        claim::CustodianInfo,
-    };
+        }, claim::CustodianInfo, reward::{Reward, RewardState}, state::{NetworkState}, utils::{txn_test_setup}};
+    use sha256::digest_bytes;
 
     #[test]
     fn test_valid_simple_transaction() {
-        let mut account_state = AccountState::start();
-        let mut network_state = NetworkState::restore("test_simple_valid_txn.db");
-        let reward_state = RewardState::start(&mut network_state);
-        
+        let state_path = "test_valid_simple_txn.db";
         let (
-            mut wallet_1, 
-            updated_account_state
-        ) = WalletAccount::new(
-            &mut account_state, 
-            &mut network_state
-        );
-        
-        account_state = updated_account_state;
-
-        let (
-            mut wallet_2,
-            updated_account_state
-        ) = WalletAccount::new(
-            &mut account_state,
-            &mut network_state,
-        );
-
-        account_state = updated_account_state;
-
-        wallet_1 = wallet_1.get_balance(account_state.clone()).unwrap();
-        wallet_2 = wallet_2.get_balance(account_state.clone()).unwrap();
-
-        let result = wallet_1.send_txn(
-            &mut account_state, 
-            (wallet_2.address.clone(), 15 as u128), 
-            &mut network_state);
-
-        match result {
-            Ok((updated_wallet, updated_account_state)) => {
-                wallet_1 = updated_wallet;
-                account_state = updated_account_state;
-
-            }
-            Err(e) => println!("Error attempting to send txn to receiver: {} -> {}", 
-                wallet_2.address.clone(), 
-                e
-            )
-        }
-
-        let txn_id = account_state.clone().pending.keys().cloned().collect::<Vec<String>>()[0].clone();
-        let txn = account_state.clone().pending.get(&txn_id).unwrap().0.clone();
-        let mut validators_vec = account_state.clone().pending.get(&txn_id).unwrap().1.clone();
-
-        let (_block, updated_account_state) = Block::genesis(
-            reward_state, wallet_1.address.clone(), &mut account_state, &mut network_state).unwrap();
-
-        account_state = updated_account_state;
-
+            mut _wallet_1, 
+            mut _wallet_2,
+            mut account_state, 
+            mut network_state,
+            mut _reward_state,
+            txn,
+            mut validators_vec, 
+        ) = txn_test_setup(state_path).unwrap();
 
         let (
             mut validator_wallet, 
@@ -371,7 +129,7 @@ mod tests {
                 let processed = validator.validate();
                 if validators_vec.len() < 3 {
                     validators_vec.push(processed.clone());
-                    account_state.pending.insert(txn_id, (txn.clone(), validators_vec));
+                    account_state.pending.insert(txn.clone().txn_id, (txn.clone(), validators_vec));
                 }
                 assert_eq!(processed.valid, true);
             },
@@ -381,58 +139,24 @@ mod tests {
 
     #[test]
     fn test_invalid_simple_transaction_bad_signature() {
-
-        let mut account_state = AccountState::start();
-        let mut network_state = NetworkState::restore("test_invalid_signature_transaction.db");
-        let reward_state = RewardState::start(&mut network_state);
-        
+        let state_path = "test_invalid_simple_txn_bad_sig.db";
         let (
-            mut wallet_1, 
-            updated_account_state
-        ) = WalletAccount::new(
-            &mut account_state, 
-            &mut network_state
-        );
-        
-        account_state = updated_account_state;
+            wallet_1, 
+            _wallet_2,
+            mut account_state, 
+            mut network_state,
+            reward_state,
+            mut txn,
+            mut validators_vec, 
+        ) = txn_test_setup(state_path).unwrap();
 
-        let (
-            mut wallet_2,
-            updated_account_state
-        ) = WalletAccount::new(
-            &mut account_state,
-            &mut network_state,
-        );
-
-        account_state = updated_account_state;
-
-        wallet_1 = wallet_1.get_balance(account_state.clone()).unwrap();
-        wallet_2 = wallet_2.get_balance(account_state.clone()).unwrap();
-
-        let result = wallet_1.send_txn(
-            &mut account_state, 
-            (wallet_2.address.clone(), 15 as u128), 
-            &mut network_state);
-
-        match result {
-            Ok((updated_wallet, updated_account_state)) => {
-                wallet_1 = updated_wallet;
-                account_state = updated_account_state;
-            }
-
-            Err(e) => println!("Error attempting to send txn to receiver: {} -> {}", 
-                wallet_2.address.clone(), 
-                e
-            )
-        }
-
-        let txn_id = account_state.clone().pending.keys().cloned().collect::<Vec<String>>()[0].clone();
-        let mut txn = account_state.clone().pending.get(&txn_id).unwrap().0.clone();
-        let mut validators_vec = account_state.clone().pending.get(&txn_id).unwrap().1.clone();
         txn.txn_signature = wallet_1.sign(&"Malicious_Signature".to_string()).unwrap().to_string();
 
         let (_block, updated_account_state) = Block::genesis(
-            reward_state, wallet_1.address.clone(), &mut account_state, &mut network_state).unwrap();
+            reward_state, 
+            wallet_1.address.clone(), 
+            &mut account_state, 
+            &mut network_state).unwrap();
 
         account_state = updated_account_state;
 
@@ -474,7 +198,7 @@ mod tests {
                 let processed = validator.validate();
                 if validators_vec.len() < 3 {
                     validators_vec.push(processed.clone());
-                    account_state.pending.insert(txn_id, (txn.clone(), validators_vec));
+                    account_state.pending.insert(txn.clone().txn_id, (txn.clone(), validators_vec));
                 }
                 assert_eq!(processed.valid, false);
             },
@@ -484,57 +208,26 @@ mod tests {
 
     #[test]
     fn test_invalid_simple_transaction_amount_exceeds_balance() {
-
-        let mut account_state = AccountState::start();
-        let mut network_state = NetworkState::restore("test_simple_invalid_amount_txn.db");
-        let reward_state = RewardState::start(&mut network_state);
-        
-        let (
-            mut wallet_1, 
-            updated_account_state
-        ) = WalletAccount::new(
-            &mut account_state, 
-            &mut network_state
-        );
-        
-        account_state = updated_account_state;
+        let state_path = "test_invalid_simple_txn_amt_exceeds_balance.db";
 
         let (
-            mut wallet_2,
-            updated_account_state
-        ) = WalletAccount::new(
-            &mut account_state,
-            &mut network_state,
-        );
-
-        account_state = updated_account_state;
-
-        wallet_1 = wallet_1.get_balance(account_state.clone()).unwrap();
-        wallet_2 = wallet_2.get_balance(account_state.clone()).unwrap();
-
-        let result = wallet_1.send_txn(
-            &mut account_state, 
-            (wallet_2.address.clone(), 50 as u128), 
-            &mut network_state);
-
-        match result {
-            Ok((updated_wallet, updated_account_state)) => {
-                wallet_1 = updated_wallet;
-                account_state = updated_account_state;
-            }
-            Err(e) => println!("Error attempting to send txn to receiver: {} -> {}", 
-                wallet_2.address.clone(), 
-                e
-            )
-        }
-        let txn_id = account_state.pending.keys().cloned().collect::<Vec<String>>()[0].clone();
-        let mut txn = account_state.clone().pending.get(&txn_id).unwrap().0.clone();
-        let mut validators_vec = account_state.clone().pending.get(&txn_id).unwrap().1.clone();
+            wallet_1, 
+            _wallet_2,
+            mut account_state, 
+            mut network_state,
+            reward_state,
+            mut txn,
+            mut validators_vec, 
+        ) = txn_test_setup(state_path).unwrap();
 
         txn.txn_amount = 1005;
 
         let (_block, updated_account_state) = Block::genesis(
-            reward_state, wallet_1.address.clone(), &mut account_state, &mut network_state).unwrap();
+            reward_state, 
+            wallet_1.address.clone(), 
+            &mut account_state, 
+            &mut network_state,
+        ).unwrap();
 
         account_state = updated_account_state;
 
@@ -576,7 +269,7 @@ mod tests {
                 let processed = validator.validate();
                 if validators_vec.len() < 3 {
                     validators_vec.push(processed.clone());
-                    account_state.pending.insert(txn_id, (txn.clone(), validators_vec));
+                    account_state.pending.insert(txn.clone().txn_id, (txn.clone(), validators_vec));
                 }
                 assert_eq!(processed.valid, false);
             },
@@ -587,51 +280,17 @@ mod tests {
     #[test]
     fn test_invalid_simple_transaction_double_spend_attack() {
         
-        let mut account_state = AccountState::start();
-        let mut network_state = NetworkState::restore("test_invalid_double_spend_attack.db");
-        let reward_state = RewardState::start(&mut network_state);
-        
-        let (
-            mut wallet_1, 
-            updated_account_state
-        ) = WalletAccount::new(
-            &mut account_state, 
-            &mut network_state
-        );
-        
-        account_state = updated_account_state;
+        let state_path = "test_invalid_double_spend_attack.db";
 
         let (
-            mut wallet_2,
-            updated_account_state
-        ) = WalletAccount::new(
-            &mut account_state,
-            &mut network_state,
-        );
-
-        account_state = updated_account_state;
-
-        wallet_1 = wallet_1.get_balance(account_state.clone()).unwrap();
-        wallet_2 = wallet_2.get_balance(account_state.clone()).unwrap();
-
-        let result = wallet_1.send_txn(
-            &mut account_state, 
-            (wallet_2.address.clone(), 50 as u128), 
-            &mut network_state);
-
-        match result {
-            Ok((updated_wallet, updated_account_state)) => {
-                wallet_1 = updated_wallet;
-                account_state = updated_account_state;
-            }
-            Err(e) => println!("Error attempting to send txn to receiver: {} -> {}", 
-                wallet_2.address.clone(), 
-                e
-            )
-        }
-        let txn_id = account_state.pending.keys().cloned().collect::<Vec<String>>()[0].clone();
-        let txn = account_state.clone().pending.get(&txn_id).unwrap().0.clone();
-        let mut validators_vec = account_state.clone().pending.get(&txn_id).unwrap().1.clone();
+            wallet_1, 
+            _wallet_2,
+            mut account_state, 
+            mut network_state,
+            reward_state,
+            txn,
+            mut validators_vec, 
+        ) = txn_test_setup(state_path).unwrap();
 
         let (
             wallet_3,
@@ -647,7 +306,11 @@ mod tests {
         double_spend_txn.receiver_address = wallet_3.address.to_string();
 
         let (_block, updated_account_state) = Block::genesis(
-            reward_state, wallet_1.address.clone(), &mut account_state, &mut network_state).unwrap();
+            reward_state, 
+            wallet_1.address.clone(), 
+            &mut account_state, 
+            &mut network_state,
+        ).unwrap();
 
         account_state = updated_account_state;
 
@@ -701,7 +364,7 @@ mod tests {
                 let processed = validator.validate();
                 if validators_vec.len() < 3 {
                     validators_vec.push(processed.clone());
-                    account_state.pending.insert(txn_id.clone(), (txn.clone(), validators_vec.clone()));
+                    account_state.pending.insert(txn.txn_id.clone(), (txn.clone(), validators_vec.clone()));
                 }
                 assert_eq!(processed.valid, true);
             },
@@ -724,55 +387,18 @@ mod tests {
             None => println!("Issue with validator, returned none")
         }
     }
-
+    
     #[test]
     fn test_invalid_simple_transaction_non_existent_receiver() {
-        
-        let mut account_state = AccountState::start();
-        let mut network_state = NetworkState::restore("test_invalid_receiver_simple_txn.db");
-        let _reward_state = RewardState::start(&mut network_state);
-        
-        let (
-            mut wallet_1, 
-            updated_account_state
-        ) = WalletAccount::new(
-            &mut account_state, 
-            &mut network_state
-        );
-        
-        account_state = updated_account_state;
+        let state_path = "test_invalid_receiver_simple_txn.db";
 
-        let (
-            mut wallet_2,
-            _updated_account_state
-        ) = WalletAccount::new(
-            &mut account_state,
-            &mut network_state,
-        );
-
-        wallet_1 = wallet_1.get_balance(account_state.clone()).unwrap();
-        wallet_2 = wallet_2.get_balance(account_state.clone()).unwrap();
-
-        let result = wallet_1.send_txn(
-            &mut account_state, 
-            (wallet_2.address.clone(), 15 as u128), 
-            &mut network_state);
-        
-        #[allow(unused_assignments)]
-        match result {
-            Ok((updated_wallet, updated_account_state)) => {
-                wallet_1 = updated_wallet;
-                account_state = updated_account_state;
-            }
-            Err(e) => println!("Error attempting to send txn to receiver: {} -> {}", 
-                wallet_2.address.clone(), 
-                e
-            )
-        }
-        
-        let txn_id = account_state.pending.keys().cloned().collect::<Vec<String>>()[0].clone();
-        let txn = account_state.clone().pending.get(&txn_id).unwrap().0.clone();
-        let mut validators_vec = account_state.clone().pending.get(&txn_id).unwrap().1.clone();
+        let (_wallet_1, 
+            _wallet_2,
+            mut account_state,
+            mut network_state,
+            _reward_state,
+            mut txn,
+            mut validators_vec,) = txn_test_setup(state_path).unwrap();
 
         let (
             mut validator_wallet, 
@@ -801,6 +427,8 @@ mod tests {
             validator_account_state = updated_account_state;
         }
 
+        txn.receiver_address = "unknown_receiver".to_string();
+
         let validator = Validator::new(
             Message::Txn(
                 txn.clone(), 
@@ -812,7 +440,7 @@ mod tests {
                 let processed = validator.validate();
                 if validators_vec.len() < 3 {
                     validators_vec.push(processed.clone());
-                    account_state.pending.insert(txn_id, (txn.clone(), validators_vec));
+                    account_state.pending.insert(txn.clone().txn_id, (txn.clone(), validators_vec));
                 }
                 assert_eq!(processed.valid, false);
             },
@@ -823,8 +451,10 @@ mod tests {
     #[test]
     fn test_invalid_simple_transaction_non_existent_sender_in_last_confirmed_state() {
 
+        let state_path = "test_invalid_receiver_simple_txn.db";
+
         let mut account_state = AccountState::start();
-        let mut network_state = NetworkState::restore("test_invalid_receiver_simple_txn.db");
+        let mut network_state = NetworkState::restore(state_path);
         let _reward_state = RewardState::start(&mut network_state);
         
         let (
@@ -917,9 +547,9 @@ mod tests {
     #[allow(unused_assignments)]  
     #[test]
     fn test_valid_homesteading_valid_claim_signature() {
-
+        let state_path = "test_valid_homestead_signature.db";
         let mut account_state = AccountState::start();
-        let mut network_state = NetworkState::restore("test_valid_homestead_signature.db");
+        let mut network_state = NetworkState::restore(state_path);
         let reward_state = RewardState::start(&mut network_state);
         
 
@@ -932,7 +562,7 @@ mod tests {
             reward_state, 
             homesteader_wallet.address.clone(), 
             &mut account_state, 
-            &mut network_state
+            &mut network_state,
         ).unwrap();
 
         account_state = updated_account_state;
@@ -998,8 +628,9 @@ mod tests {
     #[allow(unused_assignments)]  
     #[test]
     fn test_valid_homesteading_valid_claim_maturity_timestamp() {
+        let state_path = "test_valid_homestead_maturity_timestamp.db";
         let mut account_state = AccountState::start();
-        let mut network_state = NetworkState::restore("test_valid_homestead_maturity_timestamp.db");
+        let mut network_state = NetworkState::restore(state_path);
         let reward_state = RewardState::start(&mut network_state);
         
 
@@ -1012,7 +643,7 @@ mod tests {
             reward_state, 
             homesteader_wallet.address.clone(), 
             &mut account_state, 
-            &mut network_state
+            &mut network_state,
         ).unwrap();
 
         account_state = updated_account_state;
@@ -1078,8 +709,9 @@ mod tests {
     #[allow(unused_assignments)]      
     #[test]
     fn test_valid_homesteading_claim_unowned() {
+        let state_path = "test_valid_homestead_claim_unowned.db";
         let mut account_state = AccountState::start();
-        let mut network_state = NetworkState::restore("test_valid_homestead_claim_unowned.db");
+        let mut network_state = NetworkState::restore(state_path);
         let reward_state = RewardState::start(&mut network_state);
         
 
@@ -1092,7 +724,7 @@ mod tests {
             reward_state, 
             homesteader_wallet.address.clone(), 
             &mut account_state, 
-            &mut network_state
+            &mut network_state,
         ).unwrap();
 
         account_state = updated_account_state;
@@ -1159,8 +791,9 @@ mod tests {
     #[allow(unused_assignments)] 
     #[test]
     fn test_valid_homesteading_claim_first_appropriator() {
+        let state_path = "test_valid_homestead_claim_unowned.db";
         let mut account_state = AccountState::start();
-        let mut network_state = NetworkState::restore("test_valid_homestead_claim_unowned.db");
+        let mut network_state = NetworkState::restore(state_path);
         let reward_state = RewardState::start(&mut network_state);
         
 
@@ -1178,7 +811,7 @@ mod tests {
             reward_state, 
             homesteader_wallet_1.address.clone(), 
             &mut account_state, 
-            &mut network_state
+            &mut network_state,
         ).unwrap();
 
         account_state = updated_account_state;
@@ -1262,9 +895,9 @@ mod tests {
     #[allow(unused_assignments)]      
     #[test]
     fn test_invalid_homesteading_invalid_claim_singature() {
-
+        let state_path = "test_invalid_homestead_signature.db";
         let mut account_state = AccountState::start();
-        let mut network_state = NetworkState::restore("test_invalid_homestead_signature.db");
+        let mut network_state = NetworkState::restore(state_path);
         let reward_state = RewardState::start(&mut network_state);
         
 
@@ -1277,7 +910,7 @@ mod tests {
             reward_state, 
             homesteader_wallet.address.clone(), 
             &mut account_state, 
-            &mut network_state
+            &mut network_state,
         ).unwrap();
 
         account_state = updated_account_state;
@@ -1344,8 +977,9 @@ mod tests {
     #[allow(unused_assignments)]  
     #[test]
     fn test_invalid_homesteading_invalid_claim_maturity_timestamp() {
+        let state_path = "test_valid_homestead_signature.db";
         let mut account_state = AccountState::start();
-        let mut network_state = NetworkState::restore("test_valid_homestead_signature.db");
+        let mut network_state = NetworkState::restore(state_path);
         let reward_state = RewardState::start(&mut network_state);
         
 
@@ -1358,7 +992,7 @@ mod tests {
             reward_state, 
             homesteader_wallet.address.clone(), 
             &mut account_state, 
-            &mut network_state
+            &mut network_state,
         ).unwrap();
 
         account_state = updated_account_state;
@@ -1427,8 +1061,9 @@ mod tests {
     #[allow(unused_assignments)]  
     #[test]
     fn test_invalid_homesteading_claim_already_owned() {
+        let state_path = "test_invalid_homestead_claim_owned.db";
         let mut account_state = AccountState::start();
-        let mut network_state = NetworkState::restore("test_invalid_homestead_claim_owned.db");
+        let mut network_state = NetworkState::restore(state_path);
         let reward_state = RewardState::start(&mut network_state);
         
 
@@ -1441,7 +1076,7 @@ mod tests {
             reward_state, 
             homesteader1_wallet.address.clone(), 
             &mut account_state, 
-            &mut network_state
+            &mut network_state,
         ).unwrap();
 
         let (mut homesteader2_wallet, updated_account_state) = WalletAccount::new(
@@ -1513,8 +1148,9 @@ mod tests {
 
     #[test]
     fn test_valid_claim_acquired() {
+        let state_path = "test_valid_claim_acquired.db";
         let mut account_state = AccountState::start();
-        let mut network_state = NetworkState::restore("test_valid_claim_acquired.db");
+        let mut network_state = NetworkState::restore(state_path);
         let reward_state = RewardState::start(&mut network_state);
         
 
@@ -1527,7 +1163,7 @@ mod tests {
             reward_state, 
             homesteader_wallet.address.clone(), 
             &mut account_state, 
-            &mut network_state
+            &mut network_state,
         ).unwrap();
 
         account_state = updated_account_state;
@@ -1623,8 +1259,9 @@ mod tests {
     #[should_panic]
     #[test]
     fn test_invalid_transaction_unavailable_claim() {
+        let state_path = "test_invalid_claim_unavailable.db";
         let mut account_state = AccountState::start();
-        let mut network_state = NetworkState::restore("test_invalid_claim_unavailable.db");
+        let mut network_state = NetworkState::restore(state_path);
         let reward_state = RewardState::start(&mut network_state);
         
 
@@ -1637,7 +1274,7 @@ mod tests {
             reward_state, 
             homesteader_wallet.address.clone(), 
             &mut account_state, 
-            &mut network_state
+            &mut network_state,
         ).unwrap();
 
         account_state = updated_account_state;
@@ -1673,8 +1310,9 @@ mod tests {
     #[test]
     fn test_invalid_claim_acquire_staked_claim() {
 
+        let state_path = "test_invalid_claim_staked.db";
         let mut account_state = AccountState::start();
-        let mut network_state = NetworkState::restore("test_invalid_claim_staked.db");
+        let mut network_state = NetworkState::restore(state_path);
         let reward_state = RewardState::start(&mut network_state);
         
 
@@ -1687,7 +1325,7 @@ mod tests {
             reward_state, 
             homesteader_wallet.address.clone(), 
             &mut account_state, 
-            &mut network_state
+            &mut network_state,
         ).unwrap();
 
         account_state = updated_account_state;
@@ -1789,8 +1427,9 @@ mod tests {
     
     #[test]
     fn test_invalid_claim_acquire_invalid_balance() {
+        let state_path = "test_invalid_claim_staked.db";
         let mut account_state = AccountState::start();
-        let mut network_state = NetworkState::restore("test_invalid_claim_staked.db");
+        let mut network_state = NetworkState::restore(state_path);
         let reward_state = RewardState::start(&mut network_state);
         
 
@@ -1803,7 +1442,7 @@ mod tests {
             reward_state, 
             homesteader_wallet.address.clone(), 
             &mut account_state, 
-            &mut network_state
+            &mut network_state,
         ).unwrap();
 
         account_state = updated_account_state;
@@ -1907,8 +1546,9 @@ mod tests {
     #[allow(unused_assignments)]
     #[test]
     fn test_invalid_claim_acquire_invalid_chain_of_custody() {
+        let state_path = "test_valid_claim_acquired.db";
         let mut account_state = AccountState::start();
-        let mut network_state = NetworkState::restore("test_valid_claim_acquired.db");
+        let mut network_state = NetworkState::restore(state_path);
         let reward_state = RewardState::start(&mut network_state);
         
 
@@ -1921,7 +1561,7 @@ mod tests {
             reward_state, 
             homesteader_wallet.address.clone(), 
             &mut account_state, 
-            &mut network_state
+            &mut network_state,
         ).unwrap();
 
         account_state = updated_account_state;
@@ -2048,30 +1688,756 @@ mod tests {
     #[test]
     fn test_valid_block() {
 
+        let state_path = "test_valid_block.db";
+
+        let mut account_state = AccountState::start();
+        let mut network_state = NetworkState::restore(state_path);
+        let reward_state = RewardState::start(&mut network_state);
+
+        let (mut wallet_1, updated_account_state) = WalletAccount::new(
+            &mut account_state, 
+            &mut network_state
+        );
+
+        account_state = updated_account_state;
+
+        let (genesis, updated_account_state) = Block::genesis(
+            reward_state, 
+            wallet_1.address.clone(), 
+            &mut account_state, 
+            &mut network_state
+        ).unwrap();
+
+        account_state = updated_account_state;
+        let claim_state = account_state.clone().claim_state;
+
+        let (_ts, claim_to_homestead) = claim_state.claims
+                                            .iter()
+                                            .min_by_key(|x| x.0).unwrap();
+
+        let (updated_wallet, updated_account_state) = claim_to_homestead.clone()
+            .homestead(
+                &mut wallet_1, 
+                &mut account_state.clone().claim_state, 
+                &mut account_state.clone(), 
+                &mut network_state).unwrap();
+
+        wallet_1 = updated_wallet;
+        account_state = updated_account_state;
+
+        let (
+            mut validator_wallet, 
+            updated_account_state
+        ) = WalletAccount::new(
+                &mut account_state, &mut network_state
+            );
+        
+        account_state = updated_account_state;
+
+        for (_ts, claim) in account_state.clone().claim_state.claims.iter() {
+            let (new_wallet, updated_account_state) = claim.to_owned().homestead(
+                &mut validator_wallet, 
+                &mut account_state.clone().claim_state, 
+                &mut account_state.clone(), 
+                &mut network_state
+            ).unwrap();
+
+            validator_wallet = new_wallet;
+            account_state = updated_account_state;
+        }
+
+        for claim in validator_wallet.clone().claims.iter() {
+            let updated_account_state = claim
+                .clone()
+                .unwrap()
+                .stake(
+                    validator_wallet.clone(), 
+                    &mut account_state
+                );
+
+            account_state = updated_account_state;
+        }
+
+        let (new_block, updated_account_state) = Block::mine(
+            &reward_state, 
+            wallet_1.clone().claims[0].clone().unwrap(), 
+            genesis.clone(),
+            HashMap::new(), &mut account_state, &mut network_state
+        ).unwrap().unwrap();
+
+        account_state = updated_account_state;
+
+        let validator = Validator::new(
+                                            Message::NewBlock(
+                                                new_block,
+                                                genesis.clone(),
+                                                wallet_1.clone().address,
+                                                network_state, account_state.clone(), reward_state
+                                            ), wallet_1, account_state.clone());
+
+        match validator {
+            Some(validator) => {
+                let processed = validator.validate();
+                assert_eq!(processed.valid, true);
+            },
+            None => println!("Issue with validator, returned none")
+        }
+        
     }
 
     #[test]
     fn test_invalid_block_bad_signature() {
+        let state_path = "test_invalid_block_bad_signature.db";
 
+        let mut account_state = AccountState::start();
+        let mut network_state = NetworkState::restore(state_path);
+        let reward_state = RewardState::start(&mut network_state);
+
+        let (mut wallet_1, updated_account_state) = WalletAccount::new(
+            &mut account_state, 
+            &mut network_state
+        );
+
+        account_state = updated_account_state;
+
+        let (genesis, updated_account_state) = Block::genesis(
+            reward_state, 
+            wallet_1.address.clone(), 
+            &mut account_state, 
+            &mut network_state
+        ).unwrap();
+
+        account_state = updated_account_state;
+        let claim_state = account_state.clone().claim_state;
+
+        let (_ts, claim_to_homestead) = claim_state.claims
+                                            .iter()
+                                            .min_by_key(|x| x.0).unwrap();
+
+        let (updated_wallet, updated_account_state) = claim_to_homestead.clone()
+            .homestead(
+                &mut wallet_1, 
+                &mut account_state.clone().claim_state, 
+                &mut account_state.clone(), 
+                &mut network_state).unwrap();
+
+        wallet_1 = updated_wallet;
+        account_state = updated_account_state;
+
+        let (
+            mut validator_wallet, 
+            updated_account_state
+        ) = WalletAccount::new(
+                &mut account_state, &mut network_state
+            );
+        
+        account_state = updated_account_state;
+
+        for (_ts, claim) in account_state.clone().claim_state.claims.iter() {
+            let (new_wallet, updated_account_state) = claim.to_owned().homestead(
+                &mut validator_wallet, 
+                &mut account_state.clone().claim_state, 
+                &mut account_state.clone(), 
+                &mut network_state
+            ).unwrap();
+
+            validator_wallet = new_wallet;
+            account_state = updated_account_state;
+        }
+
+        for claim in validator_wallet.clone().claims.iter() {
+            let updated_account_state = claim
+                .clone()
+                .unwrap()
+                .stake(
+                    validator_wallet.clone(), 
+                    &mut account_state
+                );
+
+            account_state = updated_account_state;
+        }
+
+        let (mut new_block, updated_account_state) = Block::mine(
+            &reward_state, 
+            wallet_1.clone().claims[0].clone().unwrap(), 
+            genesis.clone(),
+            HashMap::new(), &mut account_state, &mut network_state
+        ).unwrap().unwrap();
+
+        account_state = updated_account_state;
+
+        new_block.block_signature = wallet_1.sign(&"Invalid_Message".to_string()).unwrap().to_string();
+
+        let validator = Validator::new(
+                                            Message::NewBlock(
+                                                new_block,
+                                                genesis.clone(),
+                                                wallet_1.clone().address,
+                                                network_state, account_state.clone(), reward_state
+                                            ), wallet_1, account_state.clone());
+
+        match validator {
+            Some(validator) => {
+                let processed = validator.validate();
+                assert_eq!(processed.valid, false);
+            },
+            None => println!("Issue with validator, returned none")
+        }
     }
 
     #[test]
     fn test_invalid_block_bad_claim_invalid_owner_signature() {
+        let state_path = "test_invalid_block_bad_claim_signature.db";
 
+        let mut account_state = AccountState::start();
+        let mut network_state = NetworkState::restore(state_path);
+        let reward_state = RewardState::start(&mut network_state);
+
+        let (mut wallet_1, updated_account_state) = WalletAccount::new(
+            &mut account_state, 
+            &mut network_state
+        );
+
+        account_state = updated_account_state;
+
+        let (genesis, updated_account_state) = Block::genesis(
+            reward_state, 
+            wallet_1.address.clone(), 
+            &mut account_state, 
+            &mut network_state
+        ).unwrap();
+
+        account_state = updated_account_state;
+        let claim_state = account_state.clone().claim_state;
+
+        let (_ts, claim_to_homestead) = claim_state.claims
+                                            .iter()
+                                            .min_by_key(|x| x.0).unwrap();
+
+        let (updated_wallet, updated_account_state) = claim_to_homestead.clone()
+            .homestead(
+                &mut wallet_1, 
+                &mut account_state.clone().claim_state, 
+                &mut account_state.clone(), 
+                &mut network_state).unwrap();
+
+        wallet_1 = updated_wallet;
+        account_state = updated_account_state;
+
+        let (
+            mut validator_wallet, 
+            updated_account_state
+        ) = WalletAccount::new(
+                &mut account_state, &mut network_state
+            );
+        
+        account_state = updated_account_state;
+
+        for (_ts, claim) in account_state.clone().claim_state.claims.iter() {
+            let (new_wallet, updated_account_state) = claim.to_owned().homestead(
+                &mut validator_wallet, 
+                &mut account_state.clone().claim_state, 
+                &mut account_state.clone(), 
+                &mut network_state
+            ).unwrap();
+
+            validator_wallet = new_wallet;
+            account_state = updated_account_state;
+        }
+
+        for claim in validator_wallet.clone().claims.iter() {
+            let updated_account_state = claim
+                .clone()
+                .unwrap()
+                .stake(
+                    validator_wallet.clone(), 
+                    &mut account_state
+                );
+
+            account_state = updated_account_state;
+        }
+
+        let (mut new_block, updated_account_state) = Block::mine(
+            &reward_state, 
+            wallet_1.clone().claims[0].clone().unwrap(), 
+            genesis.clone(),
+            HashMap::new(), &mut account_state, &mut network_state
+        ).unwrap().unwrap();
+
+        account_state = updated_account_state;
+
+        new_block.claim.current_owner.2 = Some(wallet_1.sign(&"Invalid_Message".to_string()).unwrap().to_string());
+
+        let validator = Validator::new(
+                                            Message::NewBlock(
+                                                new_block,
+                                                genesis.clone(),
+                                                wallet_1.clone().address,
+                                                network_state, account_state.clone(), reward_state
+                                            ), wallet_1, account_state.clone());
+
+        match validator {
+            Some(validator) => {
+                let processed = validator.validate();
+                assert_eq!(processed.valid, false);
+            },
+            None => println!("Issue with validator, returned none")
+        }
     }
 
     #[test]
     fn test_invalid_block_invalid_state_hash() {
 
+        let state_path = "test_invalid_block_bad_claim_signature.db";
+
+        let mut account_state = AccountState::start();
+        let mut network_state = NetworkState::restore(state_path);
+        let reward_state = RewardState::start(&mut network_state);
+
+        let (mut wallet_1, updated_account_state) = WalletAccount::new(
+            &mut account_state, 
+            &mut network_state
+        );
+
+        account_state = updated_account_state;
+
+        let (genesis, updated_account_state) = Block::genesis(
+            reward_state, 
+            wallet_1.address.clone(), 
+            &mut account_state, 
+            &mut network_state
+        ).unwrap();
+
+        account_state = updated_account_state;
+        let claim_state = account_state.clone().claim_state;
+
+        let (_ts, claim_to_homestead) = claim_state.claims
+                                            .iter()
+                                            .min_by_key(|x| x.0).unwrap();
+
+        let (updated_wallet, updated_account_state) = claim_to_homestead.clone()
+            .homestead(
+                &mut wallet_1, 
+                &mut account_state.clone().claim_state, 
+                &mut account_state.clone(), 
+                &mut network_state).unwrap();
+
+        wallet_1 = updated_wallet;
+        account_state = updated_account_state;
+
+        let (
+            mut validator_wallet, 
+            updated_account_state
+        ) = WalletAccount::new(
+                &mut account_state, &mut network_state
+            );
+        
+        account_state = updated_account_state;
+
+        for (_ts, claim) in account_state.clone().claim_state.claims.iter() {
+            let (new_wallet, updated_account_state) = claim.to_owned().homestead(
+                &mut validator_wallet, 
+                &mut account_state.clone().claim_state, 
+                &mut account_state.clone(), 
+                &mut network_state
+            ).unwrap();
+
+            validator_wallet = new_wallet;
+            account_state = updated_account_state;
+        }
+
+        for claim in validator_wallet.clone().claims.iter() {
+            let updated_account_state = claim
+                .clone()
+                .unwrap()
+                .stake(
+                    validator_wallet.clone(), 
+                    &mut account_state
+                );
+
+            account_state = updated_account_state;
+        }
+
+        let (mut new_block, updated_account_state) = Block::mine(
+            &reward_state, 
+            wallet_1.clone().claims[0].clone().unwrap(), 
+            genesis.clone(),
+            HashMap::new(), &mut account_state, &mut network_state
+        ).unwrap().unwrap();
+
+        account_state = updated_account_state;
+
+        new_block.state_hash = digest_bytes("Invalid_State_Hash".as_bytes());
+
+        let validator = Validator::new(
+                                            Message::NewBlock(
+                                                new_block,
+                                                genesis.clone(),
+                                                wallet_1.clone().address,
+                                                network_state, account_state.clone(), reward_state
+                                            ), wallet_1, account_state.clone());
+
+        match validator {
+            Some(validator) => {
+                let processed = validator.validate();
+                assert_eq!(processed.valid, false);
+            },
+            None => println!("Issue with validator, returned none")
+        }
+    }
+
+    #[test]
+    fn test_invalid_block_bad_last_block_hash() {
+
+        let state_path = "test_invalid_block_bad_claim_signature.db";
+
+        let mut account_state = AccountState::start();
+        let mut network_state = NetworkState::restore(state_path);
+        let reward_state = RewardState::start(&mut network_state);
+
+        let (mut wallet_1, updated_account_state) = WalletAccount::new(
+            &mut account_state, 
+            &mut network_state
+        );
+
+        account_state = updated_account_state;
+
+        let (genesis, updated_account_state) = Block::genesis(
+            reward_state, 
+            wallet_1.address.clone(), 
+            &mut account_state, 
+            &mut network_state
+        ).unwrap();
+
+        account_state = updated_account_state;
+        let claim_state = account_state.clone().claim_state;
+
+        let (_ts, claim_to_homestead) = claim_state.claims
+                                            .iter()
+                                            .min_by_key(|x| x.0).unwrap();
+
+        let (updated_wallet, updated_account_state) = claim_to_homestead.clone()
+            .homestead(
+                &mut wallet_1, 
+                &mut account_state.clone().claim_state, 
+                &mut account_state.clone(), 
+                &mut network_state).unwrap();
+
+        wallet_1 = updated_wallet;
+        account_state = updated_account_state;
+
+        let (
+            mut validator_wallet, 
+            updated_account_state
+        ) = WalletAccount::new(
+                &mut account_state, &mut network_state
+            );
+        
+        account_state = updated_account_state;
+
+        for (_ts, claim) in account_state.clone().claim_state.claims.iter() {
+            let (new_wallet, updated_account_state) = claim.to_owned().homestead(
+                &mut validator_wallet, 
+                &mut account_state.clone().claim_state, 
+                &mut account_state.clone(), 
+                &mut network_state
+            ).unwrap();
+
+            validator_wallet = new_wallet;
+            account_state = updated_account_state;
+        }
+
+        for claim in validator_wallet.clone().claims.iter() {
+            let updated_account_state = claim
+                .clone()
+                .unwrap()
+                .stake(
+                    validator_wallet.clone(), 
+                    &mut account_state
+                );
+
+            account_state = updated_account_state;
+        }
+
+        let (mut new_block, updated_account_state) = Block::mine(
+            &reward_state, 
+            wallet_1.clone().claims[0].clone().unwrap(), 
+            genesis.clone(),
+            HashMap::new(), &mut account_state, &mut network_state
+        ).unwrap().unwrap();
+
+        account_state = updated_account_state;
+
+        new_block.last_block_hash = digest_bytes("Invalid_Last_Block_Hash".as_bytes());
+
+        let validator = Validator::new(
+                                            Message::NewBlock(
+                                                new_block,
+                                                genesis.clone(),
+                                                wallet_1.clone().address,
+                                                network_state, account_state.clone(), reward_state
+                                            ), wallet_1, account_state.clone());
+
+        match validator {
+            Some(validator) => {
+                let processed = validator.validate();
+                assert_eq!(processed.valid, false);
+            },
+            None => println!("Issue with validator, returned none")
+        }
     }
 
     #[test]
     fn test_invalid_block_bad_reward() {
+        let state_path = "test_invalid_block_bad_claim_signature.db";
+
+        let mut account_state = AccountState::start();
+        let mut network_state = NetworkState::restore(state_path);
+        let reward_state = RewardState::start(&mut network_state);
+
+        let (mut wallet_1, updated_account_state) = WalletAccount::new(
+            &mut account_state, 
+            &mut network_state
+        );
+
+        account_state = updated_account_state;
+
+        let (genesis, updated_account_state) = Block::genesis(
+            reward_state, 
+            wallet_1.address.clone(), 
+            &mut account_state, 
+            &mut network_state
+        ).unwrap();
+
+        account_state = updated_account_state;
+        let claim_state = account_state.clone().claim_state;
+
+        let (_ts, claim_to_homestead) = claim_state.claims
+                                            .iter()
+                                            .min_by_key(|x| x.0).unwrap();
+
+        let (updated_wallet, updated_account_state) = claim_to_homestead.clone()
+            .homestead(
+                &mut wallet_1, 
+                &mut account_state.clone().claim_state, 
+                &mut account_state.clone(), 
+                &mut network_state).unwrap();
+
+        wallet_1 = updated_wallet;
+        account_state = updated_account_state;
+
+        let (
+            mut validator_wallet, 
+            updated_account_state
+        ) = WalletAccount::new(
+                &mut account_state, &mut network_state
+            );
+        
+        account_state = updated_account_state;
+
+        for (_ts, claim) in account_state.clone().claim_state.claims.iter() {
+            let (new_wallet, updated_account_state) = claim.to_owned().homestead(
+                &mut validator_wallet, 
+                &mut account_state.clone().claim_state, 
+                &mut account_state.clone(), 
+                &mut network_state
+            ).unwrap();
+
+            validator_wallet = new_wallet;
+            account_state = updated_account_state;
+        }
+
+        for claim in validator_wallet.clone().claims.iter() {
+            let updated_account_state = claim
+                .clone()
+                .unwrap()
+                .stake(
+                    validator_wallet.clone(), 
+                    &mut account_state
+                );
+
+            account_state = updated_account_state;
+        }
+
+        let (mut new_block, updated_account_state) = Block::mine(
+            &reward_state, 
+            wallet_1.clone().claims[0].clone().unwrap(), 
+            genesis.clone(),
+            HashMap::new(), &mut account_state, &mut network_state
+        ).unwrap().unwrap();
+
+        account_state = updated_account_state;
+
+        new_block.block_reward = Reward::new(Some(wallet_1.clone().address), &reward_state);
+
+        let validator = Validator::new(
+                                            Message::NewBlock(
+                                                new_block,
+                                                genesis.clone(),
+                                                wallet_1.clone().address,
+                                                network_state, account_state.clone(), reward_state
+                                            ), wallet_1, account_state.clone());
+
+        match validator {
+            Some(validator) => {
+                let processed = validator.validate();
+                assert_eq!(processed.valid, false);
+            },
+            None => println!("Issue with validator, returned none")
+        }
+    }
+
+    #[test]
+    fn test_invalid_block_flake_reward_none_remaining() {
+
+    }
+
+    #[test]
+    fn test_invalid_block_grain_reward_none_remaining() {
+
+    }
+
+    #[test]
+    fn test_invalid_block_nugget_reward_none_remaining_ce() {
+
+    }
+
+    #[test]
+    fn test_invalid_block_vein_reward_none_remaining_ce() {
+
+    }
+
+    #[test]
+    fn test_invalid_block_motherlode_reward_none_remaining_ce() {
+
+    }
+
+    #[test]
+    fn test_invalid_block_nugget_reward_none_remaining_total() {
+
+    }
+
+    #[test]
+    fn test_invalid_block_vein_reward_none_remaining_total() {
+
+    }
+    
+    #[test]
+    fn test_invalid_block_motherlode_reward_none_remaining_total() {
 
     }
 
     #[test]
     fn test_invalid_block_bad_claim_invalid_chain_of_custody() {
+
+        let state_path = "test_invalid_block_bad_claim_signature.db";
+
+        let mut account_state = AccountState::start();
+        let mut network_state = NetworkState::restore(state_path);
+        let reward_state = RewardState::start(&mut network_state);
+
+        let (mut wallet_1, updated_account_state) = WalletAccount::new(
+            &mut account_state, 
+            &mut network_state
+        );
+
+        account_state = updated_account_state;
+
+        let (genesis, updated_account_state) = Block::genesis(
+            reward_state, 
+            wallet_1.address.clone(), 
+            &mut account_state, 
+            &mut network_state
+        ).unwrap();
+
+        account_state = updated_account_state;
+        let claim_state = account_state.clone().claim_state;
+
+        let (_ts, claim_to_homestead) = claim_state.claims
+                                            .iter()
+                                            .min_by_key(|x| x.0).unwrap();
+
+        let (updated_wallet, updated_account_state) = claim_to_homestead.clone()
+            .homestead(
+                &mut wallet_1, 
+                &mut account_state.clone().claim_state, 
+                &mut account_state.clone(), 
+                &mut network_state).unwrap();
+
+        wallet_1 = updated_wallet;
+        account_state = updated_account_state;
+
+        let (
+            mut validator_wallet, 
+            updated_account_state
+        ) = WalletAccount::new(
+                &mut account_state, &mut network_state
+            );
+        
+        account_state = updated_account_state;
+
+        for (_ts, claim) in account_state.clone().claim_state.claims.iter() {
+            let (new_wallet, updated_account_state) = claim.to_owned().homestead(
+                &mut validator_wallet, 
+                &mut account_state.clone().claim_state, 
+                &mut account_state.clone(), 
+                &mut network_state
+            ).unwrap();
+
+            validator_wallet = new_wallet;
+            account_state = updated_account_state;
+        }
+
+        for claim in validator_wallet.clone().claims.iter() {
+            let updated_account_state = claim
+                .clone()
+                .unwrap()
+                .stake(
+                    validator_wallet.clone(), 
+                    &mut account_state
+                );
+
+            account_state = updated_account_state;
+        }
+
+        let (mut new_block, updated_account_state) = Block::mine(
+            &reward_state, 
+            wallet_1.clone().claims[0].clone().unwrap(), 
+            genesis.clone(),
+            HashMap::new(), &mut account_state, &mut network_state
+        ).unwrap().unwrap();
+
+        account_state = updated_account_state;
+
+        let mut custodian_data = new_block
+            .clone()
+            .claim.chain_of_custody
+            .get(&wallet_1.clone().address
+        ).unwrap().to_owned();
+
+        let acquisition_timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+
+        custodian_data
+            .insert("acquisition_timestamp".to_string(), Some(
+                CustodianInfo::AcquisitionTimestamp(acquisition_timestamp)));
+
+        new_block.claim.chain_of_custody.insert(wallet_1.clone().address, custodian_data.to_owned());
+
+        let validator = Validator::new(
+                                            Message::NewBlock(
+                                                new_block,
+                                                genesis.clone(),
+                                                wallet_1.clone().address,
+                                                network_state, account_state.clone(), reward_state
+                                            ), wallet_1, account_state.clone());
+
+        match validator {
+            Some(validator) => {
+                let processed = validator.validate();
+                assert_eq!(processed.valid, false);
+            },
+            None => println!("Issue with validator, returned none")
+        }
 
     }
 

@@ -1,15 +1,7 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
-use crate::reward::FLAKE_REWARD_RANGE;
-use crate::reward::GENESIS_REWARD;
-use crate::reward::GRAIN_REWARD_RANGE;
-use crate::reward::MOTHERLODE_FINAL_EPOCH;
-use crate::reward::MOTHERLODE_REWARD_RANGE;
-use crate::reward::NUGGET_FINAL_EPOCH;
-use crate::reward::NUGGET_REWARD_RANGE;
-use crate::reward::VEIN_FINAL_EPOCH;
-use crate::reward::VEIN_REWARD_RANGE;
+use crate::reward;
 use crate::state::NetworkState;
 use crate::validator::ValidatorOptions;
 use crate::verifiable::Verifiable;
@@ -17,15 +9,13 @@ use crate::{
     account::{WalletAccount, AccountState, StateOption::{Miner}}, 
     claim::{Claim}, 
     txn::Txn, 
-    reward::{RewardState, Reward, Category},
+    reward::{RewardState, Reward},
 };
 use secp256k1::{Signature};
 use serde::{Deserialize, Serialize};
 use sha256::digest_bytes;
-use sha256::digest_file;
 use std::io::Error;
 use std::fmt;
-use std::path::Path;
 use secp256k1::{
     key::{PublicKey}
 };
@@ -71,7 +61,7 @@ impl Block {
     ///     updated_account_state
     /// ) = Block::genesis(
     ///         reward_state, 
-    ///         &mut miner, 
+    ///         miner.address.clone(), 
     ///         &mut account_state, 
     ///         &mut network_state
     ///     ).unwrap();
@@ -107,10 +97,8 @@ impl Block {
         }
 
         // TODO: add path field to NetworkState so that this is not hardcoded
-        let state_path = Path::new("./temp.db");
 
-        let state_hash = digest_file(state_path).unwrap();
-
+        let state_hash = network_state.hash();
 
         // Initialize a new block.
         let genesis = Block {
@@ -204,9 +192,8 @@ impl Block {
                         &miner,
                         serde_json::to_string(&next_block_reward.clone()).unwrap()
                     );
-        
-        let state_path = Path::new("./temp.db");
-        let state_hash = digest_file(state_path).unwrap();
+                    
+        let state_hash = network_state.hash();
 
         // Ensure that the claim is mature
         if claim.maturation_time <= now.as_nanos() {
@@ -251,7 +238,7 @@ impl Block {
                         last_block_hash: last_block.block_hash,
 
                         // Set the data value to data passed into this method in the signature
-                        data: data,
+                        data,
 
                         // Set the claim to the claim that entitled the miner to mine this block
                         claim: claim
@@ -310,6 +297,30 @@ impl Block {
     }
 }
 
+pub fn data_validator(data: HashMap<String, Txn>, account_state: AccountState) -> Option<bool> {
+    for (id, _txn) in data {
+        let valid = account_state.mineable.get(&id);
+
+        match valid {
+            Some((_txn, validator_vec)) => {
+                let num_invalid = validator_vec
+                    .iter()
+                    .filter(|&validator| validator.to_owned().valid == false)
+                    .count();
+                
+                let len_of_validators = validator_vec.len();
+
+                if num_invalid as f32 / len_of_validators as f32 > 1.0 / 3.0 {
+                    return Some(false);
+                }
+            },
+            None => { return Some(false) }
+        }
+    }
+
+    return Some(true)
+}
+
 impl fmt::Display for Block {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
@@ -336,6 +347,7 @@ impl Verifiable for Block {
                         pubkey, 
                         account_state,
                         reward_state,
+                        network_state
                         ) => {
                         
                         // Check that claim signature is valid
@@ -369,24 +381,19 @@ impl Verifiable for Block {
                             return Some(false)
                         }
 
-                        let state_path = Path::new("./temp.db");
-                        let state_hash = digest_file(state_path);
-
-                        match state_hash {
-                            Ok(hash_string) => {
-                                if block.state_hash != hash_string {
-                                    return Some(false);
-                                }
-                            },
-                            Err(_e) => { return Some(false) }
+                        let state_hash = network_state.hash();
+                        if block.state_hash != state_hash {
+                            return Some(false);
                         }
                         
-                        let claim_key = block.claim.clone().maturation_time;
-
-                        let account_state_claim = if let Some(claim) = account_state.claim_state.claims.get(&claim_key) {
-                            claim.to_owned()
-                        } else {
-                            return Some(false)
+                        let account_state_claim = {
+                            if let Some(claim) = account_state.claim_state.claims.get(
+                                &block.claim.clone().maturation_time
+                            ) {
+                                claim.to_owned()
+                            } else {
+                                return Some(false)
+                            }
                         };
 
                         if account_state_claim != block.claim {
@@ -397,152 +404,28 @@ impl Verifiable for Block {
                             return Some(false)
                         }
 
-                        match block.block_reward.category {
-                            Category::Flake(amount) => {
-                                match amount {
-                                    Some(amt) => {
-                                        if amt < FLAKE_REWARD_RANGE.0 || amt > FLAKE_REWARD_RANGE.1 {
-                                            return Some(false)
-                                        }
-                                        if reward_state.n_flakes_current_epoch == 0 {
-                                            return Some(false)
-                                        }   
-                                    },
-                                    None => { return Some(false) }
-                                }
-                            },
-                            Category::Grain(amount) => {
-                                match amount {
-                                    Some(amt) => {
-                                        if amt < GRAIN_REWARD_RANGE.0 || amt > GRAIN_REWARD_RANGE.1 {
-                                            return Some(false)
-                                        }
-
-                                        if reward_state.n_grains_current_epoch == 0 {
-                                            return Some(false)
-                                        }                                        
-                                    },
-                                    None => { return Some(false) }
-                                }
-                            },
-                            Category::Nugget(amount) => {
-                                match amount {
-                                    Some(amt) => {
-                                        if amt < NUGGET_REWARD_RANGE.0 || amt > NUGGET_REWARD_RANGE.1 {
-                                            return Some(false)
-                                        }
-
-                                        if reward_state.n_nuggets_current_epoch == 0 {
-                                            return Some(false)
-                                        }
-
-                                        if reward_state.n_nuggets_remaining == 0 {
-                                            return Some(false)
-                                        }
-
-                                        if reward_state.epoch > NUGGET_FINAL_EPOCH {
-                                            return Some(false)
-                                        } 
-                                        
-                                        if reward_state.epoch == NUGGET_FINAL_EPOCH
-                                        && reward_state.n_nuggets_remaining > 1 {
-                                            return Some(false)
-                                        }
-                                        
-                                    },
-                                    None => { return Some(false) }
-                                }
-                            },
-                            Category::Vein(amount) => {
-                                match amount {
-                                    Some(amt) => {
-                                        if amt < VEIN_REWARD_RANGE.0 || amt > VEIN_REWARD_RANGE.0 {
-                                            return Some(false)
-                                        }
-                                        if reward_state.n_veins_current_epoch == 0 {
-                                            return Some(false)
-                                        }
-
-                                        if reward_state.n_veins_remaining == 0 {
-                                            return Some(false)
-                                        }
-
-                                        if reward_state.epoch > VEIN_FINAL_EPOCH {
-                                            return Some(false)
-                                        } 
-                                        
-                                        if reward_state.epoch == VEIN_FINAL_EPOCH
-                                        && reward_state.n_veins_remaining > 1 {
-                                            return Some(false)
-                                        }                                        
-                                    },
-                                    None => { return Some(false) }
-                                }                                
-                            },
-                            Category::Motherlode(amount) => {
-                                match amount {
-                                    Some(amt) => {
-                                        if amt < MOTHERLODE_REWARD_RANGE.0 || amt > MOTHERLODE_REWARD_RANGE.1 {
-                                            return Some(false)
-                                        }
-                                        if reward_state.n_motherlodes_current_epoch == 0 {
-                                            return Some(false)
-                                        }
-
-                                        if reward_state.n_motherlodes_remaining == 0 {
-                                            return Some(false)
-                                        }
-
-                                        if reward_state.epoch > MOTHERLODE_FINAL_EPOCH {
-                                            return Some(false)
-                                        } 
-                                        
-                                        if reward_state.epoch == MOTHERLODE_FINAL_EPOCH
-                                        && reward_state.n_motherlodes_remaining > 1 {
-                                            return Some(false)
-                                        }                                        
-                                    },
-                                    None => { return Some(false) }
-                                }
-                            },
-                            Category::Genesis(amount) => {
-                                match amount {
-                                    Some(amt) => {
-                                        if amt != GENESIS_REWARD {
-                                            return Some(false)
-                                        }
-                                    },
-                                    None => { return Some(false) }
-                                }
-                            },
-
+                        match reward::valid_reward(block.block_reward.category, reward_state) {
+                            Some(false) => return Some(false),
+                            None => return Some(false),
+                            _ => {}
                         }
 
-                        for (id, _txn) in block.data {
-                            let valid = account_state.mineable.get(&id);
+                        match reward::valid_reward(block.next_block_reward.category, reward_state) {
+                            Some(false) => return Some(false),
+                            None => return Some(false),
+                            _ => {}
+                        }
 
-                            match valid {
-                                Some((_txn, validator_vec)) => {
-                                    let num_invalid = validator_vec
-                                        .iter()
-                                        .filter(|&validator| validator.to_owned().valid == false)
-                                        .count();
-                                    
-                                    let len_of_validators = validator_vec.len();
-
-                                    if num_invalid as f32 / len_of_validators as f32 > 1.0 / 3.0 {
-                                        return Some(false);
-                                    }
-                                },
-                                None => { return Some(false) }
-                            }
+                        match data_validator(block.data, account_state) {
+                            Some(false) => { return Some(false) },
+                            None => { return Some(false) },
+                            _ => {}
                         }
 
                         return Some(true)
                     },    
                     _ => panic!("Invalid options for block"),
                 }
-
             },
             None => {
                 return Some(false)

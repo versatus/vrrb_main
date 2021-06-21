@@ -253,6 +253,129 @@ impl Category {
     }
 }
 
+pub fn valid_reward(category: Category, reward_state: RewardState) -> Option<bool> {
+    match category {
+        Category::Flake(amount) => {
+            match amount {
+                Some(amt) => {
+                    if amt < FLAKE_REWARD_RANGE.0 || amt > FLAKE_REWARD_RANGE.1 {
+                        return Some(false)
+                    }
+                    if reward_state.n_flakes_current_epoch == 0 {
+                        return Some(false)
+                    }
+                },
+                None => { return Some(false) }
+            }
+        },
+        Category::Grain(amount) => {
+            match amount {
+                Some(amt) => {
+                    if amt < GRAIN_REWARD_RANGE.0 || amt > GRAIN_REWARD_RANGE.1 {
+                        return Some(false)
+                    }
+
+                    if reward_state.n_grains_current_epoch == 0 {
+                        return Some(false)
+                    }                                        
+                },
+                None => { return Some(false) }
+            }
+        },
+        Category::Nugget(amount) => {
+            match amount {
+                Some(amt) => {
+                    if amt < NUGGET_REWARD_RANGE.0 || amt > NUGGET_REWARD_RANGE.1 {
+                        return Some(false)
+                    }
+
+                    if reward_state.n_nuggets_current_epoch == 0 {
+                        return Some(false)
+                    }
+
+                    if reward_state.n_nuggets_remaining == 0 {
+                        return Some(false)
+                    }
+
+                    if reward_state.epoch > NUGGET_FINAL_EPOCH {
+                        return Some(false)
+                    } 
+                    
+                    if reward_state.epoch == NUGGET_FINAL_EPOCH
+                    && reward_state.n_nuggets_remaining > 1 {
+                        return Some(false)
+                    }
+                    
+                },
+                None => { return Some(false) }
+            }
+        },
+        Category::Vein(amount) => {
+            match amount {
+                Some(amt) => {
+                    if amt < VEIN_REWARD_RANGE.0 || amt > VEIN_REWARD_RANGE.0 {
+                        return Some(false)
+                    }
+                    if reward_state.n_veins_current_epoch == 0 {
+                        return Some(false)
+                    }
+
+                    if reward_state.n_veins_remaining == 0 {
+                        return Some(false)
+                    }
+
+                    if reward_state.epoch > VEIN_FINAL_EPOCH {
+                        return Some(false)
+                    } 
+                    
+                    if reward_state.epoch == VEIN_FINAL_EPOCH
+                    && reward_state.n_veins_remaining > 1 {
+                        return Some(false)
+                    }                                        
+                },
+                None => { return Some(false) }
+            }                                
+        },
+        Category::Motherlode(amount) => {
+            match amount {
+                Some(amt) => {
+                    if amt < MOTHERLODE_REWARD_RANGE.0 || amt > MOTHERLODE_REWARD_RANGE.1 {
+                        return Some(false)
+                    }
+                    if reward_state.n_motherlodes_current_epoch == 0 {
+                        return Some(false)
+                    }
+
+                    if reward_state.n_motherlodes_remaining == 0 {
+                        return Some(false)
+                    }
+
+                    if reward_state.epoch > MOTHERLODE_FINAL_EPOCH {
+                        return Some(false)
+                    } 
+                    
+                    if reward_state.epoch == MOTHERLODE_FINAL_EPOCH
+                    && reward_state.n_motherlodes_remaining > 1 {
+                        return Some(false)
+                    }                                        
+                },
+                None => { return Some(false) }
+            }
+        },
+        Category::Genesis(amount) => {
+            match amount {
+                Some(amt) => {
+                    if amt != GENESIS_REWARD {
+                        return Some(false)
+                    }
+                },
+                None => { return Some(false) }
+            }
+        },
+    }
+    return Some(true)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

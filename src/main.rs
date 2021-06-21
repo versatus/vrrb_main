@@ -5,8 +5,9 @@ use vrrb_main::{account::{
 use std::{collections::HashMap, sync::mpsc, thread};
 fn main() {
     println!("Welcome to VRRB");
+    let state_path = "vrrb_network_state.db";    
     let mut account_state = AccountState::start();
-    let mut network_state = NetworkState::restore("vrrb_network_state.db");
+    let mut network_state = NetworkState::restore(state_path);
     let mut reward_state = RewardState::start(&mut network_state);
 
     let (mut wallet, updated_account_state) = WalletAccount::new(
@@ -19,7 +20,7 @@ fn main() {
         reward_state, 
         wallet.address.clone(), 
         &mut account_state, 
-        &mut network_state    
+        &mut network_state,
     ).unwrap();
 
     account_state = updated_account_state;
@@ -78,7 +79,7 @@ fn main() {
                     last_block, 
                     HashMap::new(), 
                     &mut thread_account_state,
-                    &mut thread_network_state
+                    &mut thread_network_state,
                 );
                 let (block, updated_account_state) = new_block.unwrap().unwrap();
                 
@@ -145,11 +146,12 @@ fn test_mine_genesis(
     account_state: &mut AccountState, 
     network_state: &mut NetworkState
 ) {
+
     let (genesis_block, updated_account_state) = Block::genesis(
         reward_state.clone(), 
         wallet.address.clone(), 
         account_state, 
-        network_state
+        network_state,
     ).unwrap();
 
     println!("{:?}\n\n", &genesis_block);
@@ -198,6 +200,7 @@ fn test_mine_blocks(
     mut last_block: Block,
     reward_state: RewardState
 ) {
+
     for claim in &wallet.clone().claims {
         let data = HashMap::new();
         let (new_block, updated_account_state) = Block::mine(
@@ -206,9 +209,8 @@ fn test_mine_blocks(
             last_block, 
             data,
             &mut account_state.clone(), 
-            &mut network_state)
-                .unwrap()
-                .unwrap();
+            &mut network_state,
+        ).unwrap().unwrap();
         last_block = new_block;
         account_state = updated_account_state;
         wallet = wallet.get_balance(account_state.clone()).unwrap();

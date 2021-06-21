@@ -9,6 +9,7 @@ pub mod state;
 pub mod validator;
 pub mod verifiable;
 pub mod arbiter;
+pub mod mpu;
 
 #[cfg(test)]
 mod tests {

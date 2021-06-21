@@ -579,8 +579,6 @@ impl Verifiable for Claim {
                                     println!("Valid Timestamp!");
                                 }
 
-
-
                                 let previous_owner = self.chain_of_custody
                                     .get(&acquirer_address)
                                     .unwrap().get("acquired_from").unwrap();
@@ -598,6 +596,7 @@ impl Verifiable for Claim {
 
                                 let is_staked =
                                     account_state.claim_state.staked_claims.get(&previous_owner_pk);
+                                    
                                 match is_staked {
                                     Some(map) => {
                                         let matched_claim = map.get(&self.maturation_time);
@@ -639,7 +638,8 @@ mod tests {
 
     #[test]
     fn test_claim_creation_with_new_block() {
-        let mut network_state = NetworkState::restore("claim_test1_state.db");
+        let state_path = "claim_test1_state.db";
+        let mut network_state = NetworkState::restore(state_path);
         let reward_state = RewardState::start(&mut network_state);
         let mut account_state = AccountState::start();
         let mut claim_state = ClaimState::start();

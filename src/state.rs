@@ -20,12 +20,13 @@ use sha256::digest_bytes;
 use std::collections::HashMap;
 
 pub struct NetworkState {
-    pub state: PickleDb
+    pub state: PickleDb,
 }
 
 impl NetworkState {
 
-    pub fn update<T: Serialize>(&mut self, state_obj: T, state_obj_type: &str) -> Result<(), error::ErrorType> {
+    pub fn update<T: Serialize>(
+        &mut self, state_obj: T, state_obj_type: &str) -> Result<(), error::ErrorType> {
         let result = self.state.set(state_obj_type, &state_obj);
 
         match result {
@@ -50,30 +51,21 @@ impl NetworkState {
         };
         
         NetworkState {
-            state: db
+            state: db,
         }    
     }
 
-    pub fn hash(&self) -> String {
-        let account_state = self.state.get::<AccountState>("account_state");
-        let reward_state = self.state.get::<RewardState>("reward_state");
+    pub fn hash(&self, uts: &[u8; 16]) -> String {
+        let mut network_state_bytes = serde_json::to_string(&self).unwrap().into_bytes();
+        network_state_bytes.sort();
 
-        let account_state_string = match account_state {
-            Some(account_state) => {
-                format!("account_state: {}", serde_json::to_string(&account_state).unwrap())
-            }
-            None => panic!("Something went wrong when retrieving account state from network state")
-        };
+        let ts_hash = digest_bytes(uts);
+        for byte in ts_hash.as_bytes().iter() {
+            network_state_bytes.push(*byte);
+        }
+        let state_bytes: &[u8] = &network_state_bytes;
 
-        let reward_state_string = match reward_state {
-            Some(reward_state) => {
-                format!("reward_state: {}", serde_json::to_string(&reward_state).unwrap())
-            },
-            None => panic!("Something went wrong when retrieving account state from network state")
-        };
-
-        digest_bytes(format!("network_state: {}, {}", account_state_string, reward_state_string).as_bytes())
-
+        digest_bytes(state_bytes)
     }
 }
 
@@ -129,8 +121,13 @@ impl<'a> Serialize for NetworkState {
     {
         let mut map: HashMap<&'a str, String> = HashMap::new();
 
-        let account_state = serde_json::to_string::<AccountState>(&self.state.get("account_state").unwrap()).unwrap();
-        let reward_state = serde_json::to_string::<AccountState>(&self.state.get("account_state").unwrap()).unwrap();
+        let account_state = serde_json::to_string::<AccountState>(
+            &self.state.get("account_state").unwrap()
+        ).unwrap();
+
+        let reward_state = serde_json::to_string::<AccountState>(
+            &self.state.get("account_state").unwrap()
+        ).unwrap();
 
         map.insert("account_state", account_state);
         map.insert("reward_state", reward_state);

@@ -98,7 +98,7 @@ impl Block {
 
         // TODO: add path field to NetworkState so that this is not hardcoded
 
-        let state_hash = network_state.hash();
+        let state_hash = network_state.hash(&now.as_nanos().to_ne_bytes());
 
         // Initialize a new block.
         let genesis = Block {
@@ -193,7 +193,7 @@ impl Block {
                         serde_json::to_string(&next_block_reward.clone()).unwrap()
                     );
                     
-        let state_hash = network_state.hash();
+        let state_hash = network_state.hash(&now.as_nanos().to_ne_bytes());
 
         // Ensure that the claim is mature
         if claim.maturation_time <= now.as_nanos() {
@@ -349,76 +349,97 @@ impl Verifiable for Block {
                         reward_state,
                         network_state
                         ) => {
-                        
-                        // Check that claim signature is valid
+                       
                         let valid_signature = match block.clone().claim.current_owner.2 {
                             Some(sig) => {
                                 let pubkey = match PublicKey::from_str(&pubkey) {
-                                    Ok(pk) => pk,
-                                    Err(_e) => return Some(false)
+                                    Ok(pk) => {pk}
+                                    Err(_e) => { println!("Invalid Public Key"); return Some(false) }
                                 };
                                 let signature = match Signature::from_str(&sig) {
                                     Ok(sig) => sig,
-                                    Err(_e) => return Some(false)
+                                    Err(_e) => {println!("Invalid Signature Structure"); return Some(false)}
                                 };
 
                                 block.clone().claim.verify(&signature, &pubkey)
                             },
-                            None => return Some(false)
+                            None => {
+                                println!("Signature verification returned None");
+                                return Some(false)
+                            }
                         };
 
                         match valid_signature {
                             Ok(true) => {},
-                            Ok(false) => { return Some(false) },
-                            Err(_e) => { return Some(false) }
+                            Ok(false) => { println!("Invalid Signature"); return Some(false) },
+                            Err(e) => { 
+                                println!("Signature validation returned error: {}", e);
+                                return Some(false) 
+                            }
                         }
 
                         if block.last_block_hash != last_block.block_hash {
+                            println!("Invalid last block hash");
                             return Some(false)
                         }
                         
                         if block.block_hash != digest_bytes(block.block_payload.as_bytes()) {
+                            println!("Invalid block hash");
                             return Some(false)
                         }
 
-                        let state_hash = network_state.hash();
+                        let state_hash = network_state.hash(&block.timestamp.to_ne_bytes());
+                        println!("{}", &state_hash);
                         if block.state_hash != state_hash {
+                            println!("Invalid state hash");
                             return Some(false);
                         }
                         
                         let account_state_claim = {
-                            if let Some(claim) = account_state.claim_state.claims.get(
+                            if let Some(claim) = account_state.claim_state.owned_claims.get(
                                 &block.claim.clone().maturation_time
                             ) {
                                 claim.to_owned()
                             } else {
+                                println!("unable to find block claim");
                                 return Some(false)
                             }
                         };
 
                         if account_state_claim != block.claim {
+                            println!("invalid block claim");
                             return Some(false)
                         }
 
-                        if last_block.next_block_reward != block.block_reward {
+                        if last_block.next_block_reward.amount != block.block_reward.amount {
+                            println!("invalid block reward doesn't match last block reward");
                             return Some(false)
                         }
 
                         match reward::valid_reward(block.block_reward.category, reward_state) {
-                            Some(false) => return Some(false),
-                            None => return Some(false),
+                            Some(false) => {
+                                println!("invalid block reward");
+                                return Some(false)
+                            },
+                            None => {println!("reward validation returned None"); return Some(false)},
                             _ => {}
                         }
 
                         match reward::valid_reward(block.next_block_reward.category, reward_state) {
-                            Some(false) => return Some(false),
-                            None => return Some(false),
+                            Some(false) => {
+                                println!("invalid next block reward");
+                                return Some(false)
+                            },
+                            None => {println!("reward validation returned None"); return Some(false)},
                             _ => {}
                         }
 
                         match data_validator(block.data, account_state) {
-                            Some(false) => { return Some(false) },
-                            None => { return Some(false) },
+                            Some(false) => { 
+                                println!("Invalid Data");
+                                return Some(false) 
+                            },
+                            None => { println!("data validator returned none"); return Some(false) },
                             _ => {}
                         }
 

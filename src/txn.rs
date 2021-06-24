@@ -73,8 +73,14 @@ impl Verifiable for Txn {
 
         match WalletAccount::verify(message, signature, pk) {
             Ok(true) => {},
-            Ok(false) => { return Some(false) }
-            Err(_e) => { return Some(false) }
+            Ok(false) => { 
+                println!("Invalid signature");
+                return Some(false) 
+            }
+            Err(e) => { 
+                println!("Signature verification resulted in an error: {}", e);
+                return Some(false) 
+            }
         }
 
         match options {
@@ -84,10 +90,12 @@ impl Verifiable for Txn {
                 match balance {
                     Some(bal) => {
                         if bal < &self.txn_amount {
+                            println!("Invalid balance, not enough coins!");
                             return Some(false)
                         }
                     },
                     None => {
+                        println!("couldn't find balance in account_state");
                         return Some(false)
                     }
                 }
@@ -95,6 +103,7 @@ impl Verifiable for Txn {
                 let receiver = account_state.accounts_address.get(&self.receiver_address); 
                 
                 if receiver == None {
+                    println!("couldn't find receiver");
                     return Some(false)
                 }
 
@@ -105,6 +114,7 @@ impl Verifiable for Txn {
                         if txn.txn_id == self.txn_id {
                             if txn.txn_amount != self.txn_amount || 
                             txn.receiver_address != self.receiver_address {
+                                println!("Attempted double spend");
                                 return Some(false)
                             }
                         }
@@ -118,7 +128,6 @@ impl Verifiable for Txn {
             None => panic!("Message structure is invalid"),
             _ => panic!("Message Option is invalid")
         }
-
         Some(true)
     }
 }

@@ -45,6 +45,7 @@ pub struct ClaimState {
 
 #[derive(Debug, Eq, Deserialize, PartialEq, Serialize)]
 pub struct Claim {
+    pub claim_number: u128,
     pub maturation_time: u128,
     pub price: u32,
     pub available: bool,
@@ -82,8 +83,9 @@ impl ClaimState {
 }
 
 impl Claim {
-    pub fn new(time: u128) -> Claim {
+    pub fn new(time: u128, claim_number: u128) -> Claim {
         Claim {
+            claim_number,
             maturation_time: time,
             price: 0,
             available: true,
@@ -402,6 +404,7 @@ impl fmt::Display for Claim {
 impl Clone for Claim {
     fn clone(&self) -> Claim {
         Claim {
+            claim_number: self.claim_number,
             maturation_time: self.maturation_time,
             price: self.price,
             available: self.available,
@@ -440,6 +443,10 @@ impl Verifiable for Claim {
                     ValidatorOptions::ClaimHomestead(account_state) => {
                         // convert the signature string found in the current owner tuple to a
                         // signature struct
+                        // if self.claim_number < 1000000 {
+                        //     return Some(true)
+                        // }
+                        
                         let signature =
                             Signature::from_str(&self.clone().current_owner.2.unwrap()).unwrap();
 
@@ -515,6 +522,17 @@ impl Verifiable for Claim {
                                         // If the subject claim's current owner homesteaded before (acquisition_time field is
                                         // < the field in the record retrieved from the account state), then return Some(true)
                                         return Some(true);
+                                    }
+                                } else {
+                                    let claims: Vec<_> = account_state.claim_state.owned_claims
+                                        .iter()
+                                        .filter(|(_ts, claim)| claim.current_owner.0.clone().unwrap() == self.current_owner.0.clone().unwrap())
+                                        .collect();
+                                    if claims.len() == 20 {
+                                        return Some(false)
+                                    } else if claims.len() > 20 {
+                                        // TODO: Propagate an error here this should never happen
+                                        return Some(false)
                                     }
                                 }
                             }

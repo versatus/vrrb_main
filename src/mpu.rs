@@ -25,7 +25,6 @@ pub fn message_processor(validator: Validator) -> Validator {
                     // and the message variant, the rest of the validator
                     // remains the same (node_wallet, and staked_claims).
                     Some(true) => {
-
                         return Validator {
                             valid: true,
                             message: Message::Txn(txn, account_state.clone()),

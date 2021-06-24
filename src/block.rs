@@ -23,6 +23,7 @@ use secp256k1::{
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Block {
+    pub block_height: u128,
     pub timestamp: u128,
     pub last_block_hash: String,
     pub data: HashMap<String, Txn>,
@@ -91,8 +92,8 @@ impl Block {
         // set 20 new claims into the vector initialized earlier incrementing each one
         // by 5 nano seconds
         // TODO: Change this to 1 second, 5 nano seconds is just for testing.
-        for _ in 0..20 {
-            visible_blocks.push(Claim::new(next_time));
+        for i in 1..=20 {
+            visible_blocks.push(Claim::new(next_time, i as u128 + 1));
             next_time = next_time + 5;
         }
 
@@ -102,6 +103,8 @@ impl Block {
 
         // Initialize a new block.
         let genesis = Block {
+
+            block_height: 1,
 
             // set the timestamp to the now variable
             timestamp: now.as_nanos(),
@@ -113,7 +116,7 @@ impl Block {
             data: HashMap::new(),
 
             // set the value of the claim to a new claim with the maturity timestamp of now
-            claim: Claim::new(now.as_nanos()),
+            claim: Claim::new(now.as_nanos(), 1),
 
             // set the value of the block reward to the result of a call to the genesis associated
             // method in the Reward struct. This will generate the Genesis reward and send it to
@@ -205,12 +208,16 @@ impl Block {
             // Get the claim with the highest maturity timestamp that current exists.
             let mut furthest_visible_block: u128 = account_state.clone().claim_state.furthest_visible_block;
             
+            let highest_claim_number: u128 = last_block.visible_blocks
+                .iter()
+                .map(|x| x.claim_number).max_by(|a, b| a.cmp(b)).unwrap();
+
             // Generate 20 new claims, increment each one's maturity timestamp by 5 nanoseconds
             // and push them to the visible_blocks vector.
             // TODO: Change this to 1 second, this is only for testing purposes.
             for _ in 0..20 {
                 furthest_visible_block += 5;
-                visible_blocks.push(Claim::new(furthest_visible_block));
+                visible_blocks.push(Claim::new(furthest_visible_block, highest_claim_number));
                 account_state.claim_state.furthest_visible_block = furthest_visible_block;
             }
 
@@ -230,6 +237,8 @@ impl Block {
                 Ok(_t) => {
                     // generate the new block and assign it to a variable new_block 
                     let new_block = Block {
+
+                        block_height: last_block.block_height + 1,
 
                         // set the timestamp value as now (in nanoseconds)
                         timestamp: now.as_nanos(),
@@ -310,8 +319,14 @@ pub fn data_validator(data: HashMap<String, Txn>, account_state: AccountState) -
                 
                 let len_of_validators = validator_vec.len();
 
+                if len_of_validators < 3 {
+                    return Some(false);
+                }
+
                 if num_invalid as f32 / len_of_validators as f32 > 1.0 / 3.0 {
                     return Some(false);
+                } else {
+                    println!("Txn is valid")
                 }
             },
             None => { return Some(false) }
@@ -398,7 +413,8 @@ impl Verifiable for Block {
                         let account_state_claim = {
                             if let Some(claim) = account_state.claim_state.owned_claims.get(
                                 &block.claim.clone().maturation_time
-                            ) {
+                            ) 
+                            {
                                 claim.to_owned()
                             } else {
                                 println!("unable to find block claim");

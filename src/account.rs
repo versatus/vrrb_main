@@ -32,7 +32,7 @@ pub enum StateOption {
     NewTxn(Txn),
     NewAccount(WalletAccount),
     ClaimAcquired(Claim),
-    ConfirmedTxn((Txn, Vec<Validator>)),
+    ConfirmedTxn((Txn, Validator)),
     Miner((String, Block)),
 }
 
@@ -367,13 +367,31 @@ impl AccountState {
             // If the StateOption is a confirmed transaction update the account state
             // accordingly (update balances of sender, receiver(s)) distribute the
             // fees to the trasnaction's validator.
-            StateOption::ConfirmedTxn((_txn, _validators)) => {
+            StateOption::ConfirmedTxn((txn, validator)) => {
                 //TODO: distribute txn fees among validators.
+                let mut txn_validators = self.pending.get(&txn.txn_id.clone()).unwrap().1.clone();
+                txn_validators.push(validator);
+                self.pending.insert(txn.txn_id.clone(), (txn.clone(), txn_validators.clone()));
+
+                let num_invalid = txn_validators
+                    .iter()
+                    .filter(|&validator| validator.to_owned().valid == false)
+                    .count();
+                
+                let len_of_validators = txn_validators.len();
+                println!("{}", &len_of_validators);
+                if len_of_validators >= 3 {
+                    if num_invalid as f32 / len_of_validators as f32 > 1.0 / 3.0 {
+                        {}
+                    } else {
+                        self.mineable.insert(txn.clone().txn_id, (txn.clone(), txn_validators.clone()));
+                    }
+                }
+
                 return Ok(self.to_owned());
             },
         }
     }
-        
 }
 
 impl WalletAccount {

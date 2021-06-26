@@ -10,6 +10,7 @@ pub mod validator;
 pub mod verifiable;
 pub mod arbiter;
 pub mod mpu;
+pub mod vpu;
 
 #[cfg(test)]
 mod tests {

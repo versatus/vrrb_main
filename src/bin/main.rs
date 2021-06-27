@@ -1,4 +1,4 @@
-use vrrb_main::{account::{
+use vrrb_lib::{account::{
         AccountState, 
         WalletAccount
     }, block::Block, claim::{ClaimState}, reward::{RewardState}, state::NetworkState};

@@ -133,3 +133,30 @@ impl ValidatorProcessor {
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validator_setting_by_message_id() {
+
+    }
+
+    #[test]
+    fn test_vpu_updates_state_when_confirmed_valid() {
+
+    }
+
+    #[test]
+    fn test_vpu_updates_state_when_confirmed_invalid() {
+
+    }
+
+    #[test]
+    fn test_vpu_slashes_claims() {
+        
+    }
+
+
+}

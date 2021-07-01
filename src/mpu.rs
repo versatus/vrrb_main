@@ -25,18 +25,18 @@ pub fn message_processor(validator: Validator) -> Validator {
                     // and the message variant, the rest of the validator
                     // remains the same (node_wallet, and staked_claims).
                     Some(true) => {
-                        return Validator {
+                        Validator {
                             valid: true,
-                            message: Message::Txn(txn, account_state.clone()),
-                            ..validator.clone()
-                        };
+                            message: Message::Txn(txn, account_state),
+                            ..validator
+                        }
                     },
                     // Validators default to invalid (valid field set to false)
                     // So if it is indeed invalid, then just return the validator struct as is
                     Some(false) => {
-                        return Validator {
-                            ..validator.clone()
-                        };
+                        Validator {
+                            ..validator
+                        }
                     },
                     // If None, there's an error, true or false should ALWAYS be returned
                     // by the is_valid() method.
@@ -60,16 +60,16 @@ pub fn message_processor(validator: Validator) -> Validator {
                 // not homestaeded.
                 match claim.is_valid(Some(ValidatorOptions::ClaimAcquire(account_state.clone(), buyer_pubkey.clone()))) {
                     Some(true) => {
-                        return Validator {
+                        Validator {
                             valid: true,
-                            message: Message::ClaimAcquired(claim, seller_pubkey.clone(), account_state, buyer_pubkey.clone()),
-                            ..validator.clone()
+                            message: Message::ClaimAcquired(claim, seller_pubkey, account_state, buyer_pubkey),
+                            ..validator
                         }
                     }
                     // Validator defaults to invalid so if the message
                     // subject is invalid just return the validator as is
                     Some(false) => {
-                        return validator.clone()
+                        validator
                     },
                     // If the is_valid() method returns none, something has gone wrong
                     // TODO: propagate custom error for main to handle
@@ -91,16 +91,16 @@ pub fn message_processor(validator: Validator) -> Validator {
                     // the validator with the valid field set to tru
                     // and the message.
                     Some(true) => { 
-                        return Validator {
+                        Validator {
                             valid: true,
-                            message: Message::ClaimHomesteaded(claim, pubkey, account_state.clone()),
-                            ..validator.clone()
+                            message: Message::ClaimHomesteaded(claim, pubkey, account_state),
+                            ..validator
                         }
                     },
                     // If the claim is invalidly homesteaded
                     // then return the validator as is
                     Some(false) => { 
-                        return validator.clone()
+                        validator
                     },
                     // If the is_valid() method returns none, then something
                     // went wrong.
@@ -111,46 +111,51 @@ pub fn message_processor(validator: Validator) -> Validator {
                     }, 
                 }
             },
-            Message::NewBlock(
-                last_block,
-                block, 
-                pubkey, 
-                network_state, 
-                account_state, 
-                reward_state,
-            ) => {
+            Message::NewBlock(boxed_tuple) => {
                 // If a message is a new block, then check that the block is
                 // valid, by calling the block.is_valid() method and passing None
                 // as the options, as only Claim validation requires an option
-                match block.is_valid(Some(ValidatorOptions::NewBlock(
-                    last_block.clone(),
+
+                let (
+                    last_block,
+                    block,
+                    pubkey,
+                    network_state,
+                    account_state,
+                    reward_state
+                    ) = *boxed_tuple;
+
+                match block.is_valid(Some(ValidatorOptions::NewBlock(Box::new(
+                    (last_block.clone(),
                     block.clone(), 
                     pubkey.clone(), 
                     account_state.clone(), 
-                    reward_state.clone(),
-                    network_state.clone()
-                ))) {
+                    reward_state,
+                    network_state.clone())
+                )))) 
+                
+                {
                     // If the is_valid() method returns Some(true)
                     // then the block is valid, and the validator
                     // should have it's valid field set to true
                     Some(true) => {
-                        return Validator {
+                        Validator {
                             valid: true,
-                            message: Message::NewBlock(
-                                last_block.clone(),
-                                block.clone(), 
-                                pubkey.clone(), 
-                                network_state.clone(), 
-                                account_state.clone(), 
-                                reward_state.clone(),
-                            ),
-                            ..validator.clone()
+                            message: Message::NewBlock(Box::new(
+                                (last_block,
+                                block, 
+                                pubkey, 
+                                network_state, 
+                                account_state, 
+                                reward_state)
+                            )),
+                            ..validator
                         }
                     },
                     // If the is_valid() method returns Some(false)
                     // then return the validator as is.
                     Some(false) => {
-                        return validator.clone()
+                        validator
                     },
                     // If the is_valid() method returns None something has gone wrong
                     // TODO: propagate error.

@@ -1,219 +1,139 @@
-use vrrb_lib::{account::{
-        AccountState, 
-        WalletAccount
-    }, block::Block, claim::{ClaimState}, reward::{RewardState}, state::NetworkState};
-use std::{collections::HashMap, sync::mpsc, thread};
-fn main() {
-    println!("Welcome to VRRB");
-    let state_path = "vrrb_network_state.db";    
-    let mut account_state = AccountState::start();
-    let mut network_state = NetworkState::restore(state_path);
-    let mut reward_state = RewardState::start(&mut network_state);
+use async_std::{io, task};
+use env_logger::{Builder, Env};
+use futures::prelude::*;
+use libp2p::gossipsub::MessageId;
+use libp2p::gossipsub::{
+    GossipsubEvent, 
+    GossipsubMessage, 
+    IdentTopic as Topic, 
+    MessageAuthenticity, 
+    ValidationMode,
+};
+use libp2p::multiaddr::multiaddr;
+use libp2p::{gossipsub, identity, PeerId};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::time::Duration;
+use std::{
+    error::Error,
+    task::{Context, Poll},
+};
+use rand::{Rng, thread_rng};
 
-    let (mut wallet, updated_account_state) = WalletAccount::new(
-        &mut account_state, 
-        &mut network_state
-    );
-    account_state = updated_account_state;
+#[async_std::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    Builder::from_env(Env::default().default_filter_or("info")).init();
 
-    let (genesis_block, updated_account_state) = Block::genesis(
-        reward_state, 
-        wallet.address.clone(), 
-        &mut account_state, 
-        &mut network_state,
-    ).unwrap();
+    // Create a random PeerId
+    let local_key = identity::Keypair::generate_ed25519();
+    let local_peer_id = PeerId::from(local_key.public());
+    println!("Local peer id: {:?}", local_peer_id);
 
-    account_state = updated_account_state;
-    wallet = wallet.get_balance(account_state.clone()).unwrap();
+    // Set up an encrypted TCP Transport over the Mplex and Yamux protocols
+    let transport = libp2p::development_transport(local_key.clone()).await?;
 
-    let mut last_block = genesis_block;
-    
-    loop {
-        
+    // Create a Gossipsub topic
+    let topic = Topic::new("test-net");
 
-        let (tx, rx) = mpsc::channel();
-        thread::spawn(move || {
-            let mut thread_account_state = account_state;
-            let mut thread_wallet = wallet;
-            let mut thread_network_state = network_state;
+    // Create a Swarm to manage peers and events
+    let mut swarm = {
+        // To content-address message, we can take the hash of message and use it as an ID.
+        let message_id_fn = |message: &GossipsubMessage| {
+            let mut s = DefaultHasher::new();
+            message.data.hash(&mut s);
+            MessageId::from(s.finish().to_string())
+        };
 
-            for (_ts, claim) in thread_account_state.clone().claim_state.claims {
-                let result = claim.to_owned().homestead(
-                    &mut thread_wallet, 
-                    &mut thread_account_state.clone().claim_state, 
-                    &mut thread_account_state, 
-                    &mut thread_network_state
-                );
+        // Set a custom gossipsub
+        let gossipsub_config = gossipsub::GossipsubConfigBuilder::default()
+            .heartbeat_interval(Duration::from_secs(10)) // This is set to aid debugging by not cluttering the log space
+            .validation_mode(ValidationMode::Strict) // This sets the kind of message validation. The default is Strict (enforce message signing)
+            .message_id_fn(message_id_fn) // content-address messages. No two messages of the
+            // same content will be propagated.
+            .build()
+            .expect("Valid config");
+        // build a gossipsub network behaviour
+        let mut gossipsub: gossipsub::Gossipsub =
+            gossipsub::Gossipsub::new(MessageAuthenticity::Signed(local_key), gossipsub_config)
+                .expect("Correct configuration");
 
-                let (updated_wallet, updated_account_state) = result.unwrap();
-                thread_wallet = updated_wallet;
-                thread_account_state = updated_account_state;
+        // subscribes to our topic
+        gossipsub.subscribe(&topic).unwrap();
+
+        // add an explicit peer if one was provided
+        if let Some(explicit) = std::env::args().nth(2) {
+            let explicit = explicit.clone();
+            match explicit.parse() {
+                Ok(id) => gossipsub.add_explicit_peer(&id),
+                Err(err) => println!("Failed to parse explicit peer id: {:?}", err),
             }
+        }
 
-            tx.send((thread_wallet, thread_account_state, thread_network_state)).unwrap();
+        // build the swarm
+        libp2p::Swarm::new(transport, gossipsub, local_peer_id)
+    };
 
-        }).join().unwrap();
+    let port = rand::thread_rng().gen_range(9292, 19292);
+    // Listen on all interfaces and whatever port the OS assigns
+    let addr = multiaddr!(Ip4([0,0,0,0]), Tcp(port as u16));
+    
+    println!("{:?}", &addr);
 
-        let (mut loop_wallet, loop_account_state, loop_network_state) = rx.recv().unwrap();
-        loop_wallet = loop_wallet.get_balance(loop_account_state.clone()).unwrap();
+    swarm
+        .listen_on(addr)
+        .unwrap();
 
-        println!("{}\n\n", &loop_wallet);
+    // Reach out to another node if specified
+    if let Some(to_dial) = std::env::args().nth(1) {
+        let dialing = to_dial.clone();
+        match to_dial.parse() {
+            Ok(to_dial) => match swarm.dial_addr(to_dial) {
+                Ok(_) => println!("Dialed {:?}", dialing),
+                Err(e) => println!("Dial {:?} failed: {:?}", dialing, e),
+            },
+            Err(err) => println!("Failed to parse address to dial: {:?}", err),
+        }
+    }
 
-        wallet = loop_wallet;
-        account_state = loop_account_state;
-        network_state = loop_network_state;
+    // Read full lines from stdin
+    let mut stdin = io::BufReader::new(io::stdin()).lines();
 
-        let (tx, rx) = mpsc::channel();
-
-        thread::spawn(move || {
-            let mut thread_account_state = account_state.clone();
-            let mut thread_wallet = wallet;
-            let mut thread_network_state = network_state;
-            let thread_reward_state = reward_state;
-            let mut last_block = last_block;
-
-            for claim in &thread_wallet.clone().claims {
-                let new_block = Block::mine(
-                    &thread_reward_state, 
-                    claim.clone().unwrap(), 
-                    last_block, 
-                    HashMap::new(), 
-                    &mut thread_account_state,
-                    &mut thread_network_state,
-                );
-                let (block, updated_account_state) = new_block.unwrap().unwrap();
-                
-                println!("{}\n\n", &block);
-                last_block = block;
-                thread_wallet = thread_wallet.remove_mined_claims(&last_block);
-                thread_account_state = updated_account_state;
+    // Kick it off
+    task::block_on(future::poll_fn(move |cx: &mut Context<'_>| {
+        loop {
+            if let Err(e) = match stdin.try_poll_next_unpin(cx)? {
+                Poll::Ready(Some(line)) => swarm
+                    .behaviour_mut()
+                    .publish(topic.clone(), line.as_bytes()),
+                Poll::Ready(None) => panic!("Stdin closed"),
+                Poll::Pending => break,
+            } {
+                println!("Publish error: {:?}", e);
             }
+        }
 
-            tx.send((thread_wallet, thread_account_state, thread_network_state, thread_reward_state, last_block)).unwrap();
+        loop {
+            match swarm.poll_next_unpin(cx) {
+                Poll::Ready(Some(event)) => match event {
+                    GossipsubEvent::Message {
+                        propagation_source: peer_id,
+                        message_id: id,
+                        message,
+                    } => println!(
+                        "Got message: {} with id: {} from peer: {:?}",
+                        String::from_utf8_lossy(&message.data),
+                        id,
+                        peer_id
+                    ),
+                    GossipsubEvent::Subscribed{peer_id, topic} => {
+                        println!("Listening on {:?} for channel: {:?}", peer_id, topic);
+                    }
+                    _ => {}
+                },
+                Poll::Ready(None) | Poll::Pending => break,
+            }
+        }
 
-        }).join().unwrap();
-
-        let (
-            mut loop_wallet, 
-            loop_account_state, 
-            loop_network_state,
-            loop_reward_state,
-            loop_last_block
-        ) = rx.recv().unwrap();
-    
-        loop_wallet = loop_wallet.get_balance(loop_account_state.clone()).unwrap();
-        
-        println!("{}\n\n", &loop_wallet);
-
-        wallet = loop_wallet;
-        account_state = loop_account_state;
-        network_state = loop_network_state;
-        reward_state = loop_reward_state;
-        last_block = loop_last_block;
-
-    }
-}
-
-
-#[allow(dead_code)]
-fn test_txn(sender: WalletAccount, account_state: &mut AccountState, network_state: &mut NetworkState) {
-    let (mut receiver_wallet1, mut updated_account_state) = WalletAccount::new(account_state, network_state);
-    let mut wallet = sender;
-    let mut account_state = &mut updated_account_state;
-    let (_receiver_wallet2, mut updated_account_state) = WalletAccount::new(account_state, network_state);
-    account_state = &mut updated_account_state;
-    let (
-        updated_wallet, 
-        mut updated_account_state
-    ) = wallet.send_txn(
-            &mut account_state, 
-            (receiver_wallet1.address.clone(), 15), 
-            network_state).unwrap();
-
-    wallet = updated_wallet;
-    account_state = &mut updated_account_state;
-    wallet = wallet.get_balance(account_state.clone()).unwrap();
-    receiver_wallet1 = receiver_wallet1.get_balance(account_state.clone()).unwrap();
-
-    println!("{}\n", &wallet);
-    println!("{}\n", &receiver_wallet1);
-}
-
-#[allow(dead_code)]
-fn test_mine_genesis(
-    wallet: &mut WalletAccount, 
-    reward_state: &mut RewardState, 
-    account_state: &mut AccountState, 
-    network_state: &mut NetworkState
-) {
-
-    let (genesis_block, updated_account_state) = Block::genesis(
-        reward_state.clone(), 
-        wallet.address.clone(), 
-        account_state, 
-        network_state,
-    ).unwrap();
-
-    println!("{:?}\n\n", &genesis_block);
-    println!("{:?}\n\n", &updated_account_state);
-}
-
-#[allow(dead_code)]
-fn test_wallet_restore(pk: &str, account_state: AccountState) {
-    let restored_pk = account_state
-        .accounts_sk
-        .get(pk);
-    
-    println!("{:?}", &restored_pk);
-}
-
-#[allow(dead_code)]
-fn test_homestead_claims(
-    mut wallet: WalletAccount, 
-    mut account_state: AccountState,
-    claim_state: ClaimState,
-    mut network_state: NetworkState,
-) {
-    for (_, claim) in &account_state.clone().claim_state.claims {
-        let (
-            updated_wallet, 
-            updated_account_state
-            ) = claim.to_owned().homestead(
-                    &mut wallet.clone(), 
-                    &mut claim_state.clone(), 
-                    &mut account_state.clone(), 
-                    &mut network_state
-                ).unwrap();
-
-        wallet = updated_wallet;
-        account_state = updated_account_state;
-    }
-    println!("{}\n\n", &wallet);
-    println!("{:?}\n\n", &account_state);
-}
-
-#[allow(dead_code)]
-fn test_mine_blocks(
-    mut wallet: WalletAccount,
-    mut account_state: AccountState,
-    mut network_state: NetworkState,
-    mut last_block: Block,
-    reward_state: RewardState
-) {
-
-    for claim in &wallet.clone().claims {
-        let data = HashMap::new();
-        let (new_block, updated_account_state) = Block::mine(
-            &reward_state, 
-            claim.clone().unwrap(), 
-            last_block, 
-            data,
-            &mut account_state.clone(), 
-            &mut network_state,
-        ).unwrap().unwrap();
-        last_block = new_block;
-        account_state = updated_account_state;
-        wallet = wallet.get_balance(account_state.clone()).unwrap();
-        wallet = wallet.remove_mined_claims(&last_block);
-    }
+        Poll::Pending
+    }))
 }

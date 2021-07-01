@@ -11,7 +11,8 @@ pub mod verifiable;
 pub mod arbiter;
 pub mod mpu;
 pub mod vpu;
-
+pub mod messages;
+pub mod network;
 
 #[cfg(test)]
 mod tests {

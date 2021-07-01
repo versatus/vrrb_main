@@ -33,8 +33,8 @@ impl Txn {
     
         let payload = format!("{},{},{},{},{}",
             &time.as_nanos().to_string(),
-            &wallet.address.to_string(), 
-            &wallet.public_key.to_string(), 
+            &wallet.address, 
+            &wallet.public_key, 
             &receiver, &amount.to_string()
         );
     
@@ -45,7 +45,7 @@ impl Txn {
             txn_id: digest_bytes(uid_payload.as_bytes()),
             txn_timestamp: time.as_nanos(),
             sender_address: wallet.address,
-            sender_public_key: wallet.public_key.to_string(),
+            sender_public_key: wallet.public_key,
             receiver_address: receiver,
             txn_token: None,
             txn_amount: amount,
@@ -58,6 +58,22 @@ impl Txn {
     // all verifiable objects need to be able to be converted to a message.
     pub fn to_message(&self) -> String {
         serde_json::to_string(&self).unwrap()
+    }
+
+    pub fn as_bytes(&self) -> Vec<u8> {
+        let as_string = serde_json::to_string(self).unwrap();
+
+        as_string.as_bytes().iter().copied().collect()
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Txn {
+        let mut buffer: Vec<u8> = vec![];
+
+        data.iter().for_each(|x| buffer.push(*x));
+
+        let to_string = String::from_utf8(buffer).unwrap();
+
+        serde_json::from_str::<Txn>(&to_string).unwrap()
     }
 }
 
@@ -111,12 +127,11 @@ impl Verifiable for Txn {
 
                 match check_double_spend {
                     Some((txn, _validator_vec)) => {
-                        if txn.txn_id == self.txn_id {
-                            if txn.txn_amount != self.txn_amount || 
-                            txn.receiver_address != self.receiver_address {
-                                println!("Attempted double spend");
-                                return Some(false)
-                            }
+                        if txn.txn_id == self.txn_id && (txn.txn_amount != self.txn_amount || 
+                            txn.receiver_address != self.receiver_address) {
+                            
+                            println!("Attempted double spend");
+                            return Some(false)
                         }
                     },
                     None => {

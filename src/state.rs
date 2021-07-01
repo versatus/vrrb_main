@@ -29,10 +29,7 @@ impl NetworkState {
         &mut self, state_obj: T, state_obj_type: &str) -> Result<(), error::ErrorType> {
         let result = self.state.set(state_obj_type, &state_obj);
 
-        match result {
-            Err(e) => {println!("Error setting to state"); return Err(error::Error::get_type(&e))},
-            _ => {}
-        }
+        if let Err(e) = result {println!("Error setting to state"); return Err(error::Error::get_type(&e))}
 
         Ok(())
     }
@@ -57,7 +54,7 @@ impl NetworkState {
 
     pub fn hash(&self, uts: &[u8; 16]) -> String {
         let mut network_state_bytes = serde_json::to_string(&self).unwrap().into_bytes();
-        network_state_bytes.sort();
+        network_state_bytes.sort_unstable();
 
         let ts_hash = digest_bytes(uts);
         for byte in ts_hash.as_bytes().iter() {
@@ -67,6 +64,23 @@ impl NetworkState {
 
         digest_bytes(state_bytes)
     }
+    
+    pub fn as_bytes(&self) -> Vec<u8> {
+        let as_string = serde_json::to_string(self).unwrap();
+
+        as_string.as_bytes().iter().copied().collect()
+    }
+
+    pub fn from_bytes(data: &[u8]) -> NetworkState {
+        let mut buffer: Vec<u8> = vec![];
+
+        data.iter().for_each(|x| buffer.push(*x));
+
+        let to_string = String::from_utf8(buffer).unwrap();
+
+        serde_json::from_str::<NetworkState>(&to_string).unwrap()
+
+    }
 }
 
 impl Clone for NetworkState {
@@ -75,31 +89,15 @@ impl Clone for NetworkState {
         let account_state: Option<AccountState> = self.state.get("account_state");
         let reward_state: Option<RewardState> = self.state.get("reward_state");
 
-        match account_state {
-            Some(account_state) => {
-                let cloned_result = cloned_db.set("account_state", &account_state);
-                match cloned_result {
-                    Err(e) => {println!("Error setting to cloned_state: {}", e)},
-                    _ => {}
-                }
-            },
-            None => { 
-                //TODO: Propragate an error if this occurs.
-            }
+        if let Some(account_state) = account_state {
+            let cloned_result = cloned_db.set("account_state", &account_state);
+            if let Err(e) = cloned_result {println!("Error setting to cloned_state: {}", e)}
         }
 
-        match reward_state {
-            Some(reward_state) => {
-                let cloned_result = cloned_db.set("reward_state", &reward_state);
+        if let Some(reward_state) = reward_state {
+            let cloned_result = cloned_db.set("reward_state", &reward_state);
 
-                match cloned_result {
-                    Err(e ) => {println!("Error setting to cloned_state: {}", e)},
-                    _ => {}
-                }
-            },
-            None => {
-                //TODO: propagate an error if this occurs.
-            }
+            if let Err(e) = cloned_result {println!("Error setting to cloned_state: {}", e)}
         }
 
         NetworkState {
@@ -202,16 +200,9 @@ impl<'de> Deserialize<'de> for NetworkState {
                 let account_state_result = state.set("account_state", &account_state);
                 let reward_state_result = state.set("reward_state", &reward_state);
 
-                match account_state_result {
-                    Err(e) => {println!("Error setting to state: {}", e)},
-                    _ => {}
-                }
+                if let Err(e) = account_state_result {println!("Error setting to state: {}", e)}
 
-                match reward_state_result {
-                    Err(e) => { println!("Error setting to state: {}", e)},
-                    _ => {}
-                }
-
+                if let Err(e) = reward_state_result { println!("Error setting to state: {}", e)}
 
                 Ok(NetworkState { state })
             }
@@ -251,24 +242,16 @@ impl<'de> Deserialize<'de> for NetworkState {
                 let account_state_result = state.set("account_state", &account_state);
                 let reward_state_result = state.set("reward_state", &reward_state);
 
-                match account_state_result {
-                    Err(e) => {println!("Error setting to state in deserializer: {}", e)},
-                    _ => {}
-                }
+                if let Err(e) = account_state_result { println!("Error setting to state in deserializer: {}", e) }
 
-                match reward_state_result {
-                    Err(e) => { println!("Error setting to state in deserializer: {}", e)},
-                    _ => {}
-                }
+                if let Err(e) = reward_state_result {println!("Error setting to state in deserializer: {}", e)}
                 
                 Ok(NetworkState { state })
             }
         }
     
-        const FIELDS: &'static [&'static str] = &["accountstate", "rewardstate"];
+        const FIELDS: &[&str] = &["accountstate", "rewardstate"];
         deserializer.deserialize_struct("NetworkState", FIELDS, NetworkStateVisitor)
-
-
     
     }
 }

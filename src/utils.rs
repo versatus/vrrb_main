@@ -97,7 +97,7 @@ pub fn txn_test_setup(state_path: &str) -> Option<(
 
     let result = wallet_1.send_txn(
         &mut account_state, 
-        (wallet_2.address.clone(), 15 as u128), 
+        (wallet_2.address.clone(), 15_u128), 
         &mut network_state);
 
     match result {
@@ -107,14 +107,14 @@ pub fn txn_test_setup(state_path: &str) -> Option<(
 
         }
         Err(e) => println!("Error attempting to send txn to receiver: {} -> {}", 
-            wallet_2.address.clone(), 
+            wallet_2.address, 
             e
         )
     }
 
-    let txn_id = account_state.clone().pending.keys().cloned().collect::<Vec<String>>()[0].clone();
-    let txn = account_state.clone().pending.get(&txn_id).unwrap().0.clone();
-    let validators_vec = account_state.clone().pending.get(&txn_id).unwrap().1.clone();
+    let txn_id = account_state.pending.keys().cloned().collect::<Vec<String>>()[0].clone();
+    let txn = account_state.pending.get(&txn_id).unwrap().0.clone();
+    let validators_vec = account_state.pending.get(&txn_id).unwrap().1.clone();
 
     let (_block, updated_account_state) = Block::genesis(
         reward_state, 

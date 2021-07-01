@@ -12,6 +12,7 @@ use std::fmt;
 use std::hash::Hash;
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::cmp::Ordering;
 
 //  Claim receives
 //      - a maturation time (UNIX Timestamp in nanoseconds)
@@ -60,7 +61,7 @@ impl ClaimState {
         ClaimState {
             claims: HashMap::new(),
             owned_claims: HashMap::new(),
-            furthest_visible_block: 0 as u128,
+            furthest_visible_block: 0_u128,
             staked_claims: HashMap::new(),
         }
     }
@@ -74,11 +75,7 @@ impl ClaimState {
 
         let state_result = network_state.update(self.clone(), "claim_state");
         
-        match state_result {
-            Err(e) => { println!("Error in updating network state: {:?}", e)},
-            _ => {}
-        }
-    
+        if let Err(e) =  state_result {println!("Error in updating network state: {:?}", e)}
     }
 }
 
@@ -119,7 +116,7 @@ impl Claim {
 
             let mut cloned_wallet = acquirer.clone();
 
-            let signature = acquirer.sign(&payload.clone()).unwrap();
+            let signature = acquirer.sign(&payload).unwrap();
 
             let (claim, claim_state, _updated_account_state) = self
                 .update(
@@ -149,16 +146,13 @@ impl Claim {
 
             let state_result = network_state.update(claim_state, "claim_state");
             
-            match state_result {
-                Err(e) => { println!("Error in updating network state: {:?}", e)},
-                _ => {}
-            }
+            if let Err(e) = state_result {println!("Error in updating network state: {:?}", e)}
 
-            cloned_wallet.claims.push(Some(claim.clone()));
+            cloned_wallet.claims.push(Some(claim));
 
-            return Some((cloned_wallet.to_owned(), account_state.to_owned()));
+            Some((cloned_wallet, account_state.to_owned()))
         } else {
-            return None;
+            None
         }
     }
 
@@ -178,11 +172,11 @@ impl Claim {
                         
                         Some(custodian_info) => {
                             match custodian_info {
-                                &CustodianInfo::Homesteader(true) => { return Some(true); },
-                                &CustodianInfo::Homesteader(false) => { return Some(false); },
-                                _ => { println!("Invalid Format!"); return Some(false); }
+                                CustodianInfo::Homesteader(true) => { Some(true) },
+                                CustodianInfo::Homesteader(false) => { Some(false) },
+                                _ => { println!("Invalid Format!"); Some(false) }
                             }
-                        }, None => { println!("Something went wrong!"); return Some(false); }
+                        }, None => { println!("Something went wrong!"); Some(false) }
                     }
                 } else {
                     match previous_owner{
@@ -191,16 +185,17 @@ impl Claim {
                                 CustodianInfo::AcquiredFrom(
                                     (address, _pubkey, _signature)
                                 ) => { self.valid_chain_of_custody(address.clone().unwrap()) },
-                                _ => { println!("Invalid format!"); return None }
+                                _ => { println!("Invalid format!"); None }
                             }
-                        }, None => { println!("Something went wrong"); return None }
+                        }, None => { println!("Something went wrong"); None }
                     }
                 }
             },
-            None => { return Some(false) }
+            None => { Some(false) }
         }
     }
 
+    // TODO: Group some parameters into a new type
     pub fn update(
         &mut self,
         price: u32,
@@ -249,13 +244,13 @@ impl Claim {
             price,
             available,
             chain_of_custody: self.chain_of_custody.clone(),
-            current_owner: current_owner,
-            claim_payload: claim_payload,
+            current_owner,
+            claim_payload,
             acquisition_time,
             ..*self
         };
 
-        claim_state.update(&updated_claim.clone(), network_state);
+        claim_state.update(&updated_claim, network_state);
 
         account_state
             .update(ClaimAcquired(updated_claim.clone()), network_state)
@@ -291,7 +286,7 @@ impl Claim {
 
             let mut cloned_wallet = wallet.clone();
 
-            let signature = wallet.sign(&payload.clone()).unwrap();
+            let signature = wallet.sign(&payload).unwrap();
 
             let (claim, claim_state, account_state) = self
                 .update(
@@ -314,16 +309,13 @@ impl Claim {
 
             let state_result = network_state.update(claim_state, "claim_state");
             
-            match state_result {
-                Err(e) => { println!("Error in updating network state: {:?}", e)},
-                _ => {}
-            }
+            if let Err(e) = state_result {println!("Error in updating network state: {:?}", e)}
 
-            cloned_wallet.claims.push(Some(claim.clone()));
+            cloned_wallet.claims.push(Some(claim));
 
-            return Some((cloned_wallet.to_owned(), account_state.to_owned()));
+            Some((cloned_wallet, account_state))
         } else {
-            return None;
+            None
         }
     }
 
@@ -332,16 +324,16 @@ impl Claim {
             .claim_state
             .staked_claims
             .entry(wallet.public_key.to_string())
-            .or_insert(HashMap::new());
+            .or_insert_with( HashMap::new);
         let mut staked_claims =
-            account_state.claim_state.staked_claims[&wallet.public_key.to_string()].clone();
+            account_state.claim_state.staked_claims[&wallet.public_key].clone();
         staked_claims
             .entry(self.maturation_time)
-            .or_insert(self.clone());
+            .or_insert_with(|| self.clone());
         account_state
             .claim_state
             .staked_claims
-            .insert(wallet.public_key.to_string(), staked_claims);
+            .insert(wallet.public_key, staked_claims);
 
         // TODO: Convert this to an account_state.update() need to add a matching arm
         // on the account state, and a StateOption::ClaimStaked.
@@ -411,7 +403,7 @@ impl Clone for Claim {
             chain_of_custody: self.chain_of_custody.clone(),
             current_owner: self.current_owner.clone(),
             claim_payload: self.claim_payload.clone(),
-            acquisition_time: self.acquisition_time.clone(),
+            acquisition_time: self.acquisition_time,
         }
     }
 }
@@ -421,7 +413,7 @@ impl Clone for ClaimState {
         ClaimState {
             claims: self.claims.clone(),
             owned_claims: self.owned_claims.clone(),
-            furthest_visible_block: self.furthest_visible_block.clone(),
+            furthest_visible_block: self.furthest_visible_block,
             staked_claims: self.staked_claims.clone(),
         }
     }
@@ -482,56 +474,51 @@ impl Verifiable for Claim {
                                     // If the subject's current owner doesn't match the record
                                     // in the account state, and the acquisition time is later
                                     // than the record in the account state, return Some(false)
-                                    if self.acquisition_time > claim.acquisition_time {
-                                        return Some(false);
-                                    } else if self.acquisition_time == claim.acquisition_time {
-                                        // If it's a tie, initiate tie handling.
-                                        let addresses = vec![
+                                    match self.acquisition_time.cmp(&claim.acquisition_time) {
+                                        Ordering::Greater => { return Some(false) },
+                                        Ordering::Equal => {
+                                            let addresses = vec![
                                             self.clone().current_owner.1.unwrap(),
                                             claim.clone().current_owner.1.unwrap(),
-                                        ];
+                                            ];
 
-                                        let mut arbiter = Arbiter::new(addresses);
+                                            let mut arbiter = Arbiter::new(addresses);
 
-                                        arbiter.tie_handler();
+                                            arbiter.tie_handler();
 
-                                        // match the value returned by the arbiter's winner field
-                                        match arbiter.winner {
-                                            Some((pubkey, _coin_flip)) => {
-                                                // If it's the subject's owner, then they are the winner
-                                                // of the tie handling process and now own the claim
-                                                // return true. Otherwise the owner in the record
-                                                // retrieved from the account state remains the owner
-                                                // TODO: Propagate tie handling winner message to network
-                                                // to ensure that account state's get updated and have the
-                                                // correct owner of the claim for the given maturity timestamp.
-                                                if pubkey == self.clone().current_owner.1.unwrap() {
-                                                    return Some(true);
+                                            // match the value returned by the arbiter's winner field
+                                            match arbiter.winner {
+                                                Some((pubkey, _coin_flip)) => {
+                                                    // If it's the subject's owner, then they are the winner
+                                                    // of the tie handling process and now own the claim
+                                                    // return true. Otherwise the owner in the record
+                                                    // retrieved from the account state remains the owner
+                                                    // TODO: Propagate tie handling winner message to network
+                                                    // to ensure that account state's get updated and have the
+                                                    // correct owner of the claim for the given maturity timestamp.
+                                                    if pubkey == self.clone().current_owner.1.unwrap() {
+                                                        return Some(true);
+                                                    }
+                                                }
+                                                None => {
+                                                    // If the winner field in the arbiter struct is None, the the program should panic
+                                                    // this should never occur.
+                                                    // TODO: Propagate an error message so the entire program doesn't shut down, but the
+                                                    // user is informed that something is wrong with their validator instance and needs
+                                                    // to be reset/updated, restarted or something.
+                                                    panic!("Something went wrong. The arbiter should always contain a winner!");
                                                 }
                                             }
-                                            None => {
-                                                // If the winner field in the arbiter struct is None, the the program should panic
-                                                // this should never occur.
-                                                // TODO: Propagate an error message so the entire program doesn't shut down, but the
-                                                // user is informed that something is wrong with their validator instance and needs
-                                                // to be reset/updated, restarted or something.
-                                                panic!("Something went wrong. The arbiter should always contain a winner!");
-                                            }
-                                        }
-                                    } else {
-                                        // If the subject claim's current owner homesteaded before (acquisition_time field is
-                                        // < the field in the record retrieved from the account state), then return Some(true)
-                                        return Some(true);
+                                        },
+                                        Ordering::Less => {}
                                     }
+
                                 } else {
                                     let claims: Vec<_> = account_state.claim_state.owned_claims
                                         .iter()
                                         .filter(|(_ts, claim)| claim.current_owner.0.clone().unwrap() == self.current_owner.0.clone().unwrap())
                                         .collect();
-                                    if claims.len() == 20 {
-                                        return Some(false)
-                                    } else if claims.len() > 20 {
-                                        // TODO: Propagate an error here this should never happen
+                                    if claims.len() >= 20 {
                                         return Some(false)
                                     }
                                 }
@@ -539,7 +526,7 @@ impl Verifiable for Claim {
                             None => { return Some(false) }
                         }
                         // If nothing else returns false, then return true.
-                        return Some(true);
+                        Some(true)
                     }
                     ValidatorOptions::ClaimAcquire(account_state, acquirer_address) => {
                         let signature =
@@ -637,7 +624,7 @@ impl Verifiable for Claim {
                             None => { println!("Claim is unowned"); return Some(false)},
                         }
                         println!("All checks passed!");
-                        return Some(true);
+                        Some(true)
                     },
                     _ => panic!("Allocated to the wrong process")
                 }

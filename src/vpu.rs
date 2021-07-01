@@ -58,13 +58,18 @@ impl ValidatorProcessor {
                 }
             },
             Message::NewBlock(
-                _last_block, 
-                block, 
-                _miner, 
-                _network_state, 
-                _account_state, 
-                _reward_state
+                boxed_tuple
             ) => {
+
+                let (
+                    _, 
+                    block,
+                    _,
+                    _,
+                    _,
+                    _, 
+                ) = *boxed_tuple;
+
                 if let Some(entry) = self.validators.get_mut(&block.block_hash) {
                     entry.push(validator)
                 } else {
@@ -77,7 +82,7 @@ impl ValidatorProcessor {
     pub fn process_validators(&mut self) {
 
         for (key, value) in self.validators.iter() {
-            let valid = value.iter().filter(|&v| v.valid == true).count();
+            let valid = value.iter().filter(|&v| v.valid).count();
 
             if let Some(entry) = self.confirmations.get_mut(key) {
                 *entry += valid as u8;
@@ -89,30 +94,30 @@ impl ValidatorProcessor {
 
                 match value[0].clone().message {
                     Message::ClaimHomesteaded(claim, _, _) => {
-                        self.confirmed.entry(key.to_owned()).or_insert(Box::new(claim));
+                        self.confirmed.entry(key.to_owned()).or_insert_with(|| Box::new(claim));
                     },
                     Message::ClaimAcquired(claim, _, _, _) => {
 
-                        self.confirmed.entry(key.to_owned()).or_insert(Box::new(claim));
+                        self.confirmed.entry(key.to_owned()).or_insert_with(|| Box::new(claim));
                     },
                     Message::Txn(txn, _) => {
-                        self.confirmed.entry(key.to_owned()).or_insert(Box::new(txn));
+                        self.confirmed.entry(key.to_owned()).or_insert_with(|| Box::new(txn));
                     },
-                    Message::NewBlock(_, block, _, _, _, _) => {
-                        self.confirmed.entry(key.to_owned()).or_insert(Box::new(block));
+                    Message::NewBlock(boxed_tuple) => {
+
+                        let (_, block, _, _, _, _) = *boxed_tuple;
+                        self.confirmed.entry(key.to_owned()).or_insert_with(|| Box::new(block));
                     }
                 }
 
-            } else {
-                if value.len() > 10 {
-                    let malicious: Vec<String> = value
-                        .iter()
-                        .filter(|&v| v.valid == true)
-                        .map(|v| v.clone().node_wallet.address).collect();
+            } else if value.len() > 10 {
+                let malicious: Vec<String> = value
+                    .iter()
+                    .filter(|&v| v.valid)
+                    .map(|v| v.clone().node_wallet.address).collect();
 
-                    for validator in malicious {
-                        self.slashed.push(validator);
-                    }
+                for validator in malicious {
+                    self.slashed.push(validator);
                 }
             }
         }
@@ -136,7 +141,6 @@ impl ValidatorProcessor {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn test_validator_setting_by_message_id() {

@@ -168,15 +168,31 @@ impl RewardState {
         }
         
         updated_reward_state
-        }
     }
+
+    pub fn as_bytes(&self) -> Vec<u8> {
+        let as_string = serde_json::to_string(self).unwrap();
+        
+        as_string.as_bytes().iter().copied().collect()
+    }
+
+    pub fn from_bytes(data: &[u8]) -> RewardState {
+        let mut buffer: Vec<u8> = vec![];
+
+        data.iter().for_each(|x| buffer.push(*x));
+
+        let to_string = String::from_utf8(buffer).unwrap();
+
+        serde_json::from_str::<RewardState>(&to_string).unwrap()
+    }
+}
 
 impl Reward {
     pub fn new(miner: Option<String>, reward_state: &RewardState) -> Reward {
         let category: Category = Category::new(*reward_state);
         Reward {
-            miner: miner,
-            category: category,
+            miner,
+            category,
             amount: match category {
                 Category::Flake(Some(amount)) => amount,
                 Category::Grain(Some(amount)) => amount,
@@ -198,6 +214,22 @@ impl Reward {
             } 
         }
     }
+    
+    pub fn as_bytes(&self) -> Vec<u8> {
+        let as_string = serde_json::to_string(self).unwrap();
+
+        as_string.as_bytes().iter().copied().collect()
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Reward {
+        let mut buffer: Vec<u8> = vec![];
+
+        data.iter().for_each(|x| buffer.push(*x));
+
+        let to_string = String::from_utf8(buffer).unwrap();
+
+        serde_json::from_str::<Reward>(&to_string).unwrap()
+    }
 }
 
 impl Category {
@@ -215,8 +247,7 @@ impl Category {
             ];
         let dist = WeightedIndex::new(items.iter().map(|item| item.1)).unwrap();
         let mut rng = rand::thread_rng();
-        let category = items[dist.sample(&mut rng)].0;
-        category
+        items[dist.sample(&mut rng)].0
     }
 
     pub fn amount(&self) -> Category {
@@ -225,23 +256,18 @@ impl Category {
             Self::Genesis(None) => Category::Genesis(None),
             Self::Flake(None) => Category::Flake(Some(
                 rng.gen_range(FLAKE_REWARD_RANGE.0, FLAKE_REWARD_RANGE.1)
-                    .into(),
             )),
             Self::Grain(None) => Category::Grain(Some(
                 rng.gen_range(GRAIN_REWARD_RANGE.0, GRAIN_REWARD_RANGE.1)
-                    .into(),
             )),
             Self::Nugget(None) => Category::Nugget(Some(
                 rng.gen_range(NUGGET_REWARD_RANGE.0, NUGGET_REWARD_RANGE.1)
-                    .into(),
             )),
             Self::Vein(None) => Category::Vein(Some(
                 rng.gen_range(VEIN_REWARD_RANGE.0, VEIN_REWARD_RANGE.1)
-                    .into(),
             )),
             Self::Motherlode(None) => Category::Motherlode(Some(
                 rng.gen_range(MOTHERLODE_REWARD_RANGE.0, MOTHERLODE_REWARD_RANGE.1)
-                    .into(),
             )),
             Self::Genesis(Some(amount)) => Self::Genesis(Some(*amount)),
             Self::Flake(Some(amount)) => Self::Flake(Some(*amount)),
@@ -251,6 +277,23 @@ impl Category {
             Self::Motherlode(Some(amount)) => Self::Motherlode(Some(*amount)),
         }
     }
+    
+    pub fn as_bytes(&self) -> Vec<u8> {
+        let as_string = serde_json::to_string(self).unwrap();
+
+        as_string.as_bytes().iter().copied().collect()
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Category {
+        let mut buffer: Vec<u8> = vec![];
+
+        data.iter().for_each(|x| buffer.push(*x));
+
+        let to_string = String::from_utf8(buffer).unwrap();
+
+        serde_json::from_str::<Category>(&to_string).unwrap()
+    }
+    
 }
 
 pub fn valid_reward(category: Category, reward_state: RewardState) -> Option<bool> {
@@ -313,7 +356,7 @@ pub fn valid_reward(category: Category, reward_state: RewardState) -> Option<boo
         Category::Vein(amount) => {
             match amount {
                 Some(amt) => {
-                    if amt < VEIN_REWARD_RANGE.0 || amt > VEIN_REWARD_RANGE.0 {
+                    if amt < VEIN_REWARD_RANGE.0 || amt > VEIN_REWARD_RANGE.1 {
                         return Some(false)
                     }
                     if reward_state.n_veins_current_epoch == 0 {
@@ -373,7 +416,7 @@ pub fn valid_reward(category: Category, reward_state: RewardState) -> Option<boo
             }
         },
     }
-    return Some(true)
+    Some(true)
 }
 
 #[cfg(test)]

@@ -15,10 +15,11 @@ pub enum InvalidMessageError {
     InvalidBlock(String),
 }
 
+#[derive(Serialize, Deserialize)]
 pub enum ValidatorOptions {
     ClaimHomestead(AccountState),
     ClaimAcquire(AccountState, String),
-    NewBlock(Block, Block, String, AccountState, RewardState, NetworkState),
+    NewBlock(Box<(Block, Block, String, AccountState, RewardState, NetworkState)>),
     Transaction(AccountState)
 }
 
@@ -26,7 +27,7 @@ pub enum ValidatorOptions {
 pub enum Message {
     ClaimAcquired(Claim, String, AccountState, String),
     ClaimHomesteaded(Claim, String, AccountState),
-    NewBlock(Block, Block, String, NetworkState, AccountState, RewardState),
+    NewBlock(Box<(Block, Block, String, NetworkState, AccountState, RewardState)>),
     Txn(Txn, AccountState),
 }
 
@@ -41,31 +42,67 @@ pub struct Validator {
 impl Validator {
     pub fn new(message: Message, wallet: WalletAccount, account_state: AccountState) -> Option<Validator> {
         let check_staked_claims = account_state.claim_state.staked_claims
-            .get(&wallet.public_key.to_string());
+            .get(&wallet.public_key);
 
         // If there's no staked claims for the node wallet attempting to launch a validator
         // a validator cannot be launched. Claims must be staked to validate messages
-        match check_staked_claims {
-            Some(map) => {
-                return Some(Validator {
-                    node_wallet: wallet,
-                    staked_claims: map.clone(),
-                    message,
-                    valid: false,
-                })
-            },
-            None => {
-                // TODO: Propagate a useful message to the user informing them they have no
-                // claims staked.
-                return None
-            }
-        }
+        check_staked_claims.map(|map| Validator {
+            node_wallet: wallet, staked_claims: map.clone(), message, valid: false
+        })
     }
 
     pub fn validate(&self) -> Self {
         mpu::message_processor(self.clone())
     }
+
+    pub fn as_bytes(&self) -> Vec<u8> {
+        let as_string = serde_json::to_string(self).unwrap();
+
+        as_string.as_bytes().iter().copied().collect()
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Validator {
+        let mut buffer: Vec<u8> = vec![];
+
+        data.iter().for_each(|x| buffer.push(*x));
+        let to_string = String::from_utf8(buffer).unwrap();
+
+        serde_json::from_str::<Validator>(&to_string).unwrap()
+    }
 }
+
+impl ValidatorOptions {
+    pub fn as_bytes(&self) -> Vec<u8> {
+        let as_string = serde_json::to_string(self).unwrap();
+
+        as_string.as_bytes().iter().copied().collect()
+    }
+    
+    pub fn from_bytes(data: &[u8]) -> ValidatorOptions {
+        let mut buffer: Vec<u8> = vec![];
+        data.iter().for_each(|x| buffer.push(*x));
+        let to_string = String::from_utf8(buffer).unwrap();
+
+        serde_json::from_str::<ValidatorOptions>(&to_string).unwrap()
+    }
+}
+
+impl Message {
+    pub fn as_bytes(&self) -> Vec<u8> {
+        let as_string = serde_json::to_string(self).unwrap();
+
+        as_string.as_bytes().iter().copied().collect()
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Message {
+        let mut buffer: Vec<u8> = vec![];
+        data.iter().for_each(|x| buffer.push(*x));
+        let to_string = String::from_utf8(buffer).unwrap();
+
+        serde_json::from_str::<Message>(&to_string).unwrap()
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -1764,12 +1801,12 @@ mod tests {
         account_state = updated_account_state.clone();
 
         let validator = Validator::new(
-            Message::NewBlock(
+            Message::NewBlock(Box::new((
                 genesis, 
                 block, 
                 wallet_1.public_key, 
                 network_state, validator_account_state.clone(), reward_state
-            ), validator_wallet, validator_account_state.clone()
+            ))), validator_wallet, validator_account_state.clone()
         );
         
         match validator {
@@ -1862,12 +1899,12 @@ mod tests {
             .to_string());
 
         let validator = Validator::new(
-            Message::NewBlock(
+            Message::NewBlock(Box::new((
                 genesis, 
                 block, 
                 wallet_1.public_key, 
                 network_state, validator_account_state.clone(), reward_state
-            ), validator_wallet, validator_account_state.clone()
+            ))), validator_wallet, validator_account_state.clone()
         );
         
         match validator {
@@ -1957,12 +1994,12 @@ mod tests {
 
 
         let validator = Validator::new(
-            Message::NewBlock(
+            Message::NewBlock(Box::new((
                 genesis, 
                 block, 
                 wallet_1.public_key, 
                 network_state, validator_account_state.clone(), reward_state
-            ), validator_wallet, validator_account_state.clone()
+            ))), validator_wallet, validator_account_state.clone()
         );
         
         match validator {
@@ -2053,12 +2090,12 @@ mod tests {
         block.last_block_hash = digest_bytes("malicious_last_block_hash".as_bytes());
 
         let validator = Validator::new(
-            Message::NewBlock(
+            Message::NewBlock(Box::new((
                 genesis, 
                 block, 
                 wallet_1.public_key, 
                 network_state, validator_account_state.clone(), reward_state
-            ), validator_wallet, validator_account_state.clone()
+            ))), validator_wallet, validator_account_state.clone()
         );
         
         match validator {
@@ -2149,12 +2186,12 @@ mod tests {
         block.block_reward.amount = 90;
         
         let validator = Validator::new(
-            Message::NewBlock(
+            Message::NewBlock(Box::new((
                 genesis, 
                 block, 
                 wallet_1.public_key, 
                 network_state, validator_account_state.clone(), reward_state
-            ), validator_wallet, validator_account_state.clone()
+            ))), validator_wallet, validator_account_state.clone()
         );
         
         match validator {
@@ -2301,7 +2338,7 @@ mod tests {
         ).unwrap().validate();
 
         account_state = account_state
-            .update(StateOption::ConfirmedTxn((wallet_1_txn.1.0.clone(), first_validator)), &mut network_state).unwrap();
+            .update(StateOption::ConfirmedTxn(Box::new((wallet_1_txn.1.0.clone(), first_validator))), &mut network_state).unwrap();
 
         let second_validator = Validator::new(
             Message::Txn(
@@ -2311,7 +2348,7 @@ mod tests {
         ).unwrap().validate();
 
         account_state = account_state.clone()
-            .update(StateOption::ConfirmedTxn((wallet_1_txn.1.0.clone(), second_validator)), &mut network_state).unwrap();
+            .update(StateOption::ConfirmedTxn(Box::new((wallet_1_txn.1.0.clone(), second_validator))), &mut network_state).unwrap();
 
         let third_validator = Validator::new(
             Message::Txn(
@@ -2321,7 +2358,7 @@ mod tests {
         ).unwrap().validate();
         
         account_state = account_state.clone()
-            .update(StateOption::ConfirmedTxn((wallet_1_txn.1.0.clone(), third_validator)), &mut network_state).unwrap();
+            .update(StateOption::ConfirmedTxn(Box::new((wallet_1_txn.1.0.clone(), third_validator))), &mut network_state).unwrap();
 
         let claim: Vec<Claim> = account_state.clone().claim_state.clone().owned_claims
             .iter().filter(|&claim| claim.1.clone().current_owner.clone().0.unwrap() == wallet_1.address
@@ -2345,12 +2382,12 @@ mod tests {
         account_state = updated_account_state.clone();
         
         let block_validator = Validator::new(
-            Message::NewBlock(
+            Message::NewBlock(Box::new((
                 genesis, 
                 block, 
                 wallet_1.public_key, 
                 network_state, validator_account_state.clone(), reward_state
-            ), validator_1, validator_account_state.clone()
+            ))), validator_1, validator_account_state.clone()
         );
         
         match block_validator {
@@ -2501,7 +2538,7 @@ mod tests {
         ).unwrap();
 
         account_state = account_state
-            .update(StateOption::ConfirmedTxn((wallet_1_txn.1.0.clone(), first_validator)), &mut network_state).unwrap();
+            .update(StateOption::ConfirmedTxn(Box::new((wallet_1_txn.1.0.clone(), first_validator))), &mut network_state).unwrap();
 
         let second_validator = Validator::new(
             Message::Txn(
@@ -2511,7 +2548,7 @@ mod tests {
         ).unwrap();
 
         account_state = account_state.clone()
-            .update(StateOption::ConfirmedTxn((wallet_1_txn.1.0.clone(), second_validator)), &mut network_state).unwrap();
+            .update(StateOption::ConfirmedTxn(Box::new((wallet_1_txn.1.0.clone(), second_validator))), &mut network_state).unwrap();
 
         let third_validator = Validator::new(
             Message::Txn(
@@ -2521,7 +2558,7 @@ mod tests {
         ).unwrap();
         
         let updated_account_state = match account_state.clone()
-            .update(StateOption::ConfirmedTxn((wallet_1_txn.1.0.clone(), third_validator)), &mut network_state) {
+            .update(StateOption::ConfirmedTxn(Box::new((wallet_1_txn.1.0.clone(), third_validator))), &mut network_state) {
                 Ok(account_state) => { account_state },
                 _ => { account_state }
             };
@@ -2551,12 +2588,12 @@ mod tests {
         assert!(block.data.is_empty());
 
         let block_validator = Validator::new(
-            Message::NewBlock(
+            Message::NewBlock(Box::new((
                 genesis, 
                 block, 
                 wallet_1.public_key, 
                 network_state, validator_account_state.clone(), reward_state
-            ), validator_1, validator_account_state.clone()
+            ))), validator_1, validator_account_state.clone()
         );
         
         match block_validator {

@@ -45,10 +45,10 @@ impl Block {
     /// the account state and the network state.
     ///
     /// ```
-    /// use vrrb_main::block::Block;
-    /// use vrrb_main::account::{AccountState, WalletAccount};
-    /// use vrrb_main::state::NetworkState;
-    /// use vrrb_main::reward::RewardState;
+    /// use vrrb_lib::block::Block;
+    /// use vrrb_lib::account::{AccountState, WalletAccount};
+    /// use vrrb_lib::state::NetworkState;
+    /// use vrrb_lib::reward::RewardState;
     ///
     /// let mut network_state = NetworkState::restore("vrrb_doctest_state.db");
     /// let mut reward_state = RewardState::start(&mut network_state);
@@ -94,7 +94,7 @@ impl Block {
         // TODO: Change this to 1 second, 5 nano seconds is just for testing.
         for i in 1..=20 {
             visible_blocks.push(Claim::new(next_time, i as u128 + 1));
-            next_time = next_time + 5;
+            next_time += 5;
         }
 
         // TODO: add path field to NetworkState so that this is not hardcoded
@@ -149,8 +149,8 @@ impl Block {
         // network state. Unwrap the result and assign it to the variable updated_account_state to
         // be returned by this method.
         let updated_account_state = account_state
-                                                    .update(Miner((miner.clone(), 
-                                                        genesis.clone())), network_state)
+                                                    .update(Miner(Box::new((miner, 
+                                                        genesis.clone()))), network_state)
                                                     .unwrap();
 
         // Return an Ok() result with a tuple of the genesis block and the updated account state from the previous line
@@ -193,7 +193,7 @@ impl Block {
                         serde_json::to_string(&claim).unwrap(),
                         serde_json::to_string(&last_block.next_block_reward.clone()).unwrap(),
                         &miner,
-                        serde_json::to_string(&next_block_reward.clone()).unwrap()
+                        serde_json::to_string(&next_block_reward).unwrap()
                     );
                     
         let state_hash = network_state.hash(&now.as_nanos().to_ne_bytes());
@@ -250,9 +250,7 @@ impl Block {
                         data,
 
                         // Set the claim to the claim that entitled the miner to mine this block
-                        claim: claim
-                                .clone()
-                                .to_owned(),
+                        claim,
                         
                         // Set the block reward to the previous block reward but with the miner value 
                         // as Some() with the miner's wallet address inside.
@@ -287,8 +285,8 @@ impl Block {
                     // if successful, or an error if not successful. Assign this to a variable to be
                     // included in the return expression.
                     let updated_account_state = account_state
-                                                    .update(Miner((miner.clone(), 
-                                                        new_block.clone())), network_state)
+                                                    .update(Miner(Box::new((miner, 
+                                                        new_block.clone()))), network_state)
                                                     .unwrap();
 
                     // Return a Some() option variant with an Ok() result variant that wraps a tuple that contains
@@ -304,6 +302,26 @@ impl Block {
         // If the claim is not mature then return None.
         None   
     }
+
+    pub fn as_bytes(&self) -> Vec<u8> {
+
+        let as_string = serde_json::to_string(self).unwrap();
+
+        as_string.as_bytes().iter().copied().collect()
+
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Block {
+
+        let mut buffer: Vec<u8> = vec![];
+
+        data.iter().for_each(|x| buffer.push(*x));
+
+        let to_string = String::from_utf8(buffer).unwrap();
+
+        serde_json::from_str::<Block>(&to_string).unwrap()
+
+    }
 }
 
 pub fn data_validator(data: HashMap<String, Txn>, account_state: AccountState) -> Option<bool> {
@@ -314,7 +332,7 @@ pub fn data_validator(data: HashMap<String, Txn>, account_state: AccountState) -
             Some((_txn, validator_vec)) => {
                 let num_invalid = validator_vec
                     .iter()
-                    .filter(|&validator| validator.to_owned().valid == false)
+                    .filter(|&validator| !validator.to_owned().valid)
                     .count();
                 
                 let len_of_validators = validator_vec.len();
@@ -333,7 +351,7 @@ pub fn data_validator(data: HashMap<String, Txn>, account_state: AccountState) -
         }
     }
 
-    return Some(true)
+    Some(true)
 }
 
 impl fmt::Display for Block {
@@ -356,14 +374,15 @@ impl Verifiable for Block {
         match options {
             Some(block_options) => {
                 match block_options {
-                    ValidatorOptions::NewBlock(
-                        last_block,
-                        block, 
-                        pubkey, 
-                        account_state,
-                        reward_state,
-                        network_state
-                        ) => {
+                    ValidatorOptions::NewBlock(boxed_tuple) => {
+
+                        let (
+                            last_block, 
+                            block, 
+                            pubkey, 
+                            account_state,
+                            reward_state, 
+                            network_state) = *boxed_tuple;
                        
                         let valid_signature = match block.clone().claim.current_owner.2 {
                             Some(sig) => {
@@ -376,7 +395,7 @@ impl Verifiable for Block {
                                     Err(_e) => {println!("Invalid Signature Structure"); return Some(false)}
                                 };
 
-                                block.clone().claim.verify(&signature, &pubkey)
+                                block.claim.verify(&signature, &pubkey)
                             },
                             None => {
                                 println!("Signature verification returned None");
@@ -412,7 +431,7 @@ impl Verifiable for Block {
                         
                         let account_state_claim = {
                             if let Some(claim) = account_state.claim_state.owned_claims.get(
-                                &block.claim.clone().maturation_time
+                                &block.claim.maturation_time
                             ) 
                             {
                                 claim.to_owned()
@@ -459,13 +478,13 @@ impl Verifiable for Block {
                             _ => {}
                         }
 
-                        return Some(true)
+                        Some(true)
                     },    
                     _ => panic!("Invalid options for block"),
                 }
             },
             None => {
-                return Some(false)
+                Some(false)
             }
         }
     }

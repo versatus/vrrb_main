@@ -32,8 +32,8 @@ pub enum StateOption {
     NewTxn(Txn),
     NewAccount(WalletAccount),
     ClaimAcquired(Claim),
-    ConfirmedTxn((Txn, Validator)),
-    Miner((String, Block)),
+    ConfirmedTxn(Box<(Txn, Validator)>),
+    Miner(Box<(String, Block)>),
 }
 
 /// The State of all accounts. This is used to track balances
@@ -69,7 +69,7 @@ pub struct AccountState {
     /// This is effectively a placeholder for non-native tokens, and will be
     /// adjusted according to Smart Contract token protocols in the future,
     /// This is currently primarly for test purposes.
-    pub token_balances: HashMap<String, Vec<(Option<Token>, Option<Token>)>>,
+    pub token_balances: HashMap<String, Vec<(Option<Token>, Option<Token>)>>, // TODO: factor parts into custom type definitions
 
     /// The local claim state.
     pub claim_state: ClaimState,
@@ -147,17 +147,17 @@ impl AccountState {
                 // Enter the wallet's secret key hash as the key and the wallet's public key as the value
                 // if the secret key hash is not already in the hashmap
                 self.accounts_sk.entry(wallet.skhash.to_string())
-                    .or_insert(wallet.public_key.to_string());
+                    .or_insert_with(|| wallet.public_key.to_string());
 
                 // Enter the wallet's public key string as the key and if it's not already in the HashMap
                 // the wallet's address as the value.
                 self.accounts_pk.entry(wallet.public_key.to_string())
-                    .or_insert(wallet.address.clone());
+                    .or_insert_with(|| wallet.address.clone());
                 
                 // Enter the wallet's address as the key and if it's not already in the HashMap the wallet's
                 // public key string as the value
                 self.accounts_address.entry(wallet.address.clone())
-                    .or_insert(wallet.public_key.to_string());
+                    .or_insert_with(|| wallet.public_key.to_string());
                 
                 // Enter the wallet's public key string as the key and the STARTING_BALANCE const as
                 // the value 
@@ -166,18 +166,19 @@ impl AccountState {
                     .or_insert(STARTING_BALANCE);
                 
                 // Same thing as above since this is a new account
-                self.available_coin_balances.entry(wallet.public_key.to_string())
+                self.available_coin_balances.entry(wallet.public_key)
                     .or_insert(STARTING_BALANCE);
                 
                 // The .update() method for the  network state sets a state object (struct)
                 // either account_state, claim_state or reward state) into the pickle db
                 // that represents the network state.
                 let state_result = network_state.update(self.clone(), "account_state");
-                match state_result {
-                    Err(e) => { println!("Error in updating network state: {:?}", e)},
-                    _ => {}
+                
+                if let Err(e) = state_result {
+                    println!("Error in updating network state: {:?}", e)
                 }
-                return Ok(self.to_owned());
+
+                Ok(self.to_owned())
             },
 
             // If the StateOption variant passed is a NewTxn process the txn and either return
@@ -249,26 +250,25 @@ impl AccountState {
                                                 "account_state"
                                             );
 
-                                        match state_result {
-                                            Err(e) => { println!("Error in updating network state: {:?}", e)},
-                                            _ => {}
+                                        if let Err(e) = state_result {
+                                            println!("Error in updating network state: {:?}", e)
                                         }
                                         
                                         // Return the updated account state wrapped in an Ok() Result variant.
-                                        return Ok(self.to_owned());
+                                        Ok(self.to_owned())
                                     },
                                 None => {
-                                    return Err(InvalidMessageError::InvalidTxnError("Amount Exceeds Balance".to_string()));
+                                    Err(InvalidMessageError::InvalidTxnError("Amount Exceeds Balance".to_string()))
                                     }
                                 }
                             },
                             None => {
-                                return Err(InvalidMessageError::InvalidTxnError("Sender is non-existent".to_string()))
+                                Err(InvalidMessageError::InvalidTxnError("Sender is non-existent".to_string()))
                             }
                         }
                     },
                     None => {
-                        return Err(InvalidMessageError::InvalidTxnError("The receiver is non-existent".to_string()));
+                        Err(InvalidMessageError::InvalidTxnError("The receiver is non-existent".to_string()))
                     }
                 }
             },
@@ -284,7 +284,7 @@ impl AccountState {
                 // struct itself as the value.
                 // TODO: break down PendingClaimAcquired and ConfirmedClaimAcquired as claim acquisition
                 // has to be validated before it can be set into the account_state's claim_state.
-                self.claim_state.owned_claims.insert(claim.maturation_time.clone(),claim.clone());
+                self.claim_state.owned_claims.insert(claim.maturation_time,claim.clone());
                 
                 // Remove the claim from the account_state's claim_state's claims field since it is now owned
                 self.claim_state.claims.remove_entry(&claim.maturation_time);
@@ -292,13 +292,10 @@ impl AccountState {
                 // update the network state.
                 let state_result = network_state.update(self.clone(), "account_state");
                 
-                match state_result {
-                    Err(e) => { println!("Error in updating network state: {:?}", e)},
-                    _ => {}
-                }
+                if let Err(e) = state_result { println!("Error in updating network state: {:?}", e)}
 
                 // return an Ok() variant of the Result enum with the account state in it.
-                return Ok(self.to_owned());
+                Ok(self.to_owned())
             },
             
             // If the StateOption variant received by the update method is Miner
@@ -307,7 +304,7 @@ impl AccountState {
             // TODO: mined blocks need to be validated by the network before they're confirmed
             // If it has not yet been confirmed there should be a PendingMiner variant as well
             // as a ConfirmedMiner variant. The logic in this block would be for a ConfirmedMiner
-            StateOption::Miner((miner, block)) => {
+            StateOption::Miner(boxed_tuple) => {
                 
                 // get the public key of the miner from the address. This is set up
                 // so that the entire wallet no longer gets passed through to this variant
@@ -321,6 +318,7 @@ impl AccountState {
                 // would be mining a block, but possible, especially if it acquired a claim or received a claim
                 // This would mean, very likely that the current account state is out of consensus and would
                 // need to request the latest confirmed account state from the network.
+                let (miner, block) = *boxed_tuple;
                 let miner_pk = self.accounts_address.get(&miner).unwrap();
                 
                 // update the miner's total (confirmed) coin balance to include the reward
@@ -340,7 +338,7 @@ impl AccountState {
                 
                 // remove the claim used to mine the block from owned claims, it has been used and cannot
                 // be used again.
-                match self.claim_state.owned_claims.remove_entry(&block.clone().claim.maturation_time) {
+                match self.claim_state.owned_claims.remove_entry(&block.claim.maturation_time) {
                     Some(_) => println!("Mined block with claim. Removed claim from owned"),
                     None => println!("Couldn't find claim in owned"),
                 }
@@ -360,22 +358,23 @@ impl AccountState {
                 }
 
                 // Return the account state.                
-                return Ok(self.to_owned());
+                Ok(self.to_owned())
 
             },
 
             // If the StateOption is a confirmed transaction update the account state
             // accordingly (update balances of sender, receiver(s)) distribute the
             // fees to the trasnaction's validator.
-            StateOption::ConfirmedTxn((txn, validator)) => {
+            StateOption::ConfirmedTxn(boxed_tuple) => {
                 //TODO: distribute txn fees among validators.
-                let mut txn_validators = self.pending.get(&txn.txn_id.clone()).unwrap().1.clone();
+                let (txn, validator) = *boxed_tuple;
+                let mut txn_validators = self.pending.get(&txn.txn_id).unwrap().1.clone();
                 txn_validators.push(validator);
                 self.pending.insert(txn.txn_id.clone(), (txn.clone(), txn_validators.clone()));
 
                 let num_invalid = txn_validators
                     .iter()
-                    .filter(|&validator| validator.to_owned().valid == false)
+                    .filter(|&validator| !validator.to_owned().valid)
                     .count();
                 
                 let len_of_validators = txn_validators.len();
@@ -384,13 +383,29 @@ impl AccountState {
                     if num_invalid as f32 / len_of_validators as f32 > 1.0 / 3.0 {
                         {}
                     } else {
-                        self.mineable.insert(txn.clone().txn_id, (txn.clone(), txn_validators.clone()));
+                        self.mineable.insert(txn.clone().txn_id, (txn, txn_validators));
                     }
                 }
 
-                return Ok(self.to_owned());
+                Ok(self.to_owned())
             },
         }
+    }
+
+    pub fn as_bytes(&self) -> Vec<u8> {
+        let as_string = serde_json::to_string(self).unwrap();
+
+        as_string.as_bytes().iter().copied().collect()
+    }
+
+    pub fn from_bytes(data: &[u8]) -> AccountState {
+        let mut buffer: Vec<u8> = vec![];
+
+        data.iter().for_each(|x| buffer.push(*x));
+
+        let to_string = String::from_utf8(buffer).unwrap();
+
+        serde_json::from_str::<AccountState>(&to_string).unwrap()
     }
 }
 
@@ -452,11 +467,11 @@ impl WalletAccount {
         match updated_account_state {
             Ok(acccount_state) => {
                 let updated_account_state = acccount_state;
-                return (wallet, updated_account_state)
+                (wallet, updated_account_state)
             },
             Err(invalid_txn) => {
                 println!("{:?}", invalid_txn);
-                return (wallet, account_state.clone());
+                (wallet, account_state.clone())
             }
         }
         
@@ -477,12 +492,12 @@ impl WalletAccount {
         // hack the account_state to increase their own wallet balances/token holdings, etc.
 
         // Hash the private key string as bytes
-        let pk_hash = digest_bytes(&private_key.to_string().as_bytes());
+        let pk_hash = digest_bytes(&private_key.as_bytes());
 
         // pass the private key hash into the accounts_sk field (HashMap) as the key, and
         // get the public key associated with it
         // TODO: handle potential errors instead of just unwrapping and panicking if it's not found
-        let public_key = account_state.accounts_sk.get(&pk_hash.to_owned()).unwrap();
+        let public_key = account_state.accounts_sk.get(&pk_hash).unwrap();
 
         // Pass the public key string array into the accounts_pk hashmap to get the address in return
         // TODO: Handle potential errors instead of just unwrapping and panicking.
@@ -508,19 +523,19 @@ impl WalletAccount {
         
         // Return a restored wallet.
         WalletAccount {
-            private_key: private_key.clone(),
+            private_key,
             public_key: public_key.clone(),
             address: address.to_owned(),
             balance: *balance,
             available_balance: *available_balance,
             tokens: tokens.to_owned(),
-            claims: claims,
+            claims,
             skhash: pk_hash,
         }
     }
 
     /// Sign a message (transaction, claim, block, etc.)
-    pub fn sign(&self, message: &String) -> Result<Signature, Error> {
+    pub fn sign(&self, message: &str) -> Result<Signature, Error> {
         
         let message_bytes = message.as_bytes().to_owned();
         
@@ -604,9 +619,9 @@ impl WalletAccount {
 
         Ok(
             Self {
-                balance: balance.unwrap().clone(),
+                balance: *balance.unwrap(),
                 
-                available_balance: available_balance.unwrap().clone(),
+                available_balance: *available_balance.unwrap(),
                 
                 ..self.to_owned()
         })
@@ -643,7 +658,7 @@ impl WalletAccount {
         Ok(
             (
                 self.to_owned(), 
-                updated_account_state.to_owned()
+                updated_account_state
             )
         )
     }
@@ -664,14 +679,48 @@ impl WalletAccount {
                 claim.available = true;
                 claim.price = price;
                 // TODO: Add account state option to Update claim when claim goes up for sale.
-                account_state.claim_state.owned_claims.insert(claim.clone().maturation_time, claim.clone());
+                account_state.claim_state.owned_claims.insert(claim.maturation_time, claim.clone());
 
-                return Some((claim, account_state.clone()))
+                Some((claim, account_state.clone()))
             },
             None => {
-               return None
+               None
             }
         }
+    }
+
+    pub fn as_bytes(&self) -> Vec<u8> {
+        let as_string = serde_json::to_string(self).unwrap();
+
+        as_string.as_bytes().iter().copied().collect()
+    }
+
+    pub fn from_bytes(data: &[u8]) -> WalletAccount {
+        let mut buffer: Vec<u8> = vec![];
+
+        data.iter().for_each(|x| buffer.push(*x));
+
+        let to_string = String::from_utf8(buffer).unwrap();
+
+        serde_json::from_str::<WalletAccount>(&to_string).unwrap()
+    }
+}
+
+impl StateOption {
+    pub fn as_bytes(&self) -> Vec<u8> {
+        let as_string = serde_json::to_string(self).unwrap();
+
+        as_string.as_bytes().iter().copied().collect()
+    }
+
+    pub fn from_bytes(data: &[u8]) -> StateOption {
+        let mut buffer: Vec<u8> = vec![];
+
+        data.iter().for_each(|x| buffer.push(*x));
+
+        let to_string = String::from_utf8(buffer).unwrap();
+
+        serde_json::from_str::<StateOption>(&to_string).unwrap()
     }
 }
 

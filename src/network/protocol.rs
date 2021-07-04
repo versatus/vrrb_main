@@ -1,79 +1,50 @@
-use env_logger::{Builder, Env};
 use libp2p::{
     core::{
-        either::EitherTransport,
         muxing::StreamMuxerBox,
-        transport, 
         transport::upgrade::Version,
+        transport::Boxed,
+        upgrade::SelectUpgrade,
     },
-    kad::record::store::MemoryStore;
+    kad::record::store::MemoryStore,
     kad::{
-        AddProviderOk,
         Kademlia,
         KademliaEvent,
-        PeerRecord,
-        PutRecordOk,
         QueryResult,
-        Quorum,
-        Record,
-        record::Key,
-    }
-    swarm::{
-        NetworkBehaviourEventProcess,
-        SwarmEvent
-    }, 
+    },
+    swarm::{NetworkBehaviourEventProcess, NetworkBehaviour, NetworkBehaviourAction}, 
     gossipsub::{
-        self,
         Gossipsub, 
-        MessageAuthenticity, 
-        GossipsubConfig,
-        IdentTopic,
         GossipsubEvent,
     },
     identify::{
-        Identify, 
-        IdentifyInfo, 
-        IdentifyConfig, 
+        Identify,  
         IdentifyEvent
     },
+    websocket::WsConfig,
+    dns::DnsConfig,
     identity,
-    multiaddr::Protocol,
     noise,
     ping::{
         self, 
         Ping, 
-        PingConfig, 
         PingEvent,
     },
-    pnet::{
-        PnetConfig,
-        PreSharedKey,
-    },
+    NetworkBehaviour,
     tcp::TcpConfig,
     yamux::YamuxConfig,
-    Multiaddr, 
-    NetworkBehaviour, 
+    mplex::MplexConfig,
     PeerId, 
-    Swarm, 
     Transport,
 };
-use std::{
-    env,
-    error::Error,
-    fs,
-    path::Path,
-    str::FromStr,
-    task::{Context, Poll},
-    time::Duration
-};
-use futures::executor::block_on;
-use futures::prelude::*;
+use std::io::Error;
+use std::time::Duration;
 
-struct VrrbNetworkBehavior {
-    gossipsub: Gossipsub,
-    identify: Identify,
-    kademlia: Kademlia,
-    ping: Ping,
+#[derive(NetworkBehaviour)]
+pub struct VrrbNetworkBehavior {
+    pub gossipsub: Gossipsub,
+    pub identify: Identify,
+    pub kademlia: Kademlia<MemoryStore>,
+    pub ping: Ping,
 
 }
 
@@ -84,17 +55,29 @@ impl NetworkBehaviourEventProcess<IdentifyEvent> for VrrbNetworkBehavior {
             IdentifyEvent::Received {
                 peer_id,
                 info,
-            } => {},
+            } => {
+                // If a new peer is received add them to the DHT and ??send Identity back??
+                // Bootstrap the new node.
+                println!("Received Identity of Peer: {:?} -> Info: {:?}", &peer_id, &info);
+                self.kademlia.add_address(&peer_id, info.observed_addr);
+                self.kademlia.bootstrap().unwrap();
+            },
             IdentifyEvent::Sent {
                 peer_id
-            } => {},
+            } => {
+                println!("Sent Identify info: {:?}", peer_id);
+            },
             IdentifyEvent::Pushed {
                 peer_id
-            } => {},
+            } => {
+                println!("Pushed Peer info: {:?}", peer_id);
+            },
             IdentifyEvent::Error {
                 peer_id,
                 error,
-            } => {}
+            } => {
+                println!("Encountered an error: {:?} -> {:?}", error, peer_id);
+            }
         }
     }
 }
@@ -109,9 +92,9 @@ impl NetworkBehaviourEventProcess<GossipsubEvent> for VrrbNetworkBehavior {
             } =>{ 
                 
                 println!("Got message: {}, with id: {} from peer: {:?}",
-                String::from_utf8_lossy(&message.data),
-                id,
-                peer_id);
+                    String::from_utf8_lossy(&message.data),
+                    id,
+                    peer_id);
                 // check message headers for channel match
                 //
                 // foreward the message for processing
@@ -126,8 +109,17 @@ impl NetworkBehaviourEventProcess<GossipsubEvent> for VrrbNetworkBehavior {
                 // for block: confirm network state through consensus vote in governance channel
                 // for claim homesteading/acquisition update local state, etc.
             },
-            GossipsubEvent::Subscribed => {},
-            GossipsubEvent::Unsubscribed => {},
+            GossipsubEvent::Subscribed {
+                peer_id, topic
+            } => {
+                println!("Peer subscribed: {:?} to topic: {:?}", peer_id, topic);
+            
+            },
+            GossipsubEvent::Unsubscribed {
+                peer_id, topic
+            } => {
+                println!("Peer unsubscribed: {:?} from topic: {:?}", peer_id, topic);
+            },
         }
     }
 }
@@ -140,33 +132,26 @@ impl NetworkBehaviourEventProcess<PingEvent> for VrrbNetworkBehavior {
                 peer,
                 result: Result::Ok(PingSuccess::Ping { rtt }),
             } => {
-                println!(
-                    "ping: rtt to {} is {} ms",
-                    peer.to_base58(),
-                    rtt.as_millis()
-                );
+
             },
             PingEvent {
                 peer,
-                result: Result::Ok(PingSuccess::pong),
+                result: Result::Ok(PingSuccess::Pong),
             } => {
                 // In the event of a successful ping with a returned pong
                 // maintain the peer
-                println!("ping: pong from {}", peer.to_base58());
             },
             PingEvent {
                 peer,
                 result: Result::Err(PingFailure::Timeout),
             } => {
                 // In the event of a ping failure, propagate the removal of the peer
-                println!("ping: timeout to {}", peer.to_base58());
             },
             PingEvent {
                 peer,
                 result: Result::Err(PingFailure::Other { error }),
             } => {
                 // In the event of a ping failure, propagate the removal of the peer
-                println!("ping: failure with {}: {}", peer.to_base58(), error);
             }
         }
     }
@@ -178,64 +163,111 @@ impl NetworkBehaviourEventProcess<KademliaEvent> for VrrbNetworkBehavior {
             KademliaEvent::QueryResult { id, result, stats } => {
                 println!("Received query result:\n id: {:?} \n result: {:?}, stats: {:?}", &id, &result, &stats);
                 match result {
-                    _ => {}
+                    QueryResult::Bootstrap(Ok(ok)) => {
+                        println!("Peer: {:?} bootstrapped. Num remaining: {:?}", ok.peer, ok.num_remaining);
+                        self.kademlia.get_closest_peers(ok.peer);
+                    },
+                    QueryResult::Bootstrap(Err(err)) => {
+                        println!("Encountered an error while trying to bootstrap peer: {:?}", err);
+                    },
+                    QueryResult::GetClosestPeers(Ok(ok)) => {
+                        for (idx, peer) in ok.peers.iter().enumerate() {
+                            println!("Next closest peer: {:?} -> {:?}", ok.key[idx], peer);
+                        }
+                    },
+                    QueryResult::GetClosestPeers(Err(err)) => {
+                        println!("Encountered an error while trying to get closest peers: {:?}", err);
+                    },
+                    QueryResult::GetProviders(Ok(ok)) => {
+                        for peer in ok.providers {
+                            println!("Provider: {:?}", peer)
+                        }
+                    },
+                    QueryResult::GetProviders(Err(err)) => {
+                        println!("Encountered an error while trying to get providers: {:?}", err);
+                    },
+                    QueryResult::GetRecord(Ok(ok)) => {
+                        for record in ok.records {
+                            println!("Got record: {:?}", record);
+                        }
+                    },
+                    QueryResult::GetRecord(Err(err)) => {
+                        println!("Encountered error while trying to get record: {:?}", err);
+                    },
+                    QueryResult::PutRecord(Ok(ok)) => {
+                        println!("Put record: {:?}", ok.key);
+                    },
+                    QueryResult::PutRecord(Err(err)) => {
+                        println!("Encountered errorw while trying to put record: {:?}", err);
+                    },
+                    QueryResult::StartProviding(Ok(ok)) => {
+                        println!("Started Providing: {:?}", ok.key);
+                    },
+                    QueryResult::StartProviding(Err(err)) => {
+                        println!("Encountered an error while trying to start providing: {:?}", err);
+                    },
+                    QueryResult::RepublishProvider(Ok(ok)) => {
+                        println!("Republishing provider: {:?}", ok.key);
+                    },
+                    QueryResult::RepublishProvider(Err(err)) => {
+                        println!("Encountered an error while trying to repbulish a provider: {:?}", err);
+                    },
+                    QueryResult::RepublishRecord(Ok(ok)) => {
+                        println!("Republishing record: {:?}", ok.key);
+                    },
+                    QueryResult::RepublishRecord(Err(err)) => {
+                        println!("Encountered an error while attempting to republish record: {:?}", err);
+                    }
                 }
+            }, 
+
+            KademliaEvent::RoutingUpdated { peer, addresses, old_peer } => {
+                println!("Peer Routing has updated: {:?} now at -> Peer Id: {:?} -> Address: {:?}",
+                    old_peer, peer, addresses);
             },
-            KademliaEvent::RoutingUpdated { peer_id, address, old_peer } => {},
-            KademliaEvent::UnroutablePeer { peer_id } => {},
-            KademliaEvent::RoutablePeer { peer_id, address } => {},
-            KademliaEvent::PendingRoutablePeer { peer_id, addr } => {},
+            KademliaEvent::UnroutablePeer { peer } => {
+                println!("Peer {:?} is unroutable", peer);
+            },
+            KademliaEvent::RoutablePeer { peer, address } => {
+                println!("Peer ID {:?} -> Address: {:?}", peer, address);
+            },
+            KademliaEvent::PendingRoutablePeer { peer, address } => {
+                println!("Pending routability of peer: {:?} -> Address: {:?}", peer, address)
+
+            },
         }
     }
 }
 
-impl NetworkBehaviourEventProcess<SwarmEvent> for VrrbNetworkBehavior {
-    fn inject_event(&mut self, event: SwarmEvent) {
-        match event {
-            SwarmEvent::ConnectionEstablished {
-                peer_id,
-                endpoint,
-                num_established,
-            } => {},
-            SwarmEvent::ConnectionClosed {
-                peer_id,
-                endpoint,
-                num_established,
-                cause
-            } => {},
-            SwarmEvent::IncomingConnection {
-                local_addr,
-                send_back_addr,
-            } => {},
-            SwarmEvent::IncomingConnectionError {
-                local_addr,
-                send_back_addr,
-                error,
-            } => {},
-            SwarmEvent::BannedPeer {
-                peer_id,
-                endpoint
-            } => {},
-            SwarmEvent::UnreachableAddr {
-                peer_id,
-                address,
-                error,
-                attempts_remaining,
-            },
-            SwarmEvent::UnknownPeerUnreachableAddr {
-                address,
-                error,
-            },
-            SwarmEvent::NewListenAddr(address) => {},
-            SwarmEvent::ExpiredListenAddr(address) => {},
-            SwarmEvent::ListenerClosed {
-                addresses,
-                reason,
-            } => {},
-            SwarmEvent::ListenerError {
-                error
-            } => {},
-            SwarmEvent::Dialing(peer_id) => {}
-        }
-    }
-}
+pub async fn build_transport(key_pair: identity::Keypair) -> Result<Boxed<(PeerId, StreamMuxerBox)>, Error> {
+    let noise_keys = noise::Keypair::<noise::X25519Spec>::new()
+        .into_authentic(&key_pair)
+        .unwrap();
+    
+    let noise_config = noise::NoiseConfig::xx(noise_keys).into_authenticated();
+    let yamux_config = YamuxConfig::default();
+    let mplex_config = MplexConfig::default();
+
+    
+    let transport = {
+    
+        let tcp = TcpConfig::new().nodelay(true);
+        let dns_tcp = DnsConfig::system(tcp).await.unwrap();
+        let ws_dns_tcp = WsConfig::new(dns_tcp.clone());
+        dns_tcp.or_transport(ws_dns_tcp)
+    };
+
+    Ok(transport
+        .upgrade(Version::V1)
+        .authenticate(noise_config)
+        .multiplex(SelectUpgrade::new(yamux_config, mplex_config))
+        .timeout(Duration::from_secs(20))
+        .boxed()
+    )
+} 
+
+// impl NetworkBehaviour for VrrbNetworkBehavior {
+//     type ProtocolHandler = DummyProtocolsHandler;
+
+    
+// }

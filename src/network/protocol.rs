@@ -11,10 +11,11 @@ use libp2p::{
         KademliaEvent,
         QueryResult,
     },
-    swarm::{NetworkBehaviourEventProcess, NetworkBehaviour, NetworkBehaviourAction}, 
+    swarm::{NetworkBehaviourEventProcess}, 
     gossipsub::{
         Gossipsub, 
         GossipsubEvent,
+        GossipsubMessage,
     },
     identify::{
         Identify,  
@@ -38,6 +39,8 @@ use libp2p::{
 };
 use std::io::Error;
 use std::time::Duration;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 
 #[derive(NetworkBehaviour)]
 pub struct VrrbNetworkBehavior {
@@ -45,7 +48,8 @@ pub struct VrrbNetworkBehavior {
     pub identify: Identify,
     pub kademlia: Kademlia<MemoryStore>,
     pub ping: Ping,
-
+    #[behaviour(ignore)]
+    pub queue: Arc<Mutex<VecDeque<GossipsubMessage>>>
 }
 
 impl NetworkBehaviourEventProcess<IdentifyEvent> for VrrbNetworkBehavior {
@@ -59,18 +63,25 @@ impl NetworkBehaviourEventProcess<IdentifyEvent> for VrrbNetworkBehavior {
                 // If a new peer is received add them to the DHT and ??send Identity back??
                 // Bootstrap the new node.
                 println!("Received Identity of Peer: {:?} -> Info: {:?}", &peer_id, &info);
-                self.kademlia.add_address(&peer_id, info.observed_addr);
+                // Add listening addresses to the routing table -> Local Addresses will be
+                // excluded in the future, as the listening address must be external so that
+                // peers will only have a single address.
+                for addr in info.listen_addrs {
+                    self.kademlia.add_address(&peer_id, addr);
+                }
                 self.kademlia.bootstrap().unwrap();
             },
             IdentifyEvent::Sent {
                 peer_id
             } => {
                 println!("Sent Identify info: {:?}", peer_id);
+                // Nothing more to do if identity info is sent.
             },
             IdentifyEvent::Pushed {
                 peer_id
             } => {
                 println!("Pushed Peer info: {:?}", peer_id);
+                // Nothing more to do if peer info is pushed.
             },
             IdentifyEvent::Error {
                 peer_id,
@@ -86,28 +97,17 @@ impl NetworkBehaviourEventProcess<GossipsubEvent> for VrrbNetworkBehavior {
     fn inject_event(&mut self, event: GossipsubEvent) {
         match event {
             GossipsubEvent::Message {
-                propagation_source: peer_id,
-                message_id: id,
+                propagation_source: _peer_id,
+                message_id: _id,
                 message
-            } =>{ 
-                
-                println!("Got message: {}, with id: {} from peer: {:?}",
-                    String::from_utf8_lossy(&message.data),
-                    id,
-                    peer_id);
-                // check message headers for channel match
-                //
-                // foreward the message for processing
-                //
-                // If the message is a new txn, new block, new claim homesteading/acquisition
-                // send to validator
-                //
-                // if the message is a validator send to vpu
-                //
-                // if the message is a confirmation of a txn, block, claim homesteading/acquisition
-                // for txn: add to mineable
-                // for block: confirm network state through consensus vote in governance channel
-                // for claim homesteading/acquisition update local state, etc.
+            } => {
+
+                let _header = &String::from_utf8_lossy(&message.data)[0..7];
+                let _data = &String::from_utf8_lossy(&message.data)[9..];
+                //TODO: Push all message information instead of just the message itself
+                //TODO: Convert the message to a mutable byte array since byte array's implement copy
+                // and can be dereferenced and changed.
+                self.queue.lock().unwrap().push_back(message)
             },
             GossipsubEvent::Subscribed {
                 peer_id, topic
@@ -129,27 +129,27 @@ impl NetworkBehaviourEventProcess<PingEvent> for VrrbNetworkBehavior {
         use ping::handler::{PingFailure, PingSuccess};
         match event {
             PingEvent {
-                peer,
-                result: Result::Ok(PingSuccess::Ping { rtt }),
+                result: Result::Ok(PingSuccess::Ping { .. }),
+                ..
             } => {
-
+                
             },
             PingEvent {
-                peer,
                 result: Result::Ok(PingSuccess::Pong),
+                ..
             } => {
                 // In the event of a successful ping with a returned pong
                 // maintain the peer
             },
             PingEvent {
-                peer,
                 result: Result::Err(PingFailure::Timeout),
+                ..
             } => {
                 // In the event of a ping failure, propagate the removal of the peer
             },
             PingEvent {
-                peer,
-                result: Result::Err(PingFailure::Other { error }),
+                result: Result::Err(PingFailure::Other { .. }),
+                ..
             } => {
                 // In the event of a ping failure, propagate the removal of the peer
             }
@@ -224,15 +224,26 @@ impl NetworkBehaviourEventProcess<KademliaEvent> for VrrbNetworkBehavior {
             KademliaEvent::RoutingUpdated { peer, addresses, old_peer } => {
                 println!("Peer Routing has updated: {:?} now at -> Peer Id: {:?} -> Address: {:?}",
                     old_peer, peer, addresses);
+                // Dial the listening address to connect.
             },
             KademliaEvent::UnroutablePeer { peer } => {
                 println!("Peer {:?} is unroutable", peer);
+                // If the peer is unroutable request the listening address and
+                // add it to the routing table.
             },
             KademliaEvent::RoutablePeer { peer, address } => {
                 println!("Peer ID {:?} -> Address: {:?}", peer, address);
+                // If the peer is routable but not added to the routing table
+                // because the table is full, it's insertion into the routing table
+                // should be pending the least recently disconnected peer or should be
+                // added to the table.
+                // If the peer is to be unconditionally added to the routing table, then the
+                // peer can be added using the add_address() method.
             },
             KademliaEvent::PendingRoutablePeer { peer, address } => {
                 println!("Pending routability of peer: {:?} -> Address: {:?}", peer, address)
+                // If the peer is to be unconditionally added to the routing table, then the
+                // peer can be added using add_address() method
 
             },
         }
@@ -264,10 +275,4 @@ pub async fn build_transport(key_pair: identity::Keypair) -> Result<Boxed<(PeerI
         .timeout(Duration::from_secs(20))
         .boxed()
     )
-} 
-
-// impl NetworkBehaviour for VrrbNetworkBehavior {
-//     type ProtocolHandler = DummyProtocolsHandler;
-
-    
-// }
+}

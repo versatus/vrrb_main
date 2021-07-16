@@ -3119,6 +3119,7 @@ dependencies = [
  "chrono",
  "env_logger",
  "futures",
+ "hex",
  "libp2p",
  "pickledb",
  "rand 0.6.5",

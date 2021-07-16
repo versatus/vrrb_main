@@ -158,7 +158,7 @@ impl Claim {
 
     pub fn valid_chain_of_custody(&self, current_owner: String) -> Option<bool> {
         let current_owner_custody = self.chain_of_custody
-                                                                        .get(&current_owner);
+                                        .get(&current_owner);
         match current_owner_custody {
             Some(_map) => {
                 let previous_owner = current_owner_custody.unwrap().get("acquired_from").unwrap();
@@ -369,6 +369,22 @@ impl Claim {
             Ok(()) => Ok(true),
             _ => Err(Error::IncorrectSignature),
         }
+    }
+
+    pub fn as_bytes(&self) -> Vec<u8> {
+        let as_string = serde_json::to_string(self).unwrap();
+
+        as_string.as_bytes().iter().copied().collect()
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Claim {
+        let mut buffer: Vec<u8> = vec![];
+
+        data.iter().for_each(|x| buffer.push(*x));
+
+        let to_string = String::from_utf8(buffer).unwrap();
+
+        serde_json::from_str::<Claim>(&to_string).unwrap()
     }
 }
 

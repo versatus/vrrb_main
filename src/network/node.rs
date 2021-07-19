@@ -47,22 +47,23 @@ pub enum NodeAuth {
 }
 
 #[allow(dead_code)]
-pub struct Node {
+pub struct Node<'a> {
     pub id: PeerId,
-    pub wallet: &'static mut WalletAccount,
+    pub wallet: Arc<Mutex<WalletAccount<'a>>>,
     pub swarm: Swarm<VrrbNetworkBehavior>,
-    pub account_state: &'static mut AccountState,
-    pub network_state: &'static mut NetworkState,
-    pub reward_state: &'static mut RewardState,
+    pub account_state: Arc<Mutex<AccountState<'a>>>,
+    pub network_state: Arc<Mutex<NetworkState<'a>>>,
+    pub reward_state: Arc<Mutex<RewardState>>,
+    pub last_block: Option<Block>,
 }
 
-impl Node {
+impl<'a> Node<'a> {
 
     pub async fn start(
-        wallet: &'static mut WalletAccount, 
-        account_state: &'static mut AccountState, 
-        network_state: &'static mut NetworkState,
-        reward_state: &'static mut RewardState,
+        wallet: Arc<Mutex<WalletAccount<'a>>>, 
+        account_state: Arc<Mutex<AccountState<'a>>>, 
+        network_state: Arc<Mutex<NetworkState<'a>>>,
+        reward_state: Arc<Mutex<RewardState>>,
     ) -> Result<(), Box<dyn Error>> {
 
         Builder::from_env(Env::default().default_filter_or("info")).init();
@@ -77,7 +78,6 @@ impl Node {
         let claim_topic = Topic::new("claim");
         let block_topic = Topic::new("block");
         let validator_topic = Topic::new("validator");
-        
 
         let swarm = {
             let message_id_fn = |message: &GossipsubMessage| {
@@ -96,22 +96,18 @@ impl Node {
         let mut gossipsub: Gossipsub = Gossipsub::new(
             MessageAuthenticity::Signed(local_key.clone()), 
             gossipsub_config).expect("Correct configuration");
-        
         gossipsub.subscribe(&testnet_topic).unwrap();
         gossipsub.subscribe(&txn_topic).unwrap();
         gossipsub.subscribe(&claim_topic).unwrap();
         gossipsub.subscribe(&block_topic).unwrap();
         gossipsub.subscribe(&validator_topic).unwrap();
-
         let store = MemoryStore::new(local_peer_id);
         let kademlia = Kademlia::new(local_peer_id, store);
-        
         let identify_config = IdentifyConfig::new(
             "vrrb/test-net/1.0.0".to_string(),
             local_key.public(),
         );
         let identify = Identify::new(identify_config);
-
         let ping = Ping::new(PingConfig::new());
         let queue: Arc<Mutex<VecDeque<GossipsubMessage>>> = Arc::new(Mutex::new(VecDeque::new()));
 
@@ -124,18 +120,18 @@ impl Node {
         };
 
         let transport = build_transport(local_key).await.unwrap();
-
         Swarm::new(transport, behaviour, local_peer_id)
         
         };
 
-        let mut node = Node {
+        let node = Node {
             id: local_peer_id,
             swarm,
             wallet,
             account_state,
             network_state,
             reward_state,
+            last_block: None,
         };
 
         let port = rand::thread_rng().gen_range(9292, 19292);
@@ -144,16 +140,22 @@ impl Node {
         // and only listen on this address.
         let addr: Multiaddr = multiaddr!(Ip4([0,0,0,0]), Tcp(port as u16));
         
+        let atomic_node = Arc::new(Mutex::new(node));
+
         println!("{:?}", &addr);
 
-        node.swarm.listen_on(addr.clone()).unwrap();
+        atomic_node.lock().unwrap().swarm
+            .listen_on(addr.clone())
+            .unwrap();
 
-        node.swarm.behaviour_mut().kademlia.add_address(&local_peer_id, addr.clone());
+        atomic_node.lock().unwrap().swarm
+            .behaviour_mut().kademlia
+            .add_address(&local_peer_id, addr.clone());
 
         if let Some(to_dial) = std::env::args().nth(1) {
             let dialing = to_dial.clone();
             match to_dial.parse() {
-                Ok(to_dial) => match node.swarm.dial_addr(to_dial) {
+                Ok(to_dial) => match atomic_node.lock().unwrap().swarm.dial_addr(to_dial) {
                     Ok(_) => {
                         println!("Dialed {:?}", dialing);
                         },
@@ -165,31 +167,36 @@ impl Node {
 
         let mut stdin = io::BufReader::new(io::stdin()).lines();
 
+
         task::block_on(future::poll_fn(move |cx: &mut Context<'_>| {
-            let atomic_queue = Arc::clone(&node.swarm.behaviour().queue);
+            let atomic_queue = Arc::clone(&atomic_node.lock().unwrap().swarm.behaviour().queue);
+            let task_node = Arc::clone(&atomic_node);
 
             thread::spawn(move || 
                 loop {
+                    let cloned_node = Arc::clone(&task_node);
                     match atomic_queue.lock().unwrap().pop_front() {
                         Some(message) => {
-                            // TODO: process message in helper function.
-                            // process_message(message, &mut node.clone());
+                            process_message(message, cloned_node);
                         },
                         None => {},
                 }});
-
+            
+            let task_node = Arc::clone(&atomic_node);
             loop {
+                let cloned_node = Arc::clone(&task_node);
                 match stdin.try_poll_next_unpin(cx)? {
                     Poll::Ready(Some(line)) => {
-                        handle_input_line(&mut node.swarm.behaviour_mut(), line)
+                        handle_input_line(cloned_node.lock().unwrap().swarm.behaviour_mut(), line)
                     },
                     Poll::Ready(None) => panic!("Stdin closed"),
                     Poll::Pending => break,
                 }        
             }
 
+            let task_node = Arc::clone(&atomic_node);
             loop {
-                match node.swarm.poll_next_unpin(cx) {
+                match task_node.lock().unwrap().swarm.poll_next_unpin(cx) {
                     Poll::Ready(Some(event)) => {
                         match event {
                             _ => println!("Event --> {:?}", event)
@@ -217,16 +224,10 @@ fn handle_input_line(behaviour: &mut VrrbNetworkBehavior, line: String) {
     match commands.next() {
         Some("NEW_TXN") | Some("UPD_TXN") => {
             behaviour.gossipsub.publish(Topic::new("txn"), message).unwrap();
-        }
-        Some("CLM_HOM") | Some("CLM_SAL") | Some("CLM_ACQ") | Some("CLM_STK") => {
-            behaviour.gossipsub.publish(Topic::new("claim"), message).unwrap();
         },
-        Some("NEW_BLK") | Some("GET_BLK") => {
+        
+        Some("GET_BLK") => {
             behaviour.gossipsub.publish(Topic::new("block"), message).unwrap();
-        },
-
-        Some("TXN_VAL") | Some("CLM_VAL") | Some("BLK_VAL") => {
-            behaviour.gossipsub.publish(Topic::new("validator"), message).unwrap();
         },
         Some("VRRB_IP") | Some("UPDST_P") => {
             behaviour.gossipsub.publish(Topic::new("test-net"), message).unwrap();
@@ -237,7 +238,8 @@ fn handle_input_line(behaviour: &mut VrrbNetworkBehavior, line: String) {
     }
 }
 
-pub fn publish_validator(validator: Validator, node: &mut Node, header: &str) {
+pub fn publish_validator(validator: Validator, node: Arc<Mutex<Node>>, header: &str) {
+    // Publish a validator as bytes to the validator channel
     let processed = validator.validate();
     let validator_bytes = processed.as_bytes();
     let header = hex::encode(String::from(header).as_bytes());
@@ -245,25 +247,43 @@ pub fn publish_validator(validator: Validator, node: &mut Node, header: &str) {
     let mut message = header.to_owned();
     message.push_str(" ");
     message.push_str(&data);
-    node.swarm.behaviour_mut().gossipsub
+    node.lock().unwrap().swarm.behaviour_mut().gossipsub
         .publish(Topic::new("validator"), message.as_bytes()).unwrap();
 }
 
-pub fn process_message(message: GossipsubMessage, node: &mut Node) {
+pub fn publish_last_block(last_block: Block, node: Arc<Mutex<Node>>, header: &str) {
+    let header = hex::encode(String::from(header).as_bytes());
+    let block_bytes = last_block.as_bytes();
+    let data = hex::encode(block_bytes);
+    let mut message = header.to_owned();
+    message.push_str(" ");
+    message.push_str(&data);
+    node.lock().unwrap().swarm.behaviour_mut().gossipsub
+        .publish(Topic::new("block"), message.as_bytes()).unwrap();
+    
+}
+
+pub fn process_message(message: GossipsubMessage, node: Arc<Mutex<Node>>) {
     let header = &String::from_utf8_lossy(&message.data)[0..7];
     let data = &String::from_utf8_lossy(&message.data)[9..];
     match header {
         "NEW_TXN" => {
             match hex::decode(data) {
                 Ok(bytes) => {
+                    let message_node = node.lock().unwrap();
                     let txn = Txn::from_bytes(&bytes[..]);
                     let txn_validator = Validator::new(
-                        Message::Txn(txn, node.account_state.clone()),
-                        node.wallet.clone(),
-                        node.account_state.clone()
+                        Message::Txn(
+                            serde_json::to_string(&txn).unwrap(), 
+                            serde_json::to_string(&message_node.account_state.clone().lock().unwrap()).unwrap()
+                        ),
+                        message_node.wallet.clone().lock().unwrap(),
+                        message_node.account_state.clone().lock().unwrap()
                     );
                     // UPDATE LOCAL Account State pending balances for sender(s)/
                     // receivers.
+                    drop(message_node);
+
                     match txn_validator {
                         Some(validator) => {
                             publish_validator(validator, node, "TXN_VAL");
@@ -279,12 +299,18 @@ pub fn process_message(message: GossipsubMessage, node: &mut Node) {
         "CLM_HOM" => {
             match hex::decode(data) {
                 Ok(bytes) => {
+                    let message_node = node.lock().unwrap();
                     let claim = Claim::from_bytes(&bytes[..]);
-                    let claim_validator = Validator::new(Message::ClaimHomesteaded(
-                        claim.clone(), 
-                        claim.current_owner.1.unwrap(), 
-                        node.account_state.clone()), node.wallet.clone(), node.account_state.clone());
+                    let claim_validator = Validator::new(
+                        Message::ClaimHomesteaded(
+                            serde_json::to_string(&claim).unwrap(), 
+                            claim.current_owner.1.unwrap(), 
+                            serde_json::to_string(&message_node.account_state).unwrap()
+                        ), message_node.wallet.clone(), message_node.account_state.clone()
+                    );
                     
+                    drop(message_node);
+
                     match claim_validator {
                         Some(validator) => {
                             publish_validator(validator, node, "CLM_VAL");
@@ -310,13 +336,18 @@ pub fn process_message(message: GossipsubMessage, node: &mut Node) {
                         Some(custodian_info) => {
                             match custodian_info {
                                 CustodianInfo::AcquiredFrom((_, pubkey, _)) => {
-                                    let claim_validator = Validator::new(Message::ClaimAcquired(
-                                        claim.clone(), 
-                                        pubkey.as_ref().unwrap().to_owned(), 
-                                        node.account_state.clone(),
-                                        claim.clone().current_owner.1.unwrap()
-                                    ), node.wallet.clone(), node.account_state.clone());
-                    
+                                    let message_node = node.lock().unwrap();
+                                    let claim_validator = Validator::new(
+                                        Message::ClaimAcquired(
+                                            serde_json::to_string(&claim).unwrap(), 
+                                            pubkey.as_ref().unwrap().to_owned(), 
+                                            serde_json::to_string(&message_node.account_state).unwrap(),
+                                            claim.clone().current_owner.1.unwrap()
+                                    ), message_node.wallet.clone(), message_node.account_state.clone()
+                                );
+                                
+                                drop(message_node);
+
                                 match claim_validator {
                                     Some(validator) => {
                                         publish_validator(validator, node, "CLM_VAL");
@@ -329,9 +360,7 @@ pub fn process_message(message: GossipsubMessage, node: &mut Node) {
                             }
                         },
                         None => println!("There is no previous owner, this claim cannot be sold or acquired until it has been homesteaded first")
-                    }
-
-                    
+                    }  
                 },
                 Err(e) => {println!("Error encountered while decoding message data: {:?}", e)}
             }
@@ -350,13 +379,17 @@ pub fn process_message(message: GossipsubMessage, node: &mut Node) {
                         Some(custodian_info) => {
                             match custodian_info {
                                 CustodianInfo::AcquiredFrom((_, pubkey, _)) => {
-                                    let claim_validator = Validator::new(Message::ClaimAcquired(
-                                        claim.clone(), 
-                                        pubkey.as_ref().unwrap().to_owned(), 
-                                        node.account_state.clone(),
-                                        claim.clone().current_owner.1.unwrap()
-                                    ), node.wallet.clone(), node.account_state.clone());
-                    
+                                    let message_node = node.lock().unwrap();
+                                    let claim_validator = Validator::new(
+                                        Message::ClaimAcquired(
+                                            serde_json::to_string(&claim).unwrap(), 
+                                            pubkey.as_ref().unwrap().to_owned(), 
+                                            serde_json::to_string(&message_node.account_state).unwrap(),
+                                            claim.clone().current_owner.1.unwrap()
+                                    ), message_node.wallet.clone(), message_node.account_state.clone());
+                                
+                                    drop(message_node);
+
                                 match claim_validator {
                                     Some(validator) => {
                                         publish_validator(validator, node, "CLM_VAL");
@@ -379,27 +412,57 @@ pub fn process_message(message: GossipsubMessage, node: &mut Node) {
         "NEW_BLK" => {
             match hex::decode(data) {
                 Ok(bytes) => {
+                    let message_node = node.lock().unwrap();
                     let block = Block::from_bytes(&bytes[..]);
                     let block_validator = Validator::new(
-                        Message::NewBlock(Box::new(
-                            (
-                                last_block, 
-                                block.clone(), 
-                                block.miner.clone(), 
-                                node.network_state.clone(),
-                                node.account_state.clone(),
-                                node.reward_state.clone()
-                            ) 
-                        )
-                    ), node.wallet.clone(), node.account_state.clone());
+                        Message::NewBlock(
+                            serde_json::to_string(&message_node.last_block.as_ref().unwrap()).unwrap(), 
+                            serde_json::to_string(&block).unwrap(), 
+                            block.miner.clone(), 
+                            serde_json::to_string(&message_node.network_state).unwrap(),
+                            serde_json::to_string(&message_node.account_state).unwrap(),
+                            serde_json::to_string(&message_node.reward_state).unwrap()
+                        ), message_node.wallet.clone(), message_node.account_state.clone()
+                    );
 
+                    drop(message_node);
+
+                    match block_validator {
+                        Some(validator) => {publish_validator(validator, node, "BLK_VAL")},
+                        None => {println!("You are not running a validator node or you do not have any claims staked")}
+                    }
                 },
                 Err(e) => {println!("Error encountered while decoding message data: {:?}", e)}
             }
         },
-        "GET_BLK" => {},
+        "GET_BLK" => {
+            match hex::decode(data) {
+                Ok(_bytes) => {
+                    // If this message is recieved return a message with the LST_BLK header.
+                    // and the node.last_block as the data.
+                    let message_node = node.lock().unwrap();
+                    let last_block = message_node.last_block.clone();
+
+                    drop(message_node);
+                    
+                    match last_block {
+                        Some(block) => {
+                            publish_last_block(block, node, "LST_BLK");                    
+                        },
+                        None => {println!("No blocks to publish yet")}
+                    }
+                },
+                Err(e) => println!("Error encountered while decoding message data: {:?}", e)
+            }
+        },
         "VRRB_IP" => {},
         "UPDST_P" => {},
+        "LST_BLK" => {
+
+        },
+        "ALL_BLK" => {
+            // Publish all the blocks from the beginning of the blockchain, this is for new archive node
+        }
         _ => {}
 
     }

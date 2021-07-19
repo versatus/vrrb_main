@@ -126,33 +126,28 @@ impl NetworkBehaviourEventProcess<GossipsubEvent> for VrrbNetworkBehavior {
 
 impl NetworkBehaviourEventProcess<PingEvent> for VrrbNetworkBehavior {
     fn inject_event(&mut self, event: PingEvent) {
-        use ping::handler::{PingFailure, PingSuccess};
+        use ping::handler::{PingFailure};
         match event {
             PingEvent {
-                result: Result::Ok(PingSuccess::Ping { .. }),
-                ..
+                result,
+                peer
             } => {
-                
+                match result {
+                    Ok(_success) => {},
+                    Err(failure) => {
+                        match failure {
+                            PingFailure::Timeout => {
+                                //TODO: Dial again and try again, keep track of failures and
+                                // if it fails three times then drop peer.
+                                self.kademlia.remove_peer(&peer);
+                            },
+                            PingFailure::Other { .. } => {
+                                self.kademlia.remove_peer(&peer);
+                            }
+                        }
+                    }
+                }
             },
-            PingEvent {
-                result: Result::Ok(PingSuccess::Pong),
-                ..
-            } => {
-                // In the event of a successful ping with a returned pong
-                // maintain the peer
-            },
-            PingEvent {
-                result: Result::Err(PingFailure::Timeout),
-                ..
-            } => {
-                // In the event of a ping failure, propagate the removal of the peer
-            },
-            PingEvent {
-                result: Result::Err(PingFailure::Other { .. }),
-                ..
-            } => {
-                // In the event of a ping failure, propagate the removal of the peer
-            }
         }
     }
 }

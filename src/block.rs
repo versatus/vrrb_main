@@ -19,7 +19,7 @@ use std::fmt;
 use secp256k1::{
     key::{PublicKey}
 };
-
+use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Block {
@@ -38,7 +38,7 @@ pub struct Block {
     pub visible_blocks: Vec<Claim>,
 }
 
-impl Block {
+impl<'a> Block {
 
     /// The genesis method generates the genesis event. It needs to receive
     /// the reward state, the wallet of the node that initializes the network for the first time.
@@ -49,13 +49,11 @@ impl Block {
     /// use vrrb_lib::account::{AccountState, WalletAccount};
     /// use vrrb_lib::state::NetworkState;
     /// use vrrb_lib::reward::RewardState;
-    ///
-    /// let mut network_state = NetworkState::restore("vrrb_doctest_state.db");
-    /// let mut reward_state = RewardState::start(&mut network_state);
-    /// let mut account_state = AccountState::start();
-    /// let (mut miner, updated_account_state) = WalletAccount::new(&mut account_state, &mut network_state);
-    ///
-    /// account_state = updated_account_state;
+    /// use std::sync::{Arc, Mutex}
+    /// let mut network_state = Arc::new(Mutex::new(NetworkState::restore("vrrb_doctest_state.db")));
+    /// let mut reward_state = Arc::new(Mutex::new(RewardState::start(network_state)));
+    /// let mut account_state = Arc::new(Mutex::new(AccountState::start()));
+    /// let mut miner = WalletAccount::new(&mut account_state, &mut network_state);
     ///
     /// let (
     ///     genesis_block, 
@@ -72,11 +70,11 @@ impl Block {
     ///
 
     pub fn genesis(
-        reward_state: RewardState,      // The reward state that needs to be updated when the genesis event occurs
+        reward_state: Arc<Mutex<RewardState>>,      // The reward state that needs to be updated when the genesis event occurs
         miner: String,      // the wallet that will receive the genesis reward (wallet attached to the node that initializes the network)
-        account_state: &mut AccountState,   // the account state which needs to be updated when the genesis event occurs
-        network_state: &mut NetworkState,   // the network state which needs to be updated with then genesis event occurs
-    ) -> Result<(Block, AccountState), Error>   // Returns a result with either a tuple containing the genesis block and the updated account state (if successful) or an error (if unsuccessful) 
+        account_state: Arc<Mutex<AccountState<'a>>>,   // the account state which needs to be updated when the genesis event occurs
+        network_state: Arc<Mutex<NetworkState<'a>>>,   // the network state which needs to be updated with then genesis event occurs
+    ) -> Result<Block, Error>   // Returns a result with either a tuple containing the genesis block and the updated account state (if successful) or an error (if unsuccessful) 
     
     {
 
@@ -99,7 +97,7 @@ impl Block {
 
         // TODO: add path field to NetworkState so that this is not hardcoded
 
-        let state_hash = network_state.hash(&now.as_nanos().to_ne_bytes());
+        let state_hash = network_state.lock().unwrap().hash(&now.as_nanos().to_ne_bytes());
 
         // Initialize a new block.
         let genesis = Block {
@@ -130,7 +128,7 @@ impl Block {
             block_hash: digest_bytes("Genesis_Block_Hash".to_string().as_bytes()),
 
             // Set the value of the next block's reward to the result of calling the new() method from the Reward Struct.
-            next_block_reward: Reward::new(None, &reward_state),
+            next_block_reward: Reward::new(None, Arc::clone(&reward_state)),
 
             // Set the value of block_payload field to the block payload
 
@@ -148,26 +146,23 @@ impl Block {
         // Update the account state with the miner and new block, this will also set the values to the 
         // network state. Unwrap the result and assign it to the variable updated_account_state to
         // be returned by this method.
-        let updated_account_state = account_state
-                                                    .update(Miner(Box::new((miner, 
-                                                        genesis.clone()))), network_state)
-                                                    .unwrap();
+        account_state.lock().unwrap().update(Miner(miner, serde_json::to_string(&genesis).unwrap()), network_state);
 
         // Return an Ok() result with a tuple of the genesis block and the updated account state from the previous line
-        Ok((genesis, updated_account_state))
+        Ok(genesis)
 
     }
 
     /// The mine method is used to generate a new block (and an updated account state with the reward set
     /// to the miner wallet's balance), this will also update the network state with a new confirmed state.
     pub fn mine(
-        reward_state: &RewardState,     // The reward state which gets updated in place to reflect the reward for the currently mined block
+        reward_state: Arc<Mutex<RewardState>>,     // The reward state which gets updated in place to reflect the reward for the currently mined block
         claim: Claim,                   // The claim entitling the miner to mine the block.
         last_block: Block,              // The last block, which contains the current block reward.
         data: HashMap<String, Txn>,     // A hashmap containing transaction IDs and confirmed transactions that will be made official with this block being mined
-        account_state: &mut AccountState,   // The account state which will be updated and made official (set into the confirmed network state).
-        network_state: &mut NetworkState,   // the network state, which the confirmed state of will be updated for the current block
-    ) -> Option<Result<(Block, AccountState), Error>>       // Returns a result containing either a tuple of the new block and the updated account state or an error. 
+        account_state: Arc<Mutex<AccountState<'a>>>,   // The account state which will be updated and made official (set into the confirmed network state).
+        network_state: Arc<Mutex<NetworkState<'a>>>,   // the network state, which the confirmed state of will be updated for the current block
+    ) -> Option<Result<Block, Error>>       // Returns a result containing either a tuple of the new block and the updated account state or an error. 
     
     {
         // Initialize a timestamp of the current time.
@@ -182,7 +177,7 @@ impl Block {
                 .unwrap();
 
         // Generate the next block's reward by assigning the result of the Reward::new() method to a variable called "next block reward".
-        let next_block_reward = Reward::new(None, reward_state);
+        let next_block_reward = Reward::new(None, Arc::clone(&reward_state));
         let miner = claim.clone().current_owner.0.unwrap();
         let pubkey = claim.clone().current_owner.1.unwrap();
         // Structure the block payload (to be signed by the miner's wallet for network verification).
@@ -196,7 +191,7 @@ impl Block {
                         serde_json::to_string(&next_block_reward).unwrap()
                     );
                     
-        let state_hash = network_state.hash(&now.as_nanos().to_ne_bytes());
+        let state_hash = network_state.lock().unwrap().hash(&now.as_nanos().to_ne_bytes());
 
         // Ensure that the claim is mature
         if claim.maturation_time <= now.as_nanos() {
@@ -206,7 +201,7 @@ impl Block {
             let mut visible_blocks: Vec<Claim> = Vec::with_capacity(20);
 
             // Get the claim with the highest maturity timestamp that current exists.
-            let mut furthest_visible_block: u128 = account_state.clone().claim_state.furthest_visible_block;
+            let mut furthest_visible_block: u128 = account_state.lock().unwrap().clone().claim_state.furthest_visible_block;
             
             let highest_claim_number: u128 = last_block.visible_blocks
                 .iter()
@@ -218,10 +213,10 @@ impl Block {
             for _ in 0..20 {
                 furthest_visible_block += 5;
                 visible_blocks.push(Claim::new(furthest_visible_block, highest_claim_number));
-                account_state.claim_state.furthest_visible_block = furthest_visible_block;
+                account_state.lock().unwrap().claim_state.furthest_visible_block = furthest_visible_block;
             }
 
-            account_state.claim_state.furthest_visible_block = furthest_visible_block;
+            account_state.lock().unwrap().claim_state.furthest_visible_block = furthest_visible_block;
 
             // Verify that the claim is indeed owned by the miner attempting to mine this block.
             // Verify returns a result with either a boolean (true or false, but always true if Ok())
@@ -284,14 +279,11 @@ impl Block {
                     // this returns a result with either an AccountState struct (the updated account state)
                     // if successful, or an error if not successful. Assign this to a variable to be
                     // included in the return expression.
-                    let updated_account_state = account_state
-                                                    .update(Miner(Box::new((miner, 
-                                                        new_block.clone()))), network_state)
-                                                    .unwrap();
+                    account_state.lock().unwrap().update(Miner(miner, serde_json::to_string(&new_block).unwrap()), network_state);
 
                     // Return a Some() option variant with an Ok() result variant that wraps a tuple that contains
                     // the new block that was just mined and the updated account state.
-                    return Some(Ok((new_block, updated_account_state)));
+                    return Some(Ok(new_block));
                 },
 
                 // If the claim is not valid then return a unit struct
@@ -374,16 +366,14 @@ impl Verifiable for Block {
         match options {
             Some(block_options) => {
                 match block_options {
-                    ValidatorOptions::NewBlock(boxed_tuple) => {
+                    ValidatorOptions::NewBlock(last_block, block, pubkey, account_state, reward_state, network_state) => {
+                        
+                        let block = serde_json::from_str::<Block>(&block).unwrap();
+                        let last_block = serde_json::from_str::<Block>(&last_block).unwrap();
+                        let network_state = serde_json::from_str::<NetworkState>(&network_state).unwrap();
+                        let account_state = serde_json::from_str::<AccountState>(&account_state).unwrap();
+                        let reward_state = serde_json::from_str::<RewardState>(&reward_state).unwrap();
 
-                        let (
-                            last_block, 
-                            block, 
-                            pubkey, 
-                            account_state,
-                            reward_state, 
-                            network_state) = *boxed_tuple;
-                       
                         let valid_signature = match block.clone().claim.current_owner.2 {
                             Some(sig) => {
                                 let pubkey = match PublicKey::from_str(&pubkey) {

@@ -1,17 +1,24 @@
-use crate::{account::AccountState, validator::{Validator, Message}, verifiable::Verifiable, claim::Claim};
+use crate::{
+    account::AccountState, 
+    validator::{Validator, Message}, 
+    verifiable::Verifiable, 
+    claim::Claim,
+    block::Block,
+    txn::Txn,
+};
 use std::collections::HashMap;
 
 
-pub struct ValidatorProcessor {
-    pub validators: HashMap<String, Vec<Validator>>,
+pub struct ValidatorProcessor<'a> {
+    pub validators: HashMap<String, Vec<Validator<'a>>>,
     pub confirmations: HashMap<String, u8>,
     pub confirmed: HashMap<String, Box<dyn Verifiable>>,
     pub slashed: Vec<String>,
 }
 
-impl ValidatorProcessor {
+impl<'a> ValidatorProcessor<'a> {
 
-    pub fn start() -> ValidatorProcessor {
+    pub fn start() -> ValidatorProcessor<'a> {
 
         ValidatorProcessor {
             validators: HashMap::new(),
@@ -21,7 +28,7 @@ impl ValidatorProcessor {
         }
     }
 
-    pub fn new_validator(&mut self, validator: Validator) {
+    pub fn new_validator(&mut self, validator: Validator<'a>) {
 
         match validator.clone().message {
             Message::ClaimHomesteaded(
@@ -29,10 +36,13 @@ impl ValidatorProcessor {
                 _homesteader, 
                 _account_state
             ) => {
-                if let Some(entry) = self.validators.get_mut(&claim.claim_number.to_string()) {
+
+                let claim_to_validate = serde_json::from_str::<Claim>(&claim).unwrap();
+
+                if let Some(entry) = self.validators.get_mut(&claim_to_validate.claim_number.to_string()) {
                     entry.push(validator);
                 } else {
-                    self.validators.insert(claim.claim_number.to_string(), vec![validator]);
+                    self.validators.insert(claim_to_validate.claim_number.to_string(), vec![validator]);
                 }
             },
             Message::ClaimAcquired(
@@ -41,39 +51,43 @@ impl ValidatorProcessor {
                 _account_state, 
                 _buyer_pubkey
             ) => {
-                if let Some(entry) = self.validators.get_mut(&claim.claim_number.to_string()) {
+
+                let claim_to_validate = serde_json::from_str::<Claim>(&claim).unwrap();
+
+                if let Some(entry) = self.validators.get_mut(&claim_to_validate.claim_number.to_string()) {
                     entry.push(validator);
                 } else {
-                    self.validators.insert(claim.claim_number.to_string(), vec![validator]);
+                    self.validators.insert(claim_to_validate.claim_number.to_string(), vec![validator]);
                 }
             },
             Message::Txn(
                 txn, 
                 _account_state
             ) => {
-                if let Some(entry) = self.validators.get_mut(&txn.txn_id) {
+
+                let txn_to_validate = serde_json::from_str::<Txn>(&txn).unwrap();
+
+                if let Some(entry) = self.validators.get_mut(&txn_to_validate.txn_id) {
                     entry.push(validator)
                 } else {
-                    self.validators.insert(txn.txn_id, vec![validator]);
+                    self.validators.insert(txn_to_validate.txn_id, vec![validator]);
                 }
             },
             Message::NewBlock(
-                boxed_tuple
+                last_block,
+                block,
+                pubkey,
+                account_state,
+                reward_state,
+                network_state,
             ) => {
 
-                let (
-                    _, 
-                    block,
-                    _,
-                    _,
-                    _,
-                    _, 
-                ) = *boxed_tuple;
+                let block_to_validate = serde_json::from_str::<Block>(&block).unwrap();
 
-                if let Some(entry) = self.validators.get_mut(&block.block_hash) {
+                if let Some(entry) = self.validators.get_mut(&block_to_validate.block_hash) {
                     entry.push(validator)
                 } else {
-                    self.validators.insert(block.block_hash, vec![validator]);
+                    self.validators.insert(block_to_validate.block_hash, vec![validator]);
                 }
             }
         };
@@ -94,19 +108,17 @@ impl ValidatorProcessor {
 
                 match value[0].clone().message {
                     Message::ClaimHomesteaded(claim, _, _) => {
-                        self.confirmed.entry(key.to_owned()).or_insert_with(|| Box::new(claim));
+                        self.confirmed.entry(key.to_owned()).or_insert_with(|| Box::new(serde_json::from_str::<Claim>(&claim).unwrap()));
                     },
                     Message::ClaimAcquired(claim, _, _, _) => {
 
-                        self.confirmed.entry(key.to_owned()).or_insert_with(|| Box::new(claim));
+                        self.confirmed.entry(key.to_owned()).or_insert_with(|| Box::new(serde_json::from_str::<Claim>(&claim).unwrap()));
                     },
                     Message::Txn(txn, _) => {
-                        self.confirmed.entry(key.to_owned()).or_insert_with(|| Box::new(txn));
+                        self.confirmed.entry(key.to_owned()).or_insert_with(|| Box::new(serde_json::from_str::<Txn>(&txn).unwrap()));
                     },
-                    Message::NewBlock(boxed_tuple) => {
-
-                        let (_, block, _, _, _, _) = *boxed_tuple;
-                        self.confirmed.entry(key.to_owned()).or_insert_with(|| Box::new(block));
+                    Message::NewBlock(_, block, _, _, _, _) => {
+                        self.confirmed.entry(key.to_owned()).or_insert_with(|| Box::new(serde_json::from_str::<Block>(&block).unwrap()));
                     }
                 }
 

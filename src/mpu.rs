@@ -1,5 +1,8 @@
 use crate::validator::{Message, Validator, ValidatorOptions};
 use crate::verifiable::Verifiable;
+use crate::txn::Txn;
+use crate::block::Block;
+use crate::claim::Claim;
 
 
 pub fn message_processor(validator: Validator) -> Validator {
@@ -18,7 +21,9 @@ pub fn message_processor(validator: Validator) -> Validator {
                 // always be None. For claims it should always be some.
                 // Is valid returns an Option<bool> which can either be Some(true), Some(false) or None,
                 // a None option is an error, and should propagate an invalid message error.
-                match txn.is_valid(Some(ValidatorOptions::Transaction(account_state.clone()))) {
+                let txn_to_validate = serde_json::from_str::<Txn>(&txn).unwrap();
+
+                match txn_to_validate.is_valid(Some(ValidatorOptions::Transaction(account_state.clone()))) {
                     // If the transaction is valid
                     // return the validator structure
                     // with the valid field set to true
@@ -58,11 +63,15 @@ pub fn message_processor(validator: Validator) -> Validator {
                 // a Some(ClaimOption::Acquire) option, so that it knows
                 // that it is to validate the claim that is being acquired
                 // not homestaeded.
-                match claim.is_valid(Some(ValidatorOptions::ClaimAcquire(account_state.clone(), buyer_pubkey.clone()))) {
+                let claim_to_validate = serde_json::from_str::<Claim>(&claim).unwrap();
+
+                match claim_to_validate.is_valid(Some(ValidatorOptions::ClaimAcquire(account_state.clone(), buyer_pubkey.clone()))) {
                     Some(true) => {
                         Validator {
                             valid: true,
-                            message: Message::ClaimAcquired(claim, seller_pubkey, account_state, buyer_pubkey),
+                            message: Message::ClaimAcquired(
+                                claim, seller_pubkey, account_state, buyer_pubkey
+                            ),
                             ..validator
                         }
                     }
@@ -86,7 +95,9 @@ pub fn message_processor(validator: Validator) -> Validator {
                 // Pass the claim.is_valid() method Some(ClaimOption::Homestead)
                 // so that the method knows to implement logic related to validating
                 // a homesteaded claim not an acquired claim.
-                match claim.is_valid(Some(ValidatorOptions::ClaimHomestead(account_state.clone()))) {
+                let claim_to_validate = serde_json::from_str::<Claim>(&claim).unwrap();
+
+                match claim_to_validate.is_valid(Some(ValidatorOptions::ClaimHomestead(account_state.clone()))) {
                     // If the claim is validly homesteaded, return 
                     // the validator with the valid field set to tru
                     // and the message.
@@ -111,44 +122,34 @@ pub fn message_processor(validator: Validator) -> Validator {
                     }, 
                 }
             },
-            Message::NewBlock(boxed_tuple) => {
+            Message::NewBlock(last_block, block, pubkey, network_state, account_state, reward_state) => {
                 // If a message is a new block, then check that the block is
                 // valid, by calling the block.is_valid() method and passing None
                 // as the options, as only Claim validation requires an option
 
-                let (
-                    last_block,
-                    block,
-                    pubkey,
-                    network_state,
-                    account_state,
-                    reward_state
-                    ) = *boxed_tuple;
+                let block_to_validate = serde_json::from_str::<Block>(&block).unwrap();
 
-                match block.is_valid(Some(ValidatorOptions::NewBlock(Box::new(
-                    (last_block.clone(),
+                match block_to_validate.is_valid(Some(ValidatorOptions::NewBlock(
+                    last_block.clone(),
                     block.clone(), 
                     pubkey.clone(), 
                     account_state.clone(), 
-                    reward_state,
+                    reward_state.clone(),
                     network_state.clone())
-                )))) 
-                
-                {
+                )) {
                     // If the is_valid() method returns Some(true)
                     // then the block is valid, and the validator
                     // should have it's valid field set to true
                     Some(true) => {
                         Validator {
                             valid: true,
-                            message: Message::NewBlock(Box::new(
-                                (last_block,
+                            message: Message::NewBlock(
+                                last_block,
                                 block, 
                                 pubkey, 
                                 network_state, 
                                 account_state, 
-                                reward_state)
-                            )),
+                                reward_state),
                             ..validator
                         }
                     },

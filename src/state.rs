@@ -19,11 +19,12 @@ use serde::{
 use sha256::digest_bytes;
 use std::collections::HashMap;
 
-pub struct NetworkState {
+pub struct NetworkState<'a> {
     pub state: PickleDb,
+    _marker: &'a u8
 }
 
-impl NetworkState {
+impl<'a> NetworkState<'a> {
 
     pub fn update<T: Serialize>(
         &mut self, state_obj: T, state_obj_type: &str) -> Result<(), error::ErrorType> {
@@ -49,6 +50,7 @@ impl NetworkState {
         
         NetworkState {
             state: db,
+            _marker: &1
         }    
     }
 
@@ -71,20 +73,13 @@ impl NetworkState {
         as_string.as_bytes().iter().copied().collect()
     }
 
-    pub fn from_bytes(data: &[u8]) -> NetworkState {
-        let mut buffer: Vec<u8> = vec![];
-
-        data.iter().for_each(|x| buffer.push(*x));
-
-        let to_string = String::from_utf8(buffer).unwrap();
-
-        serde_json::from_str::<NetworkState>(&to_string).unwrap()
-
+    pub fn from_bytes(data: &'a [u8]) -> NetworkState<'a> {
+        serde_json::from_slice::<NetworkState>(data).unwrap()
     }
 }
 
-impl Clone for NetworkState {
-    fn clone(&self) -> NetworkState {
+impl<'a> Clone for NetworkState<'a> {
+    fn clone(&self) -> NetworkState<'a> {
         let mut cloned_db = PickleDb::new("temp.db", PickleDbDumpPolicy::NeverDump, SerializationMethod::Bin);
         let account_state: Option<AccountState> = self.state.get("account_state");
         let reward_state: Option<RewardState> = self.state.get("reward_state");
@@ -101,18 +96,19 @@ impl Clone for NetworkState {
         }
 
         NetworkState {
-            state: cloned_db
+            state: cloned_db,
+            _marker: &1
         }
     }
 }
 
-impl Debug for NetworkState {
+impl<'a> Debug for NetworkState<'a> {
     fn fmt(&self, _f: &mut Formatter) -> Result<(), Error> {
         Ok(())
     }
 }
 
-impl<'a> Serialize for NetworkState {
+impl<'a> Serialize for NetworkState<'a> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -140,7 +136,7 @@ impl<'a> Serialize for NetworkState {
     }
 }
 
-impl<'de> Deserialize<'de> for NetworkState {
+impl<'de> Deserialize<'de> for NetworkState<'de> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de> 
@@ -148,7 +144,7 @@ impl<'de> Deserialize<'de> for NetworkState {
 
         enum Field { AccountState, RewardState }
 
-        impl<'de> Deserialize<'de> for Field {
+        impl<'a, 'de> Deserialize<'de> for Field {
             fn deserialize<D>(deserializer: D) -> Result<Field, D::Error>
             where
                 D: Deserializer<'de> 
@@ -180,13 +176,13 @@ impl<'de> Deserialize<'de> for NetworkState {
         struct NetworkStateVisitor;
 
         impl<'de> Visitor<'de> for NetworkStateVisitor {
-            type Value = NetworkState;
+            type Value = NetworkState<'de>;
 
             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
                 formatter.write_str("struct NetworkState")
             }
 
-            fn visit_seq<V>(self, mut seq: V) -> Result<NetworkState, V::Error>
+            fn visit_seq<V>(self, mut seq: V) -> Result<NetworkState<'de>, V::Error>
             where
                 V: SeqAccess<'de>,
             
@@ -204,10 +200,10 @@ impl<'de> Deserialize<'de> for NetworkState {
 
                 if let Err(e) = reward_state_result { println!("Error setting to state: {}", e)}
 
-                Ok(NetworkState { state })
+                Ok(NetworkState { state, _marker: &1 })
             }
 
-            fn visit_map<V>(self, mut map: V) -> Result<NetworkState, V::Error>
+            fn visit_map<V>(self, mut map: V) -> Result<NetworkState<'de>, V::Error>
             where
                 V: MapAccess<'de>,
 
@@ -246,7 +242,7 @@ impl<'de> Deserialize<'de> for NetworkState {
 
                 if let Err(e) = reward_state_result {println!("Error setting to state in deserializer: {}", e)}
                 
-                Ok(NetworkState { state })
+                Ok(NetworkState { state, _marker: &1 })
             }
         }
     

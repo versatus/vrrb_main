@@ -5,7 +5,7 @@ use secp256k1::{PublicKey, Signature};
 use serde::{Serialize, Deserialize};
 use crate::validator::ValidatorOptions;
 use crate::verifiable::Verifiable;
-use crate::{account::WalletAccount, vrrbcoin::Token};
+use crate::{account::WalletAccount, vrrbcoin::Token, account::AccountState};
 use uuid::Uuid;
 use sha256::digest_bytes;
 
@@ -101,6 +101,7 @@ impl Verifiable for Txn {
 
         match options {
             Some(ValidatorOptions::Transaction(account_state)) => {
+                let account_state = serde_json::from_str::<AccountState>(&account_state).unwrap();
                 let balance = account_state.available_coin_balances.get(&self.sender_public_key);
 
                 match balance {

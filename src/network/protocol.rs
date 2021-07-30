@@ -245,7 +245,10 @@ impl NetworkBehaviourEventProcess<KademliaEvent> for VrrbNetworkBehavior {
     }
 }
 
-pub async fn build_transport(key_pair: identity::Keypair) -> Result<Boxed<(PeerId, StreamMuxerBox)>, Error> {
+pub async fn build_transport(
+    key_pair: identity::Keypair
+) -> Result<Boxed<(PeerId, StreamMuxerBox)>, Error> 
+{
     let noise_keys = noise::Keypair::<noise::X25519Spec>::new()
         .into_authentic(&key_pair)
         .unwrap();
@@ -253,7 +256,6 @@ pub async fn build_transport(key_pair: identity::Keypair) -> Result<Boxed<(PeerI
     let noise_config = noise::NoiseConfig::xx(noise_keys).into_authenticated();
     let yamux_config = YamuxConfig::default();
     let mplex_config = MplexConfig::default();
-
     
     let transport = {
     

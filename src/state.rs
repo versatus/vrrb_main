@@ -19,12 +19,11 @@ use serde::{
 use sha256::digest_bytes;
 use std::collections::HashMap;
 
-pub struct NetworkState<'a> {
+pub struct NetworkState {
     pub state: PickleDb,
-    _marker: &'a u8
 }
 
-impl<'a> NetworkState<'a> {
+impl NetworkState {
 
     pub fn update<T: Serialize>(
         &mut self, state_obj: T, state_obj_type: &str) -> Result<(), error::ErrorType> {
@@ -50,7 +49,6 @@ impl<'a> NetworkState<'a> {
         
         NetworkState {
             state: db,
-            _marker: &1
         }    
     }
 
@@ -73,13 +71,13 @@ impl<'a> NetworkState<'a> {
         as_string.as_bytes().iter().copied().collect()
     }
 
-    pub fn from_bytes(data: &'a [u8]) -> NetworkState<'a> {
+    pub fn from_bytes(data: &[u8]) -> NetworkState {
         serde_json::from_slice::<NetworkState>(data).unwrap()
     }
 }
 
-impl<'a> Clone for NetworkState<'a> {
-    fn clone(&self) -> NetworkState<'a> {
+impl Clone for NetworkState {
+    fn clone(&self) -> NetworkState {
         let mut cloned_db = PickleDb::new("temp.db", PickleDbDumpPolicy::NeverDump, SerializationMethod::Bin);
         let account_state: Option<AccountState> = self.state.get("account_state");
         let reward_state: Option<RewardState> = self.state.get("reward_state");
@@ -97,23 +95,22 @@ impl<'a> Clone for NetworkState<'a> {
 
         NetworkState {
             state: cloned_db,
-            _marker: &1
         }
     }
 }
 
-impl<'a> Debug for NetworkState<'a> {
+impl Debug for NetworkState {
     fn fmt(&self, _f: &mut Formatter) -> Result<(), Error> {
         Ok(())
     }
 }
 
-impl<'a> Serialize for NetworkState<'a> {
+impl Serialize for NetworkState {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut map: HashMap<&'a str, String> = HashMap::new();
+        let mut map: HashMap<&str, String> = HashMap::new();
 
         let account_state = serde_json::to_string::<AccountState>(
             &self.state.get("account_state").unwrap()
@@ -136,7 +133,7 @@ impl<'a> Serialize for NetworkState<'a> {
     }
 }
 
-impl<'de> Deserialize<'de> for NetworkState<'de> {
+impl<'de> Deserialize<'de> for NetworkState {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de> 
@@ -176,13 +173,13 @@ impl<'de> Deserialize<'de> for NetworkState<'de> {
         struct NetworkStateVisitor;
 
         impl<'de> Visitor<'de> for NetworkStateVisitor {
-            type Value = NetworkState<'de>;
+            type Value = NetworkState;
 
             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
                 formatter.write_str("struct NetworkState")
             }
 
-            fn visit_seq<V>(self, mut seq: V) -> Result<NetworkState<'de>, V::Error>
+            fn visit_seq<V>(self, mut seq: V) -> Result<NetworkState, V::Error>
             where
                 V: SeqAccess<'de>,
             
@@ -200,10 +197,10 @@ impl<'de> Deserialize<'de> for NetworkState<'de> {
 
                 if let Err(e) = reward_state_result { println!("Error setting to state: {}", e)}
 
-                Ok(NetworkState { state, _marker: &1 })
+                Ok(NetworkState { state })
             }
 
-            fn visit_map<V>(self, mut map: V) -> Result<NetworkState<'de>, V::Error>
+            fn visit_map<V>(self, mut map: V) -> Result<NetworkState, V::Error>
             where
                 V: MapAccess<'de>,
 
@@ -242,7 +239,7 @@ impl<'de> Deserialize<'de> for NetworkState<'de> {
 
                 if let Err(e) = reward_state_result {println!("Error setting to state in deserializer: {}", e)}
                 
-                Ok(NetworkState { state, _marker: &1 })
+                Ok(NetworkState { state })
             }
         }
     

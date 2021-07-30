@@ -47,22 +47,22 @@ pub enum NodeAuth {
 }
 
 #[allow(dead_code)]
-pub struct Node<'a> {
+pub struct Node {
     pub id: PeerId,
-    pub wallet: Arc<Mutex<WalletAccount<'a>>>,
+    pub wallet: Arc<Mutex<WalletAccount>>,
     pub swarm: Swarm<VrrbNetworkBehavior>,
-    pub account_state: Arc<Mutex<AccountState<'a>>>,
-    pub network_state: Arc<Mutex<NetworkState<'a>>>,
+    pub account_state: Arc<Mutex<AccountState>>,
+    pub network_state: Arc<Mutex<NetworkState>>,
     pub reward_state: Arc<Mutex<RewardState>>,
     pub last_block: Option<Block>,
 }
 
-impl<'a> Node<'a> {
+impl Node {
 
     pub async fn start(
-        wallet: Arc<Mutex<WalletAccount<'a>>>, 
-        account_state: Arc<Mutex<AccountState<'a>>>, 
-        network_state: Arc<Mutex<NetworkState<'a>>>,
+        wallet: Arc<Mutex<WalletAccount>>, 
+        account_state: Arc<Mutex<AccountState>>, 
+        network_state: Arc<Mutex<NetworkState>>,
         reward_state: Arc<Mutex<RewardState>>,
     ) -> Result<(), Box<dyn Error>> {
 
@@ -177,6 +177,7 @@ impl<'a> Node<'a> {
                     let cloned_node = Arc::clone(&task_node);
                     match atomic_queue.lock().unwrap().pop_front() {
                         Some(message) => {
+                            println!("{:?}", &message);
                             process_message(message, cloned_node);
                         },
                         None => {},
@@ -275,10 +276,10 @@ pub fn process_message(message: GossipsubMessage, node: Arc<Mutex<Node>>) {
                     let txn_validator = Validator::new(
                         Message::Txn(
                             serde_json::to_string(&txn).unwrap(), 
-                            serde_json::to_string(&message_node.account_state.clone().lock().unwrap()).unwrap()
+                            serde_json::to_string(&message_node.account_state.clone().lock().unwrap().clone()).unwrap()
                         ),
-                        message_node.wallet.clone().lock().unwrap(),
-                        message_node.account_state.clone().lock().unwrap()
+                        message_node.wallet.clone().lock().unwrap().clone(),
+                        message_node.account_state.clone().lock().unwrap().clone()
                     );
                     // UPDATE LOCAL Account State pending balances for sender(s)/
                     // receivers.
@@ -305,8 +306,21 @@ pub fn process_message(message: GossipsubMessage, node: Arc<Mutex<Node>>) {
                         Message::ClaimHomesteaded(
                             serde_json::to_string(&claim).unwrap(), 
                             claim.current_owner.1.unwrap(), 
-                            serde_json::to_string(&message_node.account_state).unwrap()
-                        ), message_node.wallet.clone(), message_node.account_state.clone()
+                            serde_json::to_string(&message_node.account_state.clone()
+                                                    .lock()
+                                                    .unwrap()
+                                                    .clone()
+                                                )
+                                                .unwrap()
+                        ), 
+                        message_node.wallet.clone()
+                            .lock()
+                            .unwrap()
+                            .clone(), 
+                        message_node.account_state.clone()
+                            .lock()
+                            .unwrap()
+                            .clone()
                     );
                     
                     drop(message_node);
@@ -341,9 +355,22 @@ pub fn process_message(message: GossipsubMessage, node: Arc<Mutex<Node>>) {
                                         Message::ClaimAcquired(
                                             serde_json::to_string(&claim).unwrap(), 
                                             pubkey.as_ref().unwrap().to_owned(), 
-                                            serde_json::to_string(&message_node.account_state).unwrap(),
+                                            serde_json::to_string(&message_node.account_state
+                                                                    .clone()
+                                                                    .lock()
+                                                                    .unwrap()
+                                                                    .clone()
+                                                                ).unwrap(),
                                             claim.clone().current_owner.1.unwrap()
-                                    ), message_node.wallet.clone(), message_node.account_state.clone()
+                                    ), 
+                                    message_node.wallet.clone()
+                                        .lock()
+                                        .unwrap()
+                                        .clone(), 
+                                    message_node.account_state.clone()
+                                        .lock()
+                                        .unwrap()
+                                        .clone()
                                 );
                                 
                                 drop(message_node);
@@ -384,9 +411,23 @@ pub fn process_message(message: GossipsubMessage, node: Arc<Mutex<Node>>) {
                                         Message::ClaimAcquired(
                                             serde_json::to_string(&claim).unwrap(), 
                                             pubkey.as_ref().unwrap().to_owned(), 
-                                            serde_json::to_string(&message_node.account_state).unwrap(),
+                                            serde_json::to_string(
+                                                &message_node.account_state.clone()
+                                                    .lock()
+                                                    .unwrap()
+                                                    .clone()
+                                            ).unwrap(),
                                             claim.clone().current_owner.1.unwrap()
-                                    ), message_node.wallet.clone(), message_node.account_state.clone());
+                                    ), 
+                                    message_node.wallet.clone()
+                                        .lock()
+                                        .unwrap()
+                                        .clone(), 
+                                    message_node.account_state.clone()
+                                        .lock()
+                                        .unwrap()
+                                        .clone()
+                                );
                                 
                                     drop(message_node);
 
@@ -419,10 +460,30 @@ pub fn process_message(message: GossipsubMessage, node: Arc<Mutex<Node>>) {
                             serde_json::to_string(&message_node.last_block.as_ref().unwrap()).unwrap(), 
                             serde_json::to_string(&block).unwrap(), 
                             block.miner.clone(), 
-                            serde_json::to_string(&message_node.network_state).unwrap(),
-                            serde_json::to_string(&message_node.account_state).unwrap(),
-                            serde_json::to_string(&message_node.reward_state).unwrap()
-                        ), message_node.wallet.clone(), message_node.account_state.clone()
+                            serde_json::to_string(&message_node.network_state.clone()
+                                                    .lock()
+                                                    .unwrap()
+                                                    .clone()
+                                                ).unwrap(),
+                            serde_json::to_string(&message_node.account_state.clone()
+                                                    .lock()
+                                                    .unwrap()
+                                                    .clone()
+                                                ).unwrap(),
+                            serde_json::to_string(&message_node.reward_state.clone()
+                                                    .lock()
+                                                    .unwrap()
+                                                    .clone()
+                                                ).unwrap()
+                        ), 
+                        message_node.wallet.clone()
+                            .lock()
+                            .unwrap()
+                            .clone(), 
+                        message_node.account_state.clone()
+                            .lock()
+                            .unwrap()
+                            .clone()
                     );
 
                     drop(message_node);

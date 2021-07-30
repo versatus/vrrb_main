@@ -9,16 +9,16 @@ use crate::{
 use std::collections::HashMap;
 
 
-pub struct ValidatorProcessor<'a> {
-    pub validators: HashMap<String, Vec<Validator<'a>>>,
+pub struct ValidatorProcessor {
+    pub validators: HashMap<String, Vec<Validator>>,
     pub confirmations: HashMap<String, u8>,
     pub confirmed: HashMap<String, Box<dyn Verifiable>>,
     pub slashed: Vec<String>,
 }
 
-impl<'a> ValidatorProcessor<'a> {
+impl ValidatorProcessor {
 
-    pub fn start() -> ValidatorProcessor<'a> {
+    pub fn start() -> ValidatorProcessor {
 
         ValidatorProcessor {
             validators: HashMap::new(),
@@ -28,7 +28,7 @@ impl<'a> ValidatorProcessor<'a> {
         }
     }
 
-    pub fn new_validator(&mut self, validator: Validator<'a>) {
+    pub fn new_validator(&mut self, validator: Validator) {
 
         match validator.clone().message {
             Message::ClaimHomesteaded(
@@ -74,12 +74,12 @@ impl<'a> ValidatorProcessor<'a> {
                 }
             },
             Message::NewBlock(
-                last_block,
+                _,
                 block,
-                pubkey,
-                account_state,
-                reward_state,
-                network_state,
+                _,
+                _,
+                _,
+                _,
             ) => {
 
                 let block_to_validate = serde_json::from_str::<Block>(&block).unwrap();
@@ -154,25 +154,7 @@ impl<'a> ValidatorProcessor<'a> {
 #[cfg(test)]
 mod tests {
 
-    #[test]
-    fn test_validator_setting_by_message_id() {
 
-    }
-
-    #[test]
-    fn test_vpu_updates_state_when_confirmed_valid() {
-
-    }
-
-    #[test]
-    fn test_vpu_updates_state_when_confirmed_invalid() {
-
-    }
-
-    #[test]
-    fn test_vpu_slashes_claims() {
-        
-    }
 
 
 }

@@ -38,7 +38,7 @@ pub struct Block {
     pub visible_blocks: Vec<Claim>,
 }
 
-impl<'a> Block {
+impl Block {
 
     /// The genesis method generates the genesis event. It needs to receive
     /// the reward state, the wallet of the node that initializes the network for the first time.
@@ -72,8 +72,8 @@ impl<'a> Block {
     pub fn genesis(
         reward_state: Arc<Mutex<RewardState>>,      // The reward state that needs to be updated when the genesis event occurs
         miner: String,      // the wallet that will receive the genesis reward (wallet attached to the node that initializes the network)
-        account_state: Arc<Mutex<AccountState<'a>>>,   // the account state which needs to be updated when the genesis event occurs
-        network_state: Arc<Mutex<NetworkState<'a>>>,   // the network state which needs to be updated with then genesis event occurs
+        account_state: Arc<Mutex<AccountState>>,   // the account state which needs to be updated when the genesis event occurs
+        network_state: Arc<Mutex<NetworkState>>,   // the network state which needs to be updated with then genesis event occurs
     ) -> Result<Block, Error>   // Returns a result with either a tuple containing the genesis block and the updated account state (if successful) or an error (if unsuccessful) 
     
     {
@@ -160,8 +160,8 @@ impl<'a> Block {
         claim: Claim,                   // The claim entitling the miner to mine the block.
         last_block: Block,              // The last block, which contains the current block reward.
         data: HashMap<String, Txn>,     // A hashmap containing transaction IDs and confirmed transactions that will be made official with this block being mined
-        account_state: Arc<Mutex<AccountState<'a>>>,   // The account state which will be updated and made official (set into the confirmed network state).
-        network_state: Arc<Mutex<NetworkState<'a>>>,   // the network state, which the confirmed state of will be updated for the current block
+        account_state: Arc<Mutex<AccountState>>,   // The account state which will be updated and made official (set into the confirmed network state).
+        network_state: Arc<Mutex<NetworkState>>,   // the network state, which the confirmed state of will be updated for the current block
     ) -> Option<Result<Block, Error>>       // Returns a result containing either a tuple of the new block and the updated account state or an error. 
     
     {

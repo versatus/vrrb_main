@@ -20,7 +20,6 @@ use crate::{
     txn::Txn,
     vrrbcoin::Token,
 };
-use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 
 const STARTING_BALANCE: u128 = 1_000;
@@ -50,7 +49,7 @@ pub enum StateOption {
 /// this to account for smart contracts at some point in the future.
 #[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize)]
-pub struct AccountState<'a> {
+pub struct AccountState {
     /// Map of account (secret key, mnemoic) hashes to public keys
     /// This is used to allow users to restore their account.
     pub accounts_sk: HashMap<String, String>,
@@ -83,10 +82,10 @@ pub struct AccountState<'a> {
     pub claim_state: ClaimState,
 
     /// A HashMap of txn_id -> (txn, Vec<Validator>)
-    pub pending: HashMap<String, (Txn, Vec<Validator<'a>>)>,
+    pub pending: HashMap<String, (Txn, Vec<Validator>)>,
 
     /// A HashMap of confirmed Txn's (Txn's with 2/3 Validator's valid_field == true)
-    pub mineable: HashMap<String, (Txn, Vec<Validator<'a>>)>,
+    pub mineable: HashMap<String, (Txn, Vec<Validator>)>,
     // TODO: Add a state hash, which will sha256 hash the entire state structure for
     // consensus purposes.
 }
@@ -98,7 +97,7 @@ pub struct AccountState<'a> {
 /// Private key signatures can be verified with the wallet's public key, the message that was
 /// signed and the signature.
 #[derive(Debug, Serialize, Deserialize)]
-pub struct WalletAccount<'a> {
+pub struct WalletAccount {
     private_key: String,
     pub address: String,
     pub public_key: String,
@@ -107,7 +106,6 @@ pub struct WalletAccount<'a> {
     pub tokens: Vec<(Option<Token>, Option<Token>)>,
     pub claims: Vec<Option<Claim>>,
     skhash: String,
-    marker: PhantomData<&'a ()>
 }
 
 /// The state of all accounts in the network. This is one of the 3 core state objects
@@ -116,11 +114,11 @@ pub struct WalletAccount<'a> {
 /// token balances. Also contains all pending and confirmed transactions. Pending
 /// transactions are set into the pending vector and the confirmed transactions
 /// are set in the mineable vector.
-impl<'a> AccountState<'a> {
+impl AccountState {
     /// Instantiates a new AccountState instance
     /// TODO: Add restoration functionality/optionality to restore an existing
     /// account state on a node that has previously operated but was stopped.
-    pub fn start() -> AccountState<'a> {
+    pub fn start() -> AccountState {
         AccountState {
             accounts_sk: HashMap::new(),
             accounts_address: HashMap::new(),
@@ -140,7 +138,7 @@ impl<'a> AccountState<'a> {
     pub fn update(
         &mut self,
         value: StateOption,
-        network_state: Arc<Mutex<NetworkState<'a>>>
+        network_state: Arc<Mutex<NetworkState>>
     ) {
         match value {
             // If the StateOption variant passed to the update method is a NewAccount
@@ -350,8 +348,8 @@ impl<'a> AccountState<'a> {
             StateOption::ConfirmedTxn(txn, validator) => {
                 //TODO: distribute txn fees among validators.
                 let txn = serde_json::from_str::<Txn>(&txn).unwrap();
-                let validator: Validator<'a> = serde_json::from_str::<Validator>(&validator).unwrap();
-                let mut txn_validators: Vec<Validator<'a>> = self.pending.get(&txn.txn_id).unwrap().1.clone();
+                let validator: Validator = serde_json::from_str::<Validator>(&validator).unwrap();
+                let mut txn_validators: Vec<Validator> = self.pending.get(&txn.txn_id).unwrap().1.clone();
                 txn_validators.push(validator);
                 self.pending
                     .insert(txn.txn_id.clone(), (txn.clone(), txn_validators.clone()));
@@ -391,12 +389,12 @@ impl<'a> AccountState<'a> {
     }
 }
 
-impl<'a> WalletAccount<'a> {
+impl WalletAccount {
     /// Initiate a new wallet.
     pub fn new(
-        account_state: Arc<Mutex<AccountState<'a>>>, // A new wallet must also receive the AccountState
-        network_state: Arc<Mutex<NetworkState<'a>>>, // The network state as well, as it needs to be updated
-    ) -> WalletAccount<'a> {
+        account_state: Arc<Mutex<AccountState>>, // A new wallet must also receive the AccountState
+        network_state: Arc<Mutex<NetworkState>>, // The network state as well, as it needs to be updated
+    ) -> WalletAccount {
         // Initialize a new Secp256k1 context
         let secp = Secp256k1::new();
 
@@ -427,7 +425,6 @@ impl<'a> WalletAccount<'a> {
             tokens: vec![],
             claims: vec![],
             skhash: digest_bytes(secret_key.to_string().as_bytes()),
-            marker: PhantomData,
         };
         // Update the account state and save it to a variable to return
         // this is required because this function consumes the account_state
@@ -487,7 +484,6 @@ impl<'a> WalletAccount<'a> {
             tokens: tokens.to_owned(),
             claims,
             skhash: pk_hash,
-            marker: PhantomData,
         }
     }
 
@@ -564,9 +560,9 @@ impl<'a> WalletAccount<'a> {
 
     pub fn send_txn(
         &mut self,
-        account_state: Arc<Mutex<AccountState<'a>>>,
+        account_state: Arc<Mutex<AccountState>>,
         receivers: (String, u128),
-        network_state: Arc<Mutex<NetworkState<'a>>>,
+        network_state: Arc<Mutex<NetworkState>>,
     ) -> Result<Txn, Error> {
         let txn = Txn::new(self.clone(), receivers.0, receivers.1);
         account_state.lock().unwrap().update(StateOption::NewTxn(serde_json::to_string(&txn).unwrap()), network_state);
@@ -576,7 +572,7 @@ impl<'a> WalletAccount<'a> {
     pub fn sell_claim(
         &mut self,
         maturity_timestamp: u128,
-        account_state: &'a mut AccountState<'a>,
+        account_state: &mut AccountState,
         price: u32,
     ) -> Option<(Claim, AccountState)> {
         let claim_to_sell = self.claims[self
@@ -636,12 +632,12 @@ impl StateOption {
     }
 }
 
-unsafe impl<'a> Send for WalletAccount<'a> {}
-unsafe impl<'a> Sync for WalletAccount<'a> {}
-unsafe impl<'a> Send for AccountState<'a> {}
-unsafe impl<'a> Sync for AccountState<'a> {}
+unsafe impl Send for WalletAccount {}
+unsafe impl Sync for WalletAccount {}
+unsafe impl Send for AccountState {}
+unsafe impl Sync for AccountState {}
 
-impl<'a> fmt::Display for WalletAccount<'a> {
+impl fmt::Display for WalletAccount {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let balance: String = self.balance.to_string();
         let available_balance: String = self.available_balance.to_string();
@@ -662,8 +658,8 @@ impl<'a> fmt::Display for WalletAccount<'a> {
     }
 }
 
-impl<'a> Clone for WalletAccount<'a> {
-    fn clone(&self) -> WalletAccount<'a> {
+impl Clone for WalletAccount {
+    fn clone(&self) -> WalletAccount {
         WalletAccount {
             private_key: self.private_key.clone(),
             address: self.address.clone(),
@@ -673,12 +669,11 @@ impl<'a> Clone for WalletAccount<'a> {
             tokens: self.tokens.clone(),
             claims: self.claims.clone(),
             skhash: self.skhash.clone(),
-            marker: self.marker.clone(),
         }
     }
 }
 
-impl<'a> Clone for AccountState<'a> {
+impl Clone for AccountState {
     fn clone(&self) -> Self {
         AccountState {
             accounts_sk: self.accounts_sk.clone(),

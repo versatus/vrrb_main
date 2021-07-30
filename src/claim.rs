@@ -80,7 +80,7 @@ impl ClaimState {
     }
 }
 
-impl<'a> Claim {
+impl Claim {
     pub fn new(time: u128, claim_number: u128) -> Claim {
         Claim {
             claim_number,
@@ -96,9 +96,9 @@ impl<'a> Claim {
 
     pub fn acquire(
         &mut self,
-        acquirer: Arc<Mutex<WalletAccount<'a>>>,
-        account_state: Arc<Mutex<AccountState<'a>>>,
-        network_state: Arc<Mutex<NetworkState<'a>>>,
+        acquirer: Arc<Mutex<WalletAccount>>,
+        account_state: Arc<Mutex<AccountState>>,
+        network_state: Arc<Mutex<NetworkState>>,
     )
 
     {
@@ -204,8 +204,8 @@ impl<'a> Claim {
         claim_payload: Option<String>,
         acquisition_time: Option<u128>,
         claim_state: Arc<Mutex<ClaimState>>,
-        account_state: Arc<Mutex<AccountState<'a>>>,
-        network_state: Arc<Mutex<NetworkState<'a>>>,
+        account_state: Arc<Mutex<AccountState>>,
+        network_state: Arc<Mutex<NetworkState>>,
     ) -> Result<Self, Error> {
 
         let mut custodian_data = HashMap::new();
@@ -257,10 +257,10 @@ impl<'a> Claim {
 
     pub fn homestead(
         &mut self,
-        wallet: Arc<Mutex<WalletAccount<'a>>>,
+        wallet: Arc<Mutex<WalletAccount>>,
         claim_state: Arc<Mutex<ClaimState>>,
-        account_state: Arc<Mutex<AccountState<'a>>>,
-        network_state: Arc<Mutex<NetworkState<'a>>>,
+        account_state: Arc<Mutex<AccountState>>,
+        network_state: Arc<Mutex<NetworkState>>,
     ) {
         if self.available {
             let time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
@@ -304,7 +304,7 @@ impl<'a> Claim {
         }
     }
 
-    pub fn stake(&self, wallet: WalletAccount<'a>, account_state: &'a mut AccountState<'a>) -> AccountState<'a> {
+    pub fn stake(&self, wallet: WalletAccount, account_state: &mut AccountState) -> AccountState {
         account_state
             .claim_state
             .staked_claims

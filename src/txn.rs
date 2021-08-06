@@ -5,11 +5,11 @@ use secp256k1::{PublicKey, Signature};
 use serde::{Serialize, Deserialize};
 use crate::validator::ValidatorOptions;
 use crate::verifiable::Verifiable;
-use crate::{account::WalletAccount, vrrbcoin::Token, account::AccountState};
+use crate::{account::WalletAccount, vrrbcoin::Token, account::AccountState, validator::Validator};
 use uuid::Uuid;
 use sha256::digest_bytes;
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Txn {
     pub txn_id: String,
     pub txn_timestamp: u128,
@@ -20,12 +20,14 @@ pub struct Txn {
     pub txn_amount: u128,
     pub txn_payload: String,
     pub txn_signature: String,
+    pub validators: Vec<Validator>,
 }
 
 impl Txn {
 
     pub fn new(
-        wallet: WalletAccount, 
+        sender: WalletAccount,
+        sender_address: String, 
         receiver: String, 
         amount: u128
     ) -> Txn {
@@ -33,24 +35,25 @@ impl Txn {
     
         let payload = format!("{},{},{},{},{}",
             &time.as_nanos().to_string(),
-            &wallet.address, 
-            &wallet.public_key, 
+            &sender_address, 
+            &sender.pubkey, 
             &receiver, &amount.to_string()
         );
     
-        let signature = wallet.sign(&payload).unwrap();
+        let signature = sender.sign(&payload).unwrap();
         let uid_payload = format!("{},{},{}", &payload, Uuid::new_v4().to_string(), &signature.to_string());
 
         Txn {
             txn_id: digest_bytes(uid_payload.as_bytes()),
             txn_timestamp: time.as_nanos(),
-            sender_address: wallet.address,
-            sender_public_key: wallet.public_key,
+            sender_address: sender_address,
+            sender_public_key: sender.pubkey,
             receiver_address: receiver,
             txn_token: None,
             txn_amount: amount,
             txn_payload: payload,
             txn_signature: signature.to_string(),
+            validators: vec![],
         }
     }
 
@@ -102,7 +105,7 @@ impl Verifiable for Txn {
         match options {
             Some(ValidatorOptions::Transaction(account_state)) => {
                 let account_state = serde_json::from_str::<AccountState>(&account_state).unwrap();
-                let balance = account_state.available_coin_balances.get(&self.sender_public_key);
+                let balance = account_state.pending_balances.get(&self.sender_address).unwrap().get("VRRB");
 
                 match balance {
                     Some(bal) => {
@@ -117,7 +120,7 @@ impl Verifiable for Txn {
                     }
                 }
 
-                let receiver = account_state.accounts_address.get(&self.receiver_address); 
+                let receiver = account_state.accounts_pk.get(&self.receiver_address); 
                 
                 if receiver == None {
                     println!("couldn't find receiver");
@@ -127,7 +130,7 @@ impl Verifiable for Txn {
                 let check_double_spend = account_state.pending.get(&self.txn_id);
 
                 match check_double_spend {
-                    Some((txn, _validator_vec)) => {
+                    Some(txn) => {
                         if txn.txn_id == self.txn_id && (txn.txn_amount != self.txn_amount || 
                             txn.receiver_address != self.receiver_address) {
                             

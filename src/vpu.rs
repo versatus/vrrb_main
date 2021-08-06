@@ -126,7 +126,7 @@ impl ValidatorProcessor {
                 let malicious: Vec<String> = value
                     .iter()
                     .filter(|&v| v.valid)
-                    .map(|v| v.clone().node_wallet.address).collect();
+                    .map(|v| v.clone().node_wallet.pubkey).collect();
 
                 for validator in malicious {
                     self.slashed.push(validator);
@@ -138,23 +138,14 @@ impl ValidatorProcessor {
     pub fn slash_claims(&mut self, account_state: &mut AccountState) {
         
         self.slashed.iter().for_each(|slash| {
-            let claim_state = account_state.clone().claim_state;
-            let staked = claim_state.staked_claims.get(slash).unwrap();
-            account_state.claim_state.staked_claims.remove(slash);
-            let staked_vec: Vec<u128> = staked.iter().map(|(k, _v)| *k).collect();
-            staked_vec.iter().for_each( |time| {
-                let claim_number = account_state.claim_state.owned_claims.get(time).unwrap().claim_number;
-                account_state.claim_state.owned_claims.remove(&time);
-                account_state.claim_state.claims.insert(*time, Claim::new(*time, claim_number));
-            })
+            account_state.claims.retain(|_k, v| v.current_owner.clone().0.unwrap() != *slash);
+            account_state.staked_claims.retain(|_k, v| *v != *slash);
+            account_state.owned_claims.retain(|_k, v| *v != *slash);
         });
     }
 }
 
 #[cfg(test)]
 mod tests {
-
-
-
 
 }

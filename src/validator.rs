@@ -46,18 +46,24 @@ pub struct Validator {
     pub staked_claims: HashMap<u128, Claim>,
     pub message: Message,
     pub valid: bool,
-    pub _marker: PhantomData<()>
 }
 
 impl Validator {
     pub fn new(message: Message, wallet: WalletAccount, account_state: AccountState) -> Option<Validator> {
-        let check_staked_claims = account_state.claim_state.staked_claims
-            .get(&wallet.public_key);
-
+        let mut check_staked_claims: HashMap<u128, Claim> = HashMap::new();
+        wallet.claims.iter().map(|x| x).for_each(|claim| {
+            match account_state.staked_claims.get(&claim.clone().unwrap().claim_number) {
+                Some(_) => {
+                    check_staked_claims.insert(claim.clone().unwrap().claim_number, claim.clone().unwrap());
+                },
+                None => {}
+                }
+            });
+    
         // If there's no staked claims for the node wallet attempting to launch a validator
         // a validator cannot be launched. Claims must be staked to validate messages
-        check_staked_claims.map(|map| Validator {
-            node_wallet: wallet, staked_claims: map.clone(), message, valid: false, _marker: PhantomData,
+        Some(check_staked_claims).map(|map| Validator {
+            node_wallet: wallet, staked_claims: map.clone(), message, valid: false,
         })
     }
 
@@ -67,7 +73,6 @@ impl Validator {
 
     pub fn as_bytes(&self) -> Vec<u8> {
         let as_string = serde_json::to_string(self).unwrap();
-
         as_string.as_bytes().iter().copied().collect()
     }
 
@@ -100,7 +105,6 @@ impl ValidatorOptions {
 impl Message {
     pub fn as_bytes(&self) -> Vec<u8> {
         let as_string = serde_json::to_string(self).unwrap();
-
         as_string.as_bytes().iter().copied().collect()
     }
 
@@ -108,7 +112,6 @@ impl Message {
         let mut buffer: Vec<u8> = vec![];
         data.iter().for_each(|x| buffer.push(*x));
         let to_string = String::from_utf8(buffer).unwrap();
-
         serde_json::from_str::<Message>(&to_string).unwrap()
     }
 }

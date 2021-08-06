@@ -88,7 +88,7 @@ impl RewardState {
         
         reward_state
     }
-    pub fn update(&self, last_reward: Category, network_state: &mut NetworkState) -> Self {
+    pub fn update(&mut self, last_reward: Category) {
         let mut n_nuggets_ce: u128 = self.n_nuggets_current_epoch;
         let mut n_veins_ce: u128 = self.n_veins_current_epoch;
         let mut n_motherlodes_ce: u128 = self.n_motherlodes_current_epoch;
@@ -161,14 +161,6 @@ impl RewardState {
             n_flakes_current_epoch: n_flakes_ce,
             n_grains_current_epoch: n_grains_ce,
             };
-        let state_result = network_state.update(updated_reward_state, "reward_state");
-        
-        match state_result {
-            Ok(()) => {},
-            Err(e) => { println!("Error in updating network state: {:?}", e)}
-        }
-        
-        updated_reward_state
     }
 
     pub fn as_bytes(&self) -> Vec<u8> {

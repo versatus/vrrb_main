@@ -1,4 +1,4 @@
-use crate::validator::Validator;
+use crate::validator::{Validator, ValidatorOptions};
 use bytebuffer::ByteBuffer;
 use secp256k1::Error;
 use secp256k1::{
@@ -13,13 +13,7 @@ use std::fmt;
 use std::str::FromStr;
 use uuid::Uuid;
 // use crate::validator::Validator;
-use crate::{
-    block::Block,
-    claim::{Claim, ClaimState},
-    state::NetworkState,
-    txn::Txn,
-    vrrbcoin::Token,
-};
+use crate::{block::Block, claim::Claim, state::NetworkState, txn::Txn, verifiable::Verifiable};
 use std::sync::{Arc, Mutex};
 
 const STARTING_BALANCE: u128 = 1_000;
@@ -38,9 +32,11 @@ pub enum StateOption {
     // is unsafe.
     NewTxn(String),
     NewAccount(String),
-    ClaimAcquired(String),
+    PendingClaimAcquired(String),
+    ConfirmedClaimAcquired(String),
     ConfirmedTxn(String, String),
-    Miner(String, String),
+    ProposedBlock(String, String, String),
+    ConfirmedBlock(String, String, String),
 }
 
 /// The State of all accounts. This is used to track balances
@@ -50,44 +46,21 @@ pub enum StateOption {
 #[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AccountState {
-    /// Map of account (secret key, mnemoic) hashes to public keys
-    /// This is used to allow users to restore their account.
-    pub accounts_sk: HashMap<String, String>,
-
     // Map of account address to public key
-    pub accounts_pk: HashMap<String, String>,
-
-    /// Map of public keys to total balances. This is updated as
-    /// transactions occur and then are confirmed.
-    /// Users may only transfer balances less than or
-    /// equal to their available balance.
-    pub total_coin_balances: HashMap<String, u128>,
-
-    /// Map of public keys to avaialbe balances. This is updated
-    /// as transactions occur and then are confirmed.
-    pub available_coin_balances: HashMap<String, u128>,
-
-    /// Map of address to public keys to be able to access public keys from address
-    /// as transactions are mostly conducted via an address, not via the public
-    /// key.
-    pub accounts_address: HashMap<String, String>,
-
-    /// Map of public key to vector of (Token(Ticker), Token(Units)) tuples
-    /// This is effectively a placeholder for non-native tokens, and will be
-    /// adjusted according to Smart Contract token protocols in the future,
-    /// This is currently primarly for test purposes.
-    pub token_balances: HashMap<String, Vec<(Option<Token>, Option<Token>)>>, // TODO: factor parts into custom type definitions
-
-    /// The local claim state.
-    pub claim_state: ClaimState,
-
-    /// A HashMap of txn_id -> (txn, Vec<Validator>)
-    pub pending: HashMap<String, (Txn, Vec<Validator>)>,
-
-    /// A HashMap of confirmed Txn's (Txn's with 2/3 Validator's valid_field == true)
-    pub mineable: HashMap<String, (Txn, Vec<Validator>)>,
-    // TODO: Add a state hash, which will sha256 hash the entire state structure for
-    // consensus purposes.
+    pub accounts_pk: HashMap<String, String>,   // K: address, V: pubkey
+    pub credits: HashMap<String, HashMap<String, u128>>,    // K: address, V: Hashmap { K: ticker, V: amount }
+    pub pending_credits: HashMap<String, HashMap<String, u128>>,    // K: address, V: Hashmap { K: ticker, V: amount }
+    pub debits: HashMap<String, HashMap<String, u128>>, // K: address, V: Hashmap { K: ticker, V: amount }
+    pub pending_debits: HashMap<String, HashMap<String, u128>>, // K: address, V: Hashmap { K: ticker, V: amount }
+    pub balances: HashMap<String, HashMap<String, u128>>, // K: address, V: Hashmap { K: ticker, V: amount }
+    pub pending_balances: HashMap<String, HashMap<String, u128>>, // K: address, V: Hashmap { K: ticker, V: amount }
+    pub claims: HashMap<u128, Claim>, // K: claim_number, V: claim
+    pub pending_owned_claims: HashMap<u128, String>, // K: claim_number, V: pubkey
+    pub owned_claims: HashMap<u128, String>, // K: claim_number, V: pubkey
+    pub staked_claims: HashMap<u128, String>, // K: claim_number, V: pubkey
+    pub pending: HashMap<String, Txn>, // K: txn_id, V: Txn 
+    pub mineable: HashMap<String, Txn>, // K: txn_id, V: Txn
+    pub last_block: Option<Block>,
 }
 
 /// The WalletAccount struct is the user/node wallet in which coins, tokens and contracts
@@ -98,14 +71,11 @@ pub struct AccountState {
 /// signed and the signature.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WalletAccount {
-    private_key: String,
-    pub address: String,
-    pub public_key: String,
-    pub balance: u128,
-    pub available_balance: u128,
-    pub tokens: Vec<(Option<Token>, Option<Token>)>,
+    pub pubkey: String,
+    pub addresses: HashMap<u8, String>,
+    pub total_balances: HashMap<String, HashMap<String, u128>>,
+    pub available_balances: HashMap<String, HashMap<String, u128>>,
     pub claims: Vec<Option<Claim>>,
-    skhash: String,
 }
 
 /// The state of all accounts in the network. This is one of the 3 core state objects
@@ -120,26 +90,27 @@ impl AccountState {
     /// account state on a node that has previously operated but was stopped.
     pub fn start() -> AccountState {
         AccountState {
-            accounts_sk: HashMap::new(),
-            accounts_address: HashMap::new(),
             accounts_pk: HashMap::new(),
-            total_coin_balances: HashMap::new(),
-            available_coin_balances: HashMap::new(),
-            token_balances: HashMap::new(),
-            claim_state: ClaimState::start(),
+            credits: HashMap::new(),
+            pending_credits: HashMap::new(),
+            debits: HashMap::new(),
+            pending_debits: HashMap::new(),
+            balances: HashMap::new(),
+            pending_balances: HashMap::new(),
+            claims: HashMap::new(),
+            pending_owned_claims: HashMap::new(),
+            owned_claims: HashMap::new(),
+            staked_claims: HashMap::new(),
             pending: HashMap::new(),
             mineable: HashMap::new(),
+            last_block: None,
         }
     }
 
     /// Update's the AccountState and NetworkState, takes a StateOption (for function routing)
     /// also requires the NetworkState to be provided in the function call.
     /// TODO: Provide Examples to Doc
-    pub fn update(
-        &mut self,
-        value: StateOption,
-        network_state: Arc<Mutex<NetworkState>>
-    ) {
+    pub fn update(&mut self, value: StateOption, network_state: Arc<Mutex<NetworkState>>) {
         match value {
             // If the StateOption variant passed to the update method is a NewAccount
             // set the new account information into the account state, return the account state
@@ -148,36 +119,36 @@ impl AccountState {
                 // Enter the wallet's secret key hash as the key and the wallet's public key as the value
                 // if the secret key hash is not already in the hashmap
                 let wallet = serde_json::from_str::<WalletAccount>(&wallet).unwrap();
-
-                self.accounts_sk
-                    .entry(wallet.skhash.to_string())
-                    .or_insert_with(|| wallet.public_key.to_string());
-
                 // Enter the wallet's public key string as the key and if it's not already in the HashMap
                 // the wallet's address as the value.
-                self.accounts_pk
-                    .entry(wallet.public_key.to_string())
-                    .or_insert_with(|| wallet.address.clone());
-                // Enter the wallet's address as the key and if it's not already in the HashMap the wallet's
-                // public key string as the value
-                self.accounts_address
-                    .entry(wallet.address.clone())
-                    .or_insert_with(|| wallet.public_key.to_string());
+                for address in wallet.addresses.values() {
+                    self.accounts_pk.entry(address.to_string()).or_insert(wallet.pubkey.clone());
+                }
+
                 // Enter the wallet's public key string as the key and the STARTING_BALANCE const as
                 // the value
                 // TODO: 0 should be the starting value of ALL accounts on the live network
-                self.total_coin_balances
-                    .entry(wallet.public_key.to_string())
-                    .or_insert(STARTING_BALANCE);
+                let mut vrrb_starting_credit = HashMap::new();
+                vrrb_starting_credit.insert("VRRB".to_string(), STARTING_BALANCE);
+                let mut vrrb_starting_debit = HashMap::new();
+                vrrb_starting_debit.insert("VRRB".to_string(), 0u128);
+
+                self.credits.entry(wallet.pubkey.clone()).or_insert(vrrb_starting_credit);
                 // Same thing as above since this is a new account
-                self.available_coin_balances
-                    .entry(wallet.public_key)
-                    .or_insert(STARTING_BALANCE);
+                self.debits.entry(wallet.pubkey.clone()).or_insert(vrrb_starting_debit);
                 // The .update() method for the  network state sets a state object (struct)
                 // either account_state, claim_state or reward state) into the pickle db
                 // that represents the network state.
-                let state_result = network_state.lock().unwrap().update(self.clone(), "account_state");
-                if let Err(e) = state_result {
+                
+                if let Err(e) = network_state.lock().unwrap().update(self.clone().accounts_pk, "accounts") {
+                    println!("Error in updating network state: {:?}", e)
+                };
+                
+                if let Err(e) = network_state.lock().unwrap().update(self.clone().credits, "credits") {
+                    println!("Error in updating network state: {:?}", e)
+                }
+
+                if let Err(e) = network_state.lock().unwrap().update(self.clone().debits, "debits") {
                     println!("Error in updating network state: {:?}", e)
                 }
             }
@@ -188,7 +159,7 @@ impl AccountState {
                 // get the receiver's public key from the AccountState accounts_address field
                 // which is a hashmap containing the address as the key and the public key as the value
                 let txn = serde_json::from_str::<Txn>(&txn).unwrap();
-                let receiver = self.accounts_address.get(&txn.receiver_address);
+                let receiver = self.accounts_pk.get(&txn.receiver_address);
                 match receiver {
                     Some(receiver_pk) => {
                         let receiver_pk = receiver_pk;
@@ -199,47 +170,67 @@ impl AccountState {
                         // get the sender's coin balance as mutable, from the availabe_coin_balances field
                         // in the account_state object, which takes the public key as the key and the
                         // available balance as the value,
-                        let sender = self.accounts_address.get(&txn.sender_address);
+
+                        // TODO: Replace hard coded VRRB Ticker with txn.ticker
+                        let sender = self.accounts_pk.get(&txn.sender_address);
 
                         match sender {
                             Some(sender_pk) => {
                                 let sender_pk = sender_pk;
+                                let sender_avail_bal = *self.pending_balances.get_mut(sender_pk)
+                                                            .unwrap()
+                                                            .get_mut("VRRB")
+                                                            .unwrap();
 
-                                let sender_avail_bal =
-                                    *self.available_coin_balances.get_mut(sender_pk).unwrap();
                                 let balance_check = sender_avail_bal.checked_sub(txn.txn_amount);
 
                                 match balance_check {
-                                    Some(bal) => {
-                                        // Add the amount to the receiver balance by getting the entry in the
-                                        // total_coin_balances field in the AccountState for the receiver
-                                        // public key as mutable, add the transaction fee and set it to
-                                        // the receiver total balance variable being initalized
-                                        let receiver_total_bal = self
-                                            .total_coin_balances
-                                            .get_mut(receiver_pk)
+                                    Some(_bal) => {
+                                        // Add the amount to the receiver pending credits by getting
+                                        *self.pending_credits.get_mut(receiver_pk)
                                             .unwrap()
-                                            .checked_add(txn.txn_amount)
-                                            .unwrap();
+                                            .get_mut("VRRB")
+                                            .unwrap() += txn.txn_amount;
 
-                                        // Update the available balance of the sender
-                                        self.available_coin_balances
-                                            .insert(sender_pk.to_owned(), bal);
+                                        // Update the pending debits of the sender
+                                        *self.pending_debits.get_mut(sender_pk)
+                                            .unwrap()
+                                            .get_mut("VRRB")
+                                            .unwrap() += txn.txn_amount;
+                                                                                
+                                        *self.pending_balances.get_mut(receiver_pk)
+                                            .unwrap()
+                                            .get_mut("VRRB")
+                                            .unwrap() = self.pending_credits.get_mut(receiver_pk)
+                                                            .unwrap()
+                                                            .get_mut("VRRB")
+                                                            .unwrap()
+                                                            .checked_sub(
+                                                                *self.pending_debits.get_mut(receiver_pk)
+                                                                    .unwrap()
+                                                                    .get_mut("VRRB")
+                                                                    .unwrap()
+                                                                ).unwrap();
 
-                                        // update the total balance of the receiver
-                                        self.total_coin_balances
-                                            .insert(receiver_pk.to_owned(), receiver_total_bal);
-                                        // Push the transaction to pending transactions to be confirmed by validators.
-                                        self.pending
-                                            .entry(txn.clone().txn_id)
-                                            .or_insert((txn.clone(), vec![]));
-                                        // Update the network state (the pickle db) with the updated account state information.
-                                        let state_result =
-                                            network_state.lock().unwrap().update(self.clone(), "account_state");
+                                        *self.pending_balances.get_mut(sender_pk)
+                                            .unwrap()
+                                            .get_mut("VRRB")
+                                            .unwrap() = self.pending_credits.get_mut(sender_pk)
+                                                            .unwrap()
+                                                            .get_mut("VRRB")
+                                                            .unwrap()
+                                                            .checked_sub(
+                                                                *self.pending_debits.get_mut(sender_pk)
+                                                                    .unwrap()
+                                                                    .get_mut("VRRB")
+                                                                    .unwrap()
+                                                                ).unwrap();
 
-                                        if let Err(e) = state_result {
-                                            println!("Error in updating network state: {:?}", e)
-                                        }
+                                        // Push the transaction to pending transactions to be confirmed 
+                                        // by validators.
+                                        self.pending.entry(txn.clone().txn_id).or_insert(vec![]);
+                                        // Pending transactions do not update the network state, only confirmed
+                                        // transactions update the network state. 
                                     }
                                     None => println!("Amount Exceeds Balance"),
                                 }
@@ -249,12 +240,12 @@ impl AccountState {
                     }
                     None => println!("The receiver is non-existent"),
                 }
-            }
+            },
 
             // If the StateOption variant received by the update method is a ClaimAcquired
             // Update the account state by entering the relevant information into the
             // proper fields, return the updated account state and update the network state.
-            StateOption::ClaimAcquired(claim) => {
+            StateOption::PendingClaimAcquired(claim) => {
                 // Set a new entry (if it doesn't exist) into the AccountState
                 // claim_state field's (which is a ClaimState Struct) owned_claims field
                 // which is a HashMap consisting of the claim maturation time as the key and the claim
@@ -262,84 +253,52 @@ impl AccountState {
                 // TODO: break down PendingClaimAcquired and ConfirmedClaimAcquired as claim acquisition
                 // has to be validated before it can be set into the account_state's claim_state.
                 let claim = serde_json::from_str::<Claim>(&claim).unwrap();
-                self.claim_state
-                    .owned_claims
-                    .insert(claim.maturation_time, claim.clone());
-                // Remove the claim from the account_state's claim_state's claims field since it is now owned
-                self.claim_state.claims.remove_entry(&claim.maturation_time);
-                // update the network state.
-                let state_result = network_state.lock().unwrap().update(self.clone(), "account_state");
+                self.pending_owned_claims.insert(claim.claim_number, claim.current_owner.0.unwrap());
+            },
+            StateOption::ConfirmedClaimAcquired(_claim) => {
 
-                if let Err(e) = state_result {
-                    println!("Error in updating network state: {:?}", e)
-                }
-            }
+            },
+
             // If the StateOption variant received by the update method is Miner
             // this means a new block has been mined, udpate the account state accordingly
-
             // TODO: mined blocks need to be validated by the network before they're confirmed
             // If it has not yet been confirmed there should be a PendingMiner variant as well
             // as a ConfirmedMiner variant. The logic in this block would be for a ConfirmedMiner
-            StateOption::Miner(miner, block) => {
-                // get the public key of the miner from the address. This is set up
-                // so that the entire wallet no longer gets passed through to this variant
-                // but rather, just the wallet address get's passed through. This is much
-                // safer than receiving the entire wallet account (which contains the secret key)
-
-                // TODO: Change the Miner variant(s) to receive a wallet.address (String) not a wallet.
-                // The assignment of the public key below COULD fail if the miner address (for whatever reason)
-                // is not in the account_state, if it is not in the account state then error handling needs to occur
-                // it is likely because this is a very very new account (unlikely that such a new account)
-                // would be mining a block, but possible, especially if it acquired a claim or received a claim
-                // This would mean, very likely that the current account state is out of consensus and would
-                // need to request the latest confirmed account state from the network.
+            StateOption::ProposedBlock(miner, block, reward_state) => {
                 let block = serde_json::from_str::<Block>(&block).unwrap();
+                
+                // Confirm the block is valid and vote, if valid, and the network is in
+                // consensus, a new option will do everything below.
 
-                let miner_pk = self.accounts_address.get(&miner).unwrap();
-                // update the miner's total (confirmed) coin balance to include the reward
-                self.total_coin_balances.insert(
-                    miner_pk.to_owned(),
-                    self.total_coin_balances[miner_pk] + block.block_reward.amount,
-                );
-                // update the miner's available coin balance to include the reward
-                self.available_coin_balances.insert(
-                    miner_pk.to_owned(),
-                    self.available_coin_balances[miner_pk] + block.block_reward.amount,
-                );
-                // The block contains 20 new claims, set them in the claim state.
-                for claim in block.clone().visible_blocks {
-                    self.claim_state
-                        .claims
-                        .entry(claim.maturation_time)
-                        .or_insert(claim);
-                }
-                // remove the claim used to mine the block from owned claims, it has been used and cannot
-                // be used again.
-                match self
-                    .claim_state
-                    .owned_claims
-                    .remove_entry(&block.claim.maturation_time)
-                {
-                    Some(_) => println!("Mined block with claim. Removed claim from owned"),
-                    None => println!("Couldn't find claim in owned"),
-                }
-
-                // Remove the claim from the miner's owned claims
-                // TODO: this will only work if it's the current node's wallet
-                // This can be removed, as the account state updates, if it's the current
-                // wallet's claim being mined this can be handled in a method in the wallet.
-                // miner.remove_mined_claims(&block);
-
-                // Update the network's (confirmed) state to account for the mined block.
-                let state_result = network_state.lock().unwrap().update(self.clone(), "account_state");
-
-                match state_result {
-                    Ok(()) => {}
-                    Err(e) => {
-                        println!("Error in updating network state: {:?}", e)
+                let miner_pk = self.accounts_pk.get(&miner).unwrap();
+                
+                match block.is_valid(
+                    Some(ValidatorOptions::NewBlock(
+                        serde_json::to_string(&self.last_block.clone().unwrap()).unwrap(), 
+                        serde_json::to_string(&block).unwrap(), 
+                        miner_pk.to_string(),
+                        serde_json::to_string(&self.clone()).unwrap(),
+                        serde_json::to_string(&network_state.lock().unwrap().clone()).unwrap(),
+                        reward_state,
+                    ))) {
+                        Some(true) => {
+                            // Cast a true vote by pushing this into a queue to communicates with the
+                            // node that can then publish your message
+                        },
+                        Some(false) => {
+                            // Cast a false vote by pushing this into a queue that communicates with the
+                            // node that can then publish the message
+                        },
+                        None => { 
+                            println!("You are not a claim staker, to participate in network governance you must own and stake claims") 
+                        }
                     }
-                }
-
+            },
+            StateOption::ConfirmedBlock(miner, block, reward_state) => {
+                // If the block has been confirmed by the network, and there is consensus
+                // around the state of the network at the given block.height
+                // confirm the network state by replacing it with the temporary network state
+                // object used to validate the new block. Replace any 
             }
 
             // If the StateOption is a confirmed transaction update the account state
@@ -347,25 +306,23 @@ impl AccountState {
             // fees to the trasnaction's validator.
             StateOption::ConfirmedTxn(txn, validator) => {
                 //TODO: distribute txn fees among validators.
-                let txn = serde_json::from_str::<Txn>(&txn).unwrap();
+                let mut txn = serde_json::from_str::<Txn>(&txn).unwrap();
                 let validator: Validator = serde_json::from_str::<Validator>(&validator).unwrap();
-                let mut txn_validators: Vec<Validator> = self.pending.get(&txn.txn_id).unwrap().1.clone();
-                txn_validators.push(validator);
-                self.pending
-                    .insert(txn.txn_id.clone(), (txn.clone(), txn_validators.clone()));
+                self.pending.get(&txn.txn_id).unwrap().clone().validators.push(validator);
 
-                let num_invalid = txn_validators
-                    .iter()
-                    .filter(|&validator| !validator.to_owned().valid)
-                    .count();
-                let len_of_validators = txn_validators.len();
+                let num_invalid = self.pending.get(&txn.txn_id)
+                                        .unwrap()
+                                        .clone().validators.iter()
+                                        .filter(|&validator| !validator.to_owned().valid)
+                                        .count();
+
+                let len_of_validators = self.pending.get(&txn.txn_id).unwrap().clone().validators.len();
                 println!("{}", &len_of_validators);
                 if len_of_validators >= 3 {
                     if num_invalid as f32 / len_of_validators as f32 > 1.0 / 3.0 {
                         {}
                     } else {
-                        self.mineable
-                            .insert(txn.clone().txn_id, (txn, txn_validators));
+                        self.mineable.insert(txn.clone().txn_id, txn);
                     }
                 }
             }
@@ -374,17 +331,13 @@ impl AccountState {
 
     pub fn as_bytes(&self) -> Vec<u8> {
         let as_string = serde_json::to_string(self).unwrap();
-
         as_string.as_bytes().iter().copied().collect()
     }
 
     pub fn from_bytes(data: &[u8]) -> AccountState {
         let mut buffer: Vec<u8> = vec![];
-
         data.iter().for_each(|x| buffer.push(*x));
-
         let to_string = String::from_utf8(buffer).unwrap();
-
         serde_json::from_str::<AccountState>(&to_string).unwrap()
     }
 }
@@ -403,7 +356,7 @@ impl WalletAccount {
         let mut rng = rand::thread_rng();
         // Generate a new secret/public key pair using the random seed.
         let (secret_key, public_key) = secp.generate_keypair(&mut rng);
-        // Generate an address by hashing a universally unique ID
+        // Generate 100 addresses by hashing a universally unique IDs + secret_key + public_key
         let uid_address = digest_bytes(Uuid::new_v4().to_string().as_bytes());
         // add the testnet prefix to the wallet address (TODO: add handling of testnet/mainnet)
         let mut address_prefix: String = "0x192".to_string();
@@ -414,78 +367,41 @@ impl WalletAccount {
         // TODO: require a confirmation the private key being saved by the user
         println!("DO NOT SHARE OR LOSE YOUR PRIVATE KEY:");
         println!("{:?}\n", &secret_key.to_string());
+        let mut addresses = HashMap::new();
+        addresses.insert(1, address_prefix.clone());
+
+        let mut total_balances = HashMap::new();
+        let mut vrrb_balances = HashMap::new();
+        vrrb_balances.insert("VRRB".to_string(), STARTING_BALANCE);
+        total_balances.insert(address_prefix.clone(), vrrb_balances);
 
         // Generate a wallet struct by assigning the variables to the fields.
         let wallet = Self {
-            private_key: secret_key.to_string(),
-            public_key: public_key.to_string(),
-            address: address_prefix,
-            balance: STARTING_BALANCE,
-            available_balance: STARTING_BALANCE,
-            tokens: vec![],
+            pubkey: public_key.to_string(),
+            addresses,
+            total_balances: total_balances.clone(),
+            available_balances: total_balances,
             claims: vec![],
-            skhash: digest_bytes(secret_key.to_string().as_bytes()),
         };
         // Update the account state and save it to a variable to return
         // this is required because this function consumes the account_state
         // TODO: Use Atomic Reference Counter for shared state concurrency
         // and prevent his from being consumed.
-        account_state.lock().unwrap().update(StateOption::NewAccount(serde_json::to_string(&wallet).unwrap()), network_state);
+        account_state.lock().unwrap().update(
+            StateOption::NewAccount(serde_json::to_string(&wallet).unwrap()),
+            network_state,
+        );
         wallet
     }
-        // Return the wallet and account state
-        // TODO: Return a Result for error propagation and handling.
+    // Return the wallet and account state
+    // TODO: Return a Result for error propagation and handling.
 
     // method for restoring a wallet from the private key
-    pub fn restore_from_private_key(
-        private_key: String,
-        account_state: AccountState,
-    ) -> WalletAccount {
-        // TODO: Do signature verification on restoration to ensure someone isn't trying to simply
-        // hack the account_state to increase their own wallet balances/token holdings, etc.
-
-        // Hash the private key string as bytes
-        let pk_hash = digest_bytes(&private_key.as_bytes());
-
-        // pass the private key hash into the accounts_sk field (HashMap) as the key, and
-        // get the public key associated with it
-        // TODO: handle potential errors instead of just unwrapping and panicking if it's not found
-        let public_key = account_state.accounts_sk.get(&pk_hash).unwrap();
-
-        // Pass the public key string array into the accounts_pk hashmap to get the address in return
-        // TODO: Handle potential errors instead of just unwrapping and panicking.
-        let address = account_state.accounts_pk.get(&public_key[..]).unwrap();
-        // Pass the public key string array into the total_coin_balances to get the wallet balance
-        // TODO: Handle potential errors instead of just unwrapping and panicking if there's an error
-        let balance = account_state
-            .total_coin_balances
-            .get(&public_key[..])
-            .unwrap();
-        // Pass the public key string array into the available_coin_balances to get the wallet balance
-        // TODO: Handle potential errors instead of just unwrapping and panicking if there's an error.
-        let available_balance = account_state
-            .available_coin_balances
-            .get(&public_key[..])
-            .unwrap();
-        // Pass the public key string array into the token balances to get the wallet tokens
-        // TODO: Handle potential errors instead of just unwrapping and panicking if there's an error.
-        let tokens = account_state.token_balances.get(&public_key[..]).unwrap();
-        // TODO: Need to reorganize the claim_state so that the public key can be used.
-        let claims = vec![];
-        // Restore the private key from the private key string.
-        let private_key = SecretKey::from_str(&private_key).unwrap().to_string();
-        // Return a restored wallet.
-        WalletAccount {
-            private_key,
-            public_key: public_key.clone(),
-            address: address.to_owned(),
-            balance: *balance,
-            available_balance: *available_balance,
-            tokens: tokens.to_owned(),
-            claims,
-            skhash: pk_hash,
-        }
-    }
+    // pub fn restore_from_private_key(
+    //     private_key: String,
+    //     account_state: AccountState,
+    // ) -> WalletAccount {
+    // }
 
     /// Sign a message (transaction, claim, block, etc.)
     pub fn sign(&self, message: &str) -> Result<Signature, Error> {
@@ -500,7 +416,7 @@ impl WalletAccount {
         let message_hash = blake3::hash(&new_message);
         let message_hash = Message::from_slice(message_hash.as_bytes())?;
         let secp = Secp256k1::new();
-        let sk = SecretKey::from_str(&self.private_key).unwrap();
+        let sk = SecretKey::from_str(&self.pubkey).unwrap();
         let sig = secp.sign(&message_hash, &sk);
         Ok(sig)
     }
@@ -531,23 +447,16 @@ impl WalletAccount {
     /// the .available_coin_balances HashMap. The key for both is the WalletAccount's public key.
     /// TODO: Add signature verification to this method to ensure that the wallet requesting the
     /// balance update is the correct wallet.
-    pub fn get_balance(&mut self, account_state: AccountState) -> Result<Self, Error> {
-        let (balance, available_balance) = (
-            account_state
-                .total_coin_balances
-                .get(&self.public_key.to_string()),
-            account_state
-                .available_coin_balances
-                .get(&self.public_key.to_string()),
-        );
-
-        Ok(Self {
-            balance: *balance.unwrap(),
-
-            available_balance: *available_balance.unwrap(),
-
-            ..self.to_owned()
-        })
+    pub fn get_balance(&mut self, account_state: AccountState) {
+        self.addresses.clone()
+            .iter()
+            .map(|x| x)
+            .for_each(|(_i, x)| {
+            self.total_balances
+                .insert(x.clone(), account_state.balances.get(x).unwrap().clone());
+            self.available_balances
+                .insert(x.clone(), account_state.pending_balances.clone().get(x).unwrap().clone());
+            });
     }
 
     pub fn remove_mined_claims(&mut self, block: &Block) -> Self {
@@ -559,37 +468,33 @@ impl WalletAccount {
     }
 
     pub fn send_txn(
-        &mut self,
-        account_state: Arc<Mutex<AccountState>>,
-        receivers: (String, u128),
-        network_state: Arc<Mutex<NetworkState>>,
+        &mut self, address_number: u8, account_state: Arc<Mutex<AccountState>>,
+        receiver: String, amount: u128, network_state: Arc<Mutex<NetworkState>>,
     ) -> Result<Txn, Error> {
-        let txn = Txn::new(self.clone(), receivers.0, receivers.1);
-        account_state.lock().unwrap().update(StateOption::NewTxn(serde_json::to_string(&txn).unwrap()), network_state);
+        let txn = Txn::new(self.clone(), self.addresses.get(&address_number).unwrap().clone(), receiver, amount);
+        account_state.lock().unwrap().update(
+            StateOption::NewTxn(serde_json::to_string(&txn).unwrap()),
+            network_state,
+        );
         Ok(txn.clone())
     }
 
     pub fn sell_claim(
-        &mut self,
-        maturity_timestamp: u128,
-        account_state: &mut AccountState,
-        price: u32,
-    ) -> Option<(Claim, AccountState)> {
-        let claim_to_sell = self.claims[self
-            .claims
-            .iter()
-            .position(|x| x.clone().unwrap().maturation_time == maturity_timestamp)
-            .unwrap()]
-        .clone();
+        &mut self, maturity_timestamp: u128, account_state: &mut AccountState, price: u32
+    ) -> Option<(Claim, AccountState)> 
+    {
+        let claim_to_sell = self.claims[self.claims.iter().position(|x| {
+                x.clone().unwrap().maturation_time == maturity_timestamp
+            }).unwrap()].clone();
+
         match claim_to_sell {
             Some(mut claim) => {
                 claim.available = true;
                 claim.price = price;
                 // TODO: Add account state option to Update claim when claim goes up for sale.
                 account_state
-                    .claim_state
                     .owned_claims
-                    .insert(claim.maturation_time, claim.clone());
+                    .insert(claim.clone().claim_number, claim.clone().current_owner.0.unwrap());
 
                 Some((claim, account_state.clone()))
             }
@@ -597,19 +502,23 @@ impl WalletAccount {
         }
     }
 
+    pub fn generate_new_address(&mut self) {
+        let uid = Uuid::new_v4().to_string();
+        let address_number: u8 = self.addresses.len() as u8 + 1u8;
+        let payload = format!("{},{},{}", &address_number, &uid, &self.pubkey);
+        let address = digest_bytes(payload.as_bytes());
+        self.addresses.insert(address_number, address);
+    }
+
     pub fn as_bytes(&self) -> Vec<u8> {
         let as_string = serde_json::to_string(self).unwrap();
-
         as_string.as_bytes().iter().copied().collect()
     }
 
     pub fn from_bytes(data: &[u8]) -> WalletAccount {
         let mut buffer: Vec<u8> = vec![];
-
         data.iter().for_each(|x| buffer.push(*x));
-
         let to_string = String::from_utf8(buffer).unwrap();
-
         serde_json::from_str::<WalletAccount>(&to_string).unwrap()
     }
 }
@@ -617,42 +526,30 @@ impl WalletAccount {
 impl StateOption {
     pub fn as_bytes(&self) -> Vec<u8> {
         let as_string = serde_json::to_string(self).unwrap();
-
         as_string.as_bytes().iter().copied().collect()
     }
 
     pub fn from_bytes(data: &[u8]) -> StateOption {
         let mut buffer: Vec<u8> = vec![];
-
         data.iter().for_each(|x| buffer.push(*x));
-
         let to_string = String::from_utf8(buffer).unwrap();
-
         serde_json::from_str::<StateOption>(&to_string).unwrap()
     }
 }
 
-unsafe impl Send for WalletAccount {}
-unsafe impl Sync for WalletAccount {}
-unsafe impl Send for AccountState {}
-unsafe impl Sync for AccountState {}
-
 impl fmt::Display for WalletAccount {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let balance: String = self.balance.to_string();
-        let available_balance: String = self.available_balance.to_string();
+
         write!(
             f,
             "Wallet(\n \
             address: {:?},\n \
-            balance: {},\n \
-            available_balance: {},\n \
-            tokens: {:?},\n \
-            claims: {}",
-            self.address,
-            balance,
-            available_balance,
-            self.tokens,
+            balances: {:?},\n \
+            available_balance: {:?},\n \
+            claims_owned: {}",
+            self.addresses,
+            self.total_balances,
+            self.available_balances,
             self.claims.len()
         )
     }
@@ -661,14 +558,11 @@ impl fmt::Display for WalletAccount {
 impl Clone for WalletAccount {
     fn clone(&self) -> WalletAccount {
         WalletAccount {
-            private_key: self.private_key.clone(),
-            address: self.address.clone(),
-            public_key: self.public_key.clone(),
-            balance: self.balance,
-            available_balance: self.available_balance,
-            tokens: self.tokens.clone(),
+            pubkey: self.pubkey.clone(),
+            addresses: self.addresses.clone(),
+            total_balances: self.total_balances.clone(),
+            available_balances: self.available_balances.clone(),
             claims: self.claims.clone(),
-            skhash: self.skhash.clone(),
         }
     }
 }
@@ -676,136 +570,21 @@ impl Clone for WalletAccount {
 impl Clone for AccountState {
     fn clone(&self) -> Self {
         AccountState {
-            accounts_sk: self.accounts_sk.clone(),
             accounts_pk: self.accounts_pk.clone(),
-            total_coin_balances: self.total_coin_balances.clone(),
-            available_coin_balances: self.available_coin_balances.clone(),
-            accounts_address: self.accounts_address.clone(),
-            token_balances: self.token_balances.clone(),
-            claim_state: self.claim_state.clone(),
+            credits: self.credits.clone(),
+            pending_credits: self.pending_credits.clone(),
+            debits: self.debits.clone(),
+            pending_debits: self.pending_debits.clone(),
+            balances: self.balances.clone(),
+            pending_balances: self.pending_balances.clone(),
+            claims: self.claims.clone(),
+            pending_owned_claims: self.pending_owned_claims.clone(),
+            owned_claims: self.owned_claims.clone(),
+            staked_claims: self.staked_claims.clone(),
             pending: self.pending.clone(),
             mineable: self.mineable.clone(),
+            last_block: self.last_block.clone(),
         }
     }
 }
 
-// #[cfg(test)]
-// mod test {
-//     use super::*;
-//     use crate::reward::RewardState;
-
-//     #[test]
-//     fn test_wallet_set_in_account_state() {
-//         let mut account_state = AccountState::start();
-//         let mut network_state = NetworkState::restore("test_state.db");
-//         let wallet = WalletAccount::new(Arc::new(Mutex::new(account_state)), Arc::new(Mutex::new(network_state)));
-//         let wallet_pk = account_state.accounts_sk.get(&wallet.skhash).unwrap();
-
-//         assert_eq!(wallet_pk.to_owned(), wallet.public_key.to_string());
-//     }
-
-//     #[test]
-//     fn test_restore_account_state_and_wallet() {
-//         let account_state = Arc::new(Mutex::new(AccountState::start()));
-//         let network_state = Arc::new(Mutex::new(NetworkState::restore("test_state.db")));
-//         let mut wallet_vec: Vec<WalletAccount> = vec![];
-        
-//         for _ in 0..=20 {
-//             let new_wallet = WalletAccount::new(Arc::clone(&account_state), Arc::clone(&network_state));
-//             wallet_vec.push(new_wallet);
-//         }
-        
-//         let mut account_state = AccountState::start();
-//         let mut network_state = Arc::new(Mutex::new(NetworkState::restore("test_state.db")));
-        
-//         for wallet in &wallet_vec {
-//             account_state.update(StateOption::NewAccount(serde_json::to_string(&wallet).unwrap()), Arc::clone(&network_state));
-//         }
-
-//         let wallet_to_restore = &wallet_vec[4];
-//         let secret_key_for_restoration = &wallet_to_restore.private_key;
-
-//         {
-//             let mut inner_scope_network_state = NetworkState::restore("test_state.db");
-//             let mut _reward_state = RewardState::start(&mut inner_scope_network_state);
-//             let db_iter = network_state.lock().unwrap().state.iter();
-//             for i in db_iter {
-//                 match i.get_value::<AccountState>() {
-//                     Some(ast) => account_state = ast,
-//                     None => (),
-//                 }
-//                 match i.get_value::<RewardState>() {
-//                     Some(rst) => _reward_state = rst,
-//                     None => (),
-//                 }
-//             }
-
-//             let wallet_to_restore_pk = account_state
-//                 .accounts_sk
-//                 .get(&digest_bytes(
-//                     secret_key_for_restoration.to_string().as_bytes(),
-//                 ))
-//                 .unwrap();
-//             // Assume no claims, no tokens for now.
-//             // TODO: Add claims and tokens
-//             let wallet_to_restore_address =
-//                 account_state.accounts_pk.get(wallet_to_restore_pk).unwrap();
-//             let wallet_to_restore_balance = account_state
-//                 .total_coin_balances
-//                 .get(wallet_to_restore_pk)
-//                 .unwrap();
-//             let wallet_to_restore_available_balance = account_state
-//                 .available_coin_balances
-//                 .get(wallet_to_restore_pk)
-//                 .unwrap();
-//             let restored_wallet = WalletAccount {
-//                 private_key: secret_key_for_restoration.clone(),
-//                 public_key: wallet_to_restore_pk.clone(),
-//                 address: wallet_to_restore_address.to_owned(),
-//                 balance: wallet_to_restore_balance.to_owned(),
-//                 available_balance: wallet_to_restore_available_balance.to_owned(),
-//                 tokens: vec![],
-//                 claims: vec![],
-//                 skhash: digest_bytes(secret_key_for_restoration.to_string().as_bytes()),
-//                 marker: PhantomData
-//             };
-
-//             assert_eq!(wallet_vec[4].skhash, restored_wallet.skhash);
-//             assert_eq!(
-//                 wallet_vec[4].public_key.to_string(),
-//                 restored_wallet.public_key.to_string()
-//             );
-//             assert_eq!(wallet_vec[4].balance, restored_wallet.balance);
-//             assert_eq!(
-//                 wallet_vec[4].available_balance,
-//                 restored_wallet.available_balance
-//             );
-//         }
-//     }
-
-//     #[test]
-//     fn test_reward_received_by_miner() {}
-
-//     #[test]
-//     fn test_send_txn() {}
-
-//     #[test]
-//     fn test_recv_txn() {}
-
-//     #[test]
-//     fn test_valid_signature() {}
-//     #[test]
-//     fn test_invalid_signature() {}
-
-//     #[test]
-//     fn test_account_state_updated_after_claim_homesteaded() {}
-
-//     #[test]
-//     fn test_account_state_updated_after_new_block() {}
-
-//     #[test]
-//     fn test_account_state_updated_after_new_txn() {}
-
-//     #[test]
-//     fn test_account_state_updated_after_confirmed_txn() {}
-// }

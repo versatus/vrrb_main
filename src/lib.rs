@@ -2471,3 +2471,199 @@ pub mod network;
 //  
 //      }
 //  }
+// #[cfg(test)]
+// mod test {
+//     use super::*;
+//     use crate::reward::RewardState;
+
+//     #[test]
+//     fn test_wallet_set_in_account_state() {
+//         let mut account_state = AccountState::start();
+//         let mut network_state = NetworkState::restore("test_state.db");
+//         let wallet = WalletAccount::new(Arc::new(Mutex::new(account_state)), Arc::new(Mutex::new(network_state)));
+//         let wallet_pk = account_state.accounts_sk.get(&wallet.skhash).unwrap();
+
+//         assert_eq!(wallet_pk.to_owned(), wallet.public_key.to_string());
+//     }
+
+//     #[test]
+//     fn test_restore_account_state_and_wallet() {
+//         let account_state = Arc::new(Mutex::new(AccountState::start()));
+//         let network_state = Arc::new(Mutex::new(NetworkState::restore("test_state.db")));
+//         let mut wallet_vec: Vec<WalletAccount> = vec![];
+//         for _ in 0..=20 {
+//             let new_wallet = WalletAccount::new(Arc::clone(&account_state), Arc::clone(&network_state));
+//             wallet_vec.push(new_wallet);
+//         }
+//         let mut account_state = AccountState::start();
+//         let mut network_state = Arc::new(Mutex::new(NetworkState::restore("test_state.db")));
+//         for wallet in &wallet_vec {
+//             account_state.update(StateOption::NewAccount(serde_json::to_string(&wallet).unwrap()), Arc::clone(&network_state));
+//         }
+
+//         let wallet_to_restore = &wallet_vec[4];
+//         let secret_key_for_restoration = &wallet_to_restore.private_key;
+
+//         {
+//             let mut inner_scope_network_state = NetworkState::restore("test_state.db");
+//             let mut _reward_state = RewardState::start(&mut inner_scope_network_state);
+//             let db_iter = network_state.lock().unwrap().state.iter();
+//             for i in db_iter {
+//                 match i.get_value::<AccountState>() {
+//                     Some(ast) => account_state = ast,
+//                     None => (),
+//                 }
+//                 match i.get_value::<RewardState>() {
+//                     Some(rst) => _reward_state = rst,
+//                     None => (),
+//                 }
+//             }
+
+//             let wallet_to_restore_pk = account_state
+//                 .accounts_sk
+//                 .get(&digest_bytes(
+//                     secret_key_for_restoration.to_string().as_bytes(),
+//                 ))
+//                 .unwrap();
+//             // Assume no claims, no tokens for now.
+//             // TODO: Add claims and tokens
+//             let wallet_to_restore_address =
+//                 account_state.accounts_pk.get(wallet_to_restore_pk).unwrap();
+//             let wallet_to_restore_balance = account_state
+//                 .total_coin_balances
+//                 .get(wallet_to_restore_pk)
+//                 .unwrap();
+//             let wallet_to_restore_available_balance = account_state
+//                 .available_coin_balances
+//                 .get(wallet_to_restore_pk)
+//                 .unwrap();
+//             let restored_wallet = WalletAccount {
+//                 private_key: secret_key_for_restoration.clone(),
+//                 public_key: wallet_to_restore_pk.clone(),
+//                 address: wallet_to_restore_address.to_owned(),
+//                 balance: wallet_to_restore_balance.to_owned(),
+//                 available_balance: wallet_to_restore_available_balance.to_owned(),
+//                 tokens: vec![],
+//                 claims: vec![],
+//                 skhash: digest_bytes(secret_key_for_restoration.to_string().as_bytes()),
+//                 marker: PhantomData
+//             };
+
+//             assert_eq!(wallet_vec[4].skhash, restored_wallet.skhash);
+//             assert_eq!(
+//                 wallet_vec[4].public_key.to_string(),
+//                 restored_wallet.public_key.to_string()
+//             );
+//             assert_eq!(wallet_vec[4].balance, restored_wallet.balance);
+//             assert_eq!(
+//                 wallet_vec[4].available_balance,
+//                 restored_wallet.available_balance
+//             );
+//         }
+//     }
+
+//     #[test]
+//     fn test_reward_received_by_miner() {}
+
+//     #[test]
+//     fn test_send_txn() {}
+
+//     #[test]
+//     fn test_recv_txn() {}
+
+//     #[test]
+//     fn test_valid_signature() {}
+//     #[test]
+//     fn test_invalid_signature() {}
+
+//     #[test]
+//     fn test_account_state_updated_after_claim_homesteaded() {}
+
+//     #[test]
+//     fn test_account_state_updated_after_new_block() {}
+
+//     #[test]
+//     fn test_account_state_updated_after_new_txn() {}
+
+//     #[test]
+//     fn test_account_state_updated_after_confirmed_txn() {}
+//
+    // use super::*;
+    // use crate::{block::Block, reward::RewardState};
+
+//     #[test]
+//     fn test_claim_creation_with_new_block() {
+//         let state_path = "claim_test1_state.db";
+//         let mut network_state = NetworkState::restore(state_path);
+//         let reward_state = RewardState::start(&mut network_state);
+//         let mut account_state = AccountState::start();
+//         let mut claim_state = ClaimState::start();
+//         let new_wallet = WalletAccount::new(&mut account_state, &mut network_state);
+//         let mut wallet = new_wallet;
+
+//         let genesis = Block::genesis(
+//             reward_state,
+//             wallet.address.clone(),
+//             &mut account_state,
+//             &mut network_state,
+//         )
+//         .unwrap();
+
+//         account_state = genesis.1;
+//         let mut last_block = genesis.0;
+
+//         for claim in &account_state.clone().claim_state.claims {
+//             let _ts = claim.0;
+//             let mut claim_obj = claim.1.to_owned();
+
+//             let (new_wallet, new_account_state) = claim_obj
+//                 .homestead(
+//                     &mut wallet,
+//                     &mut claim_state,
+//                     &mut account_state,
+//                     &mut network_state,
+//                 )
+//                 .unwrap();
+
+//             wallet = new_wallet;
+//             account_state = new_account_state;
+//         }
+
+//         for claim in &wallet.clone().claims {
+//             let claim_obj = claim.clone().unwrap();
+//             let (next_block, new_account_state) = Block::mine(
+//                 &reward_state,
+//                 claim_obj,
+//                 last_block,
+//                 HashMap::new(),
+//                 &mut account_state,
+//                 &mut network_state,
+//             )
+//             .unwrap()
+//             .unwrap();
+
+//             last_block = next_block;
+//             account_state = new_account_state;
+//         }
+
+//         assert_eq!(account_state.claim_state.claims.len(), 400);
+//     }
+
+//     #[test]
+//     fn test_claim_update_after_homestead() {}
+
+//     #[test]
+//     fn test_mature_claim_valid_signature_mines_block() {}
+
+//     #[test]
+//     fn test_immature_claim_valid_signature_doesnt_mine_block() {}
+
+//     #[test]
+//     fn test_mature_claim_invalid_signature_doesnt_mine_block() {}
+
+//     #[test]
+//     fn test_claim_for_sale() {}
+
+//     #[test]
+//     fn test_claim_sold() {} 
+//}

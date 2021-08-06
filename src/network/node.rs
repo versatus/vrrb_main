@@ -7,6 +7,7 @@ use crate::validator::{Validator, Message};
 use crate::claim::{Claim, CustodianInfo};
 use crate::block::Block;
 use crate::reward::RewardState;
+use crate::network::voting::BallotBox;
 use async_std::{io, task};
 use env_logger::{Builder, Env};
 use futures::prelude::*;
@@ -55,6 +56,7 @@ pub struct Node {
     pub network_state: Arc<Mutex<NetworkState>>,
     pub reward_state: Arc<Mutex<RewardState>>,
     pub last_block: Option<Block>,
+    pub ballot_box: Arc<Mutex<BallotBox>>
 }
 
 impl Node {
@@ -64,6 +66,7 @@ impl Node {
         account_state: Arc<Mutex<AccountState>>, 
         network_state: Arc<Mutex<NetworkState>>,
         reward_state: Arc<Mutex<RewardState>>,
+        ballot_box: Arc<Mutex<BallotBox>>
     ) -> Result<(), Box<dyn Error>> {
 
         Builder::from_env(Env::default().default_filter_or("info")).init();
@@ -96,6 +99,7 @@ impl Node {
         let mut gossipsub: Gossipsub = Gossipsub::new(
             MessageAuthenticity::Signed(local_key.clone()), 
             gossipsub_config).expect("Correct configuration");
+
         gossipsub.subscribe(&testnet_topic).unwrap();
         gossipsub.subscribe(&txn_topic).unwrap();
         gossipsub.subscribe(&claim_topic).unwrap();
@@ -107,6 +111,7 @@ impl Node {
             "vrrb/test-net/1.0.0".to_string(),
             local_key.public(),
         );
+        
         let identify = Identify::new(identify_config);
         let ping = Ping::new(PingConfig::new());
         let queue: Arc<Mutex<VecDeque<GossipsubMessage>>> = Arc::new(Mutex::new(VecDeque::new()));
@@ -132,6 +137,7 @@ impl Node {
             network_state,
             reward_state,
             last_block: None,
+            ballot_box
         };
 
         let port = rand::thread_rng().gen_range(9292, 19292);
@@ -166,22 +172,21 @@ impl Node {
         }
 
         let mut stdin = io::BufReader::new(io::stdin()).lines();
+        let atomic_queue = Arc::clone(&atomic_node.lock().unwrap().swarm.behaviour().queue);
+        let task_node = Arc::clone(&atomic_node);
 
+        thread::spawn(move || 
+            loop {
+                let cloned_node = Arc::clone(&task_node);
+                match atomic_queue.lock().unwrap().pop_front() {
+                    Some(message) => {
+                        println!("{:?}", &message);
+                        process_message(message, cloned_node);
+                    },
+                    None => {},
+            }});
 
         task::block_on(future::poll_fn(move |cx: &mut Context<'_>| {
-            let atomic_queue = Arc::clone(&atomic_node.lock().unwrap().swarm.behaviour().queue);
-            let task_node = Arc::clone(&atomic_node);
-
-            thread::spawn(move || 
-                loop {
-                    let cloned_node = Arc::clone(&task_node);
-                    match atomic_queue.lock().unwrap().pop_front() {
-                        Some(message) => {
-                            println!("{:?}", &message);
-                            process_message(message, cloned_node);
-                        },
-                        None => {},
-                }});
             
             let task_node = Arc::clone(&atomic_node);
             loop {
@@ -230,14 +235,22 @@ fn handle_input_line(behaviour: &mut VrrbNetworkBehavior, line: String) {
         Some("GET_BLK") => {
             behaviour.gossipsub.publish(Topic::new("block"), message).unwrap();
         },
+
         Some("VRRB_IP") | Some("UPDST_P") => {
             behaviour.gossipsub.publish(Topic::new("test-net"), message).unwrap();
         },
+        
+        Some("NEW_BLK") => {
+
+        },
+
         Some(_) => {},
         None => {},
 
     }
 }
+
+
 
 pub fn publish_validator(validator: Validator, node: Arc<Mutex<Node>>, header: &str) {
     // Publish a validator as bytes to the validator channel
@@ -248,11 +261,13 @@ pub fn publish_validator(validator: Validator, node: Arc<Mutex<Node>>, header: &
     let mut message = header.to_owned();
     message.push_str(" ");
     message.push_str(&data);
-    node.lock().unwrap().swarm.behaviour_mut().gossipsub
+    node.lock().unwrap().swarm
+        .behaviour_mut().gossipsub
         .publish(Topic::new("validator"), message.as_bytes()).unwrap();
 }
 
 pub fn publish_last_block(last_block: Block, node: Arc<Mutex<Node>>, header: &str) {
+    // Publish the last confiremd block (directed at the requestor using PeerID)
     let header = hex::encode(String::from(header).as_bytes());
     let block_bytes = last_block.as_bytes();
     let data = hex::encode(block_bytes);
@@ -276,13 +291,20 @@ pub fn process_message(message: GossipsubMessage, node: Arc<Mutex<Node>>) {
                     let txn_validator = Validator::new(
                         Message::Txn(
                             serde_json::to_string(&txn).unwrap(), 
-                            serde_json::to_string(&message_node.account_state.clone().lock().unwrap().clone()).unwrap()
+                            serde_json::to_string(
+                                &message_node.account_state
+                                                .clone()
+                                                .lock()
+                                                .unwrap()
+                                                .clone()
+                                            ).unwrap()
                         ),
                         message_node.wallet.clone().lock().unwrap().clone(),
                         message_node.account_state.clone().lock().unwrap().clone()
                     );
                     // UPDATE LOCAL Account State pending balances for sender(s)/
                     // receivers.
+
                     drop(message_node);
 
                     match txn_validator {
@@ -296,7 +318,10 @@ pub fn process_message(message: GossipsubMessage, node: Arc<Mutex<Node>>) {
                 Err(e) => println!("Error encountered while decoding message data: {:?}", e)
             }
         },
-        "UPD_TXN" => {},
+        "UPD_TXN" => {
+            // If a transaction is not yet confirmed (and mineable) the original sender can update it
+            // or cancel it. Once a txn is confirmed and mineable it can no longer be reversed.
+        },
         "CLM_HOM" => {
             match hex::decode(data) {
                 Ok(bytes) => {
@@ -306,7 +331,8 @@ pub fn process_message(message: GossipsubMessage, node: Arc<Mutex<Node>>) {
                         Message::ClaimHomesteaded(
                             serde_json::to_string(&claim).unwrap(), 
                             claim.current_owner.1.unwrap(), 
-                            serde_json::to_string(&message_node.account_state.clone()
+                            serde_json::to_string(&message_node.account_state
+                                                    .clone()
                                                     .lock()
                                                     .unwrap()
                                                     .clone()
@@ -349,7 +375,7 @@ pub fn process_message(message: GossipsubMessage, node: Arc<Mutex<Node>>) {
                         {
                         Some(custodian_info) => {
                             match custodian_info {
-                                CustodianInfo::AcquiredFrom((_, pubkey, _)) => {
+                                CustodianInfo::AcquiredFrom((pubkey, _)) => {
                                     let message_node = node.lock().unwrap();
                                     let claim_validator = Validator::new(
                                         Message::ClaimAcquired(
@@ -405,7 +431,7 @@ pub fn process_message(message: GossipsubMessage, node: Arc<Mutex<Node>>) {
                         {
                         Some(custodian_info) => {
                             match custodian_info {
-                                CustodianInfo::AcquiredFrom((_, pubkey, _)) => {
+                                CustodianInfo::AcquiredFrom((pubkey, _)) => {
                                     let message_node = node.lock().unwrap();
                                     let claim_validator = Validator::new(
                                         Message::ClaimAcquired(
@@ -516,14 +542,32 @@ pub fn process_message(message: GossipsubMessage, node: Arc<Mutex<Node>>) {
                 Err(e) => println!("Error encountered while decoding message data: {:?}", e)
             }
         },
-        "VRRB_IP" => {},
-        "UPDST_P" => {},
+        "VRRB_IP" => {
+            // Store in the ballot_box proposals hashmap with the proosal ID and expiration date.
+            // Ask receiving node if they'd like to vote now, and provide ability to set reminder
+            // at specified intervals to ask the node to cast the vote. 
+        },
+        "UPDST_P" => {
+
+        },
         "LST_BLK" => {
 
         },
         "ALL_BLK" => {
-            // Publish all the blocks from the beginning of the blockchain, this is for new archive node
-        }
+            // Publish all the blocks from the beginning of the blockchain, 
+            // this is for new archive node
+        },
+        "TXN_VAL" => {
+            // If valid add to validator vector for the txn.
+            // If confirmed (2/3rds of validators with a minimum of 3 returned as valid)
+            // set the txn as mineable. 
+        },
+        "INV_BLK" => {
+            // If the block is invalid, publish an invalid block message directed at the publisher
+            // of the original block (using their PeerID in the message so that other nodes know to)
+            // either ignore or forward to the original publisher.
+        },
+
         _ => {}
 
     }

@@ -1,4 +1,4 @@
-use crate::account::{AccountState, StateOption::ClaimAcquired, WalletAccount};
+use crate::account::{AccountState, StateOption::PendingClaimAcquired, WalletAccount};
 use crate::arbiter::Arbiter;
 use crate::state::NetworkState;
 use crate::validator::ValidatorOptions;
@@ -30,19 +30,8 @@ pub enum CustodianInfo {
     Homesteader(bool),
     AcquisitionTimestamp(u128),
     AcquisitionPrice(u32),
-    AcquiredFrom((Option<String>, Option<String>, Option<String>)),
+    AcquiredFrom((Option<String>, Option<String>)),
     OwnerNumber(u32),
-}
-
-// Claim state is a structure that contains
-// all the relevant information about the
-// currently outstanding (unmined) claims.
-#[derive(Debug, Eq, Deserialize, PartialEq, Serialize)]
-pub struct ClaimState {
-    pub claims: HashMap<u128, Claim>,
-    pub owned_claims: HashMap<u128, Claim>,
-    pub staked_claims: HashMap<String, HashMap<u128, Claim>>,
-    pub furthest_visible_block: u128,
 }
 
 #[derive(Debug, Eq, Deserialize, PartialEq, Serialize)]
@@ -52,32 +41,9 @@ pub struct Claim {
     pub price: u32,
     pub available: bool,
     pub chain_of_custody: HashMap<String, HashMap<String, Option<CustodianInfo>>>,
-    pub current_owner: (Option<String>, Option<String>, Option<String>),
+    pub current_owner: (Option<String>, Option<String>),
     pub claim_payload: Option<String>,
     pub acquisition_time: Option<u128>,
-}
-
-impl ClaimState {
-    pub fn start() -> ClaimState {
-        ClaimState {
-            claims: HashMap::new(),
-            owned_claims: HashMap::new(),
-            furthest_visible_block: 0_u128,
-            staked_claims: HashMap::new(),
-        }
-    }
-
-    pub fn update(&mut self, claim: &Claim, network_state: Arc<Mutex<NetworkState>>) {
-        self.claims
-            .insert(claim.clone().maturation_time, claim.clone());
-
-        self.owned_claims
-            .insert(claim.clone().maturation_time, claim.clone());
-
-        let state_result = network_state.lock().unwrap().update(self.clone(), "claim_state");
-        
-        if let Err(e) =  state_result {println!("Error in updating network state: {:?}", e)}
-    }
 }
 
 impl Claim {
@@ -88,7 +54,7 @@ impl Claim {
             price: 0,
             available: true,
             chain_of_custody: HashMap::new(),
-            current_owner: (None, None, None),
+            current_owner: (None, None),
             claim_payload: None,
             acquisition_time: None,
         }
@@ -117,33 +83,38 @@ impl Claim {
             );
 
             let signature = acquirer.lock().unwrap().sign(&payload).unwrap();
-            let claim_state = Arc::new(Mutex::new(account_state.lock().unwrap().claim_state.clone()));
+            let claim_state = Arc::new(Mutex::new(account_state.lock().unwrap().claims.clone()));
 
             let claim = self
                 .update(
                     0,
                     false,
-                    acquirer.lock().unwrap().address.clone(),
+                    acquirer.lock().unwrap().pubkey.clone(),
                     time.as_nanos(),
-                    (
-                        Some(acquirer.lock().unwrap().address.clone()),
-                        Some(acquirer.lock().unwrap().public_key.to_string()),
-                        Some(signature.to_string()),
-                    ),
+                    (Some(acquirer.lock().unwrap().pubkey.clone()), Some(signature.to_string())),
                     Some(payload),
                     Some(time.as_nanos()),
-                    Arc::clone(&claim_state),
                     Arc::clone(&account_state),
                     Arc::clone(&network_state),
                 ).unwrap();
             
-            if let Some(bal) = account_state.lock().unwrap().available_coin_balances.get_mut(&acquirer.lock().unwrap().public_key.to_string()) {
+            if let Some(bal) = account_state.lock()
+                                .unwrap().pending_balances
+                                .get_mut(&acquirer.lock().unwrap().pubkey)
+                                .unwrap()
+                                .get_mut("VRRB") 
+            {
                 *bal -= self.price as u128;
             };
 
-            if let Some(bal) = account_state.lock().unwrap().total_coin_balances.get_mut(&seller_pk) {
+            if let Some(bal) = account_state.lock()
+                                .unwrap().pending_balances
+                                .get_mut(&seller_pk)
+                                .unwrap()
+                                .get_mut("VRRB") 
+            {
                 *bal += self.price as u128;
-            }
+            };
 
             let state_result = network_state.lock().unwrap().update(claim_state.lock().unwrap().clone(), "claim_state");
             
@@ -161,7 +132,7 @@ impl Claim {
             Some(_map) => {
                 let previous_owner = current_owner_custody.unwrap().get("acquired_from").unwrap();
 
-                if previous_owner.clone().unwrap() == CustodianInfo::AcquiredFrom((None, None, None)) {
+                if previous_owner.clone().unwrap() == CustodianInfo::AcquiredFrom((None, None)) {
                     match self.chain_of_custody
                         .get(&current_owner)
                         .unwrap()
@@ -181,8 +152,8 @@ impl Claim {
                         Some(custodian_info) => {
                             match custodian_info {
                                 CustodianInfo::AcquiredFrom(
-                                    (address, _pubkey, _signature)
-                                ) => { self.valid_chain_of_custody(address.clone().unwrap()) },
+                                    (pubkey, _signature)
+                                ) => { self.valid_chain_of_custody(pubkey.clone().unwrap()) },
                                 _ => { println!("Invalid format!"); None }
                             }
                         }, None => { println!("Something went wrong"); None }
@@ -200,10 +171,9 @@ impl Claim {
         available: bool,
         acquirer: String,
         acquisition_timestamp: u128,
-        current_owner: (Option<String>, Option<String>, Option<String>),
+        current_owner: (Option<String>, Option<String>),
         claim_payload: Option<String>,
         acquisition_time: Option<u128>,
-        claim_state: Arc<Mutex<ClaimState>>,
         account_state: Arc<Mutex<AccountState>>,
         network_state: Arc<Mutex<NetworkState>>,
     ) -> Result<Self, Error> {
@@ -248,9 +218,14 @@ impl Claim {
             ..*self
         };
 
-        claim_state.lock().unwrap().update(&updated_claim, Arc::clone(&network_state));
-
-        account_state.lock().unwrap().update(ClaimAcquired(serde_json::to_string(&updated_claim).unwrap()), network_state);
+        account_state.lock()
+            .unwrap()
+            .update(
+                PendingClaimAcquired(
+                    serde_json::to_string(&updated_claim)
+                        .unwrap()
+                ), network_state
+            );
 
         Ok(updated_claim)
     }
@@ -258,7 +233,6 @@ impl Claim {
     pub fn homestead(
         &mut self,
         wallet: Arc<Mutex<WalletAccount>>,
-        claim_state: Arc<Mutex<ClaimState>>,
         account_state: Arc<Mutex<AccountState>>,
         network_state: Arc<Mutex<NetworkState>>,
     ) {
@@ -282,47 +256,25 @@ impl Claim {
                 .update(
                     0,
                     false,
-                    wallet.lock().unwrap().address.clone(),
+                    wallet.lock().unwrap().pubkey.clone(),
                     time.as_nanos(),
-                    (
-                        Some(wallet.lock().unwrap().address.clone()),
-                        Some(wallet.lock().unwrap().public_key.to_string()),
-                        Some(signature.to_string()),
-                    ),
+                    (Some(wallet.lock().unwrap().clone().pubkey), Some(signature.to_string())),
                     Some(payload),
                     Some(time.as_nanos()),
-                    Arc::clone(&claim_state),
                     Arc::clone(&account_state),
                     Arc::clone(&network_state),
                 )
                 .unwrap();
-
-            network_state.lock().unwrap().update(claim_state.lock().unwrap().clone(), "claim_state").unwrap();
 
             wallet.lock().unwrap().claims.push(Some(claim));
 
         }
     }
 
-    pub fn stake(&self, wallet: WalletAccount, account_state: &mut AccountState) -> AccountState {
-        account_state
-            .claim_state
-            .staked_claims
-            .entry(wallet.public_key.to_string())
-            .or_insert_with( HashMap::new);
-        let mut staked_claims =
-            account_state.claim_state.staked_claims[&wallet.public_key].clone();
-        staked_claims
-            .entry(self.maturation_time)
-            .or_insert_with(|| self.clone());
-        account_state
-            .claim_state
-            .staked_claims
-            .insert(wallet.public_key, staked_claims);
-
+    pub fn stake(&self, wallet: WalletAccount, account_state: &mut AccountState) {
+        account_state.staked_claims.insert(self.claim_number, wallet.pubkey);
         // TODO: Convert this to an account_state.update() need to add a matching arm
         // on the account state, and a StateOption::ClaimStaked.
-        account_state.to_owned()
     }
 
     pub fn to_message(&self) -> String {
@@ -409,17 +361,6 @@ impl Clone for Claim {
     }
 }
 
-impl Clone for ClaimState {
-    fn clone(&self) -> ClaimState {
-        ClaimState {
-            claims: self.claims.clone(),
-            owned_claims: self.owned_claims.clone(),
-            furthest_visible_block: self.furthest_visible_block,
-            staked_claims: self.staked_claims.clone(),
-        }
-    }
-}
-
 impl Verifiable for Claim {
     // Default method for Verifiable, receives the subject of the trait (Claim in this case)
     // and an Option containing one of the ValidatorOptions enum variants, matching arms
@@ -440,7 +381,7 @@ impl Verifiable for Claim {
                         //     return Some(true)
                         // }
                         let account_state = serde_json::from_str::<AccountState>(&account_state).unwrap();
-                        let signature = Signature::from_str(&self.clone().current_owner.2.unwrap()).unwrap();
+                        let signature = Signature::from_str(&self.clone().current_owner.1.unwrap()).unwrap();
 
                         // conver the pubkey string found in the current owner tuple to a PublicKey
                         // struct
@@ -459,18 +400,23 @@ impl Verifiable for Claim {
                         }
 
                         // Extract the subject's maturation time from the account state's claim state field's own claims field
-                        let valid_timestamp_unowned = account_state
-                            .claim_state
-                            .owned_claims
-                            .get(&self.maturation_time);
+                        let valid_timestamp_unowned = account_state.owned_claims.get(&self.maturation_time);
 
                         // match the option returned by the .get() method called above
                         match valid_timestamp_unowned {
-                            Some(claim) => {
+                            Some(owner) => {
+
+                                let claim = account_state.claims
+                                                        .iter()
+                                                        .find(|(&_n, claim)| {
+                                                            claim.current_owner.clone().0.unwrap() == *owner
+                                                        })
+                                                        .unwrap().1;
+
                                 // If the option is Some() check that the current owner in the subject claim
                                 // matches the current owner in the retrieved claim. If not then check if
                                 // the subject claim's current owner acquired it first.
-                                if self.current_owner != claim.current_owner {
+                                if self.current_owner.clone().0.unwrap() != *owner {
                                     // If the subject's current owner doesn't match the record
                                     // in the account state, and the acquisition time is later
                                     // than the record in the account state, return Some(false)
@@ -514,9 +460,11 @@ impl Verifiable for Claim {
                                     }
 
                                 } else {
-                                    let claims: Vec<_> = account_state.claim_state.owned_claims
+                                    let claims: Vec<_> = account_state.claims
                                         .iter()
-                                        .filter(|(_ts, claim)| claim.current_owner.0.clone().unwrap() == self.current_owner.0.clone().unwrap())
+                                        .filter(|(_n, claim)| {
+                                            claim.current_owner.0.clone().unwrap() == self.current_owner.0.clone().unwrap()
+                                        })
                                         .collect();
                                     if claims.len() >= 20 {
                                         return Some(false)
@@ -532,10 +480,10 @@ impl Verifiable for Claim {
                         let account_state = serde_json::from_str::<AccountState>(&account_state).unwrap();
 
                         let signature =
-                            Signature::from_str(&self.clone().current_owner.2.unwrap()).unwrap();
+                            Signature::from_str(&self.clone().current_owner.1.unwrap()).unwrap();
 
                         let pk =
-                            PublicKey::from_str(&self.clone().current_owner.1.unwrap()).unwrap();
+                            PublicKey::from_str(&self.clone().current_owner.0.unwrap()).unwrap();
 
                         let valid_signature = self.verify(&signature, &pk);
                         
@@ -544,11 +492,13 @@ impl Verifiable for Claim {
                             Err(_e) => { println!("invalid_signature"); return Some(false)},
                             _ => {println!("Signature Valid!")},
                         }
-                        let acquirer_pk = account_state.accounts_address.get(&acquirer_address).unwrap();
+                        let acquirer_pk = account_state.accounts_pk.get(&acquirer_address).unwrap();
                         match account_state
                             .clone()
-                            .total_coin_balances
+                            .balances
                             .get(acquirer_pk)
+                            .unwrap()
+                            .get("VRRB")
                         {
                             Some(bal) => {
                                 if *bal < self.price as u128 {
@@ -560,10 +510,8 @@ impl Verifiable for Claim {
                             None => {println!("Buyer not found!"); return Some(false)},
                         }
 
-                        let valid_timestamp_owned = account_state
-                            .claim_state
-                            .owned_claims
-                            .get(&self.maturation_time);
+                        let valid_timestamp_owned = account_state.claims
+                            .get(&self.claim_number);
 
                         match valid_timestamp_owned {
                             Some(claim) => {
@@ -590,10 +538,9 @@ impl Verifiable for Claim {
                                     .get(&acquirer_address)
                                     .unwrap().get("acquired_from").unwrap();
                                 
-                                let previous_owner_pk = match previous_owner {
+                                let _previous_owner_pk = match previous_owner {
                                     Some(CustodianInfo::AcquiredFrom(
                                             (
-                                            _prev_owner_address, 
                                             prev_owner_pk, 
                                             _prev_owner_sig
                                         ))) => { prev_owner_pk.clone().unwrap() },
@@ -602,17 +549,15 @@ impl Verifiable for Claim {
                                 };
 
                                 let is_staked =
-                                    account_state.claim_state.staked_claims.get(&previous_owner_pk);
+                                    account_state.staked_claims.get(&self.claim_number);
                                     
                                 match is_staked {
-                                    Some(map) => {
-                                        let matched_claim = map.get(&self.maturation_time);
-                                        match matched_claim {
-                                            Some(_claim) => {println!("claim is staked"); return Some(false)},
-                                            None => { println!("Claim not staked!")}
-                                        }
+                                    Some(_staker) => {
+                                        {println!("claim is staked"); return Some(false)}
+                                    },
+                                    None => {
+                                        println!("Claim not staked!")
                                     }
-                                    None => {println!("Claim not staked!")}
                                 }
 
                                 let valid_chain_of_custody = self.valid_chain_of_custody(acquirer_address);
@@ -638,84 +583,3 @@ impl Verifiable for Claim {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    // use super::*;
-    // use crate::{block::Block, reward::RewardState};
-
-//     #[test]
-//     fn test_claim_creation_with_new_block() {
-//         let state_path = "claim_test1_state.db";
-//         let mut network_state = NetworkState::restore(state_path);
-//         let reward_state = RewardState::start(&mut network_state);
-//         let mut account_state = AccountState::start();
-//         let mut claim_state = ClaimState::start();
-//         let new_wallet = WalletAccount::new(&mut account_state, &mut network_state);
-//         let mut wallet = new_wallet;
-
-//         let genesis = Block::genesis(
-//             reward_state,
-//             wallet.address.clone(),
-//             &mut account_state,
-//             &mut network_state,
-//         )
-//         .unwrap();
-
-//         account_state = genesis.1;
-//         let mut last_block = genesis.0;
-
-//         for claim in &account_state.clone().claim_state.claims {
-//             let _ts = claim.0;
-//             let mut claim_obj = claim.1.to_owned();
-
-//             let (new_wallet, new_account_state) = claim_obj
-//                 .homestead(
-//                     &mut wallet,
-//                     &mut claim_state,
-//                     &mut account_state,
-//                     &mut network_state,
-//                 )
-//                 .unwrap();
-
-//             wallet = new_wallet;
-//             account_state = new_account_state;
-//         }
-
-//         for claim in &wallet.clone().claims {
-//             let claim_obj = claim.clone().unwrap();
-//             let (next_block, new_account_state) = Block::mine(
-//                 &reward_state,
-//                 claim_obj,
-//                 last_block,
-//                 HashMap::new(),
-//                 &mut account_state,
-//                 &mut network_state,
-//             )
-//             .unwrap()
-//             .unwrap();
-
-//             last_block = next_block;
-//             account_state = new_account_state;
-//         }
-
-//         assert_eq!(account_state.claim_state.claims.len(), 400);
-//     }
-
-//     #[test]
-//     fn test_claim_update_after_homestead() {}
-
-//     #[test]
-//     fn test_mature_claim_valid_signature_mines_block() {}
-
-//     #[test]
-//     fn test_immature_claim_valid_signature_doesnt_mine_block() {}
-
-//     #[test]
-//     fn test_mature_claim_invalid_signature_doesnt_mine_block() {}
-
-//     #[test]
-//     fn test_claim_for_sale() {}
-
-//     #[test]
-//     fn test_claim_sold() {}
-}

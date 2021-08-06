@@ -2,11 +2,15 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 use crate::reward;
-use crate::state::NetworkState;
+use crate::state::{NetworkState, PendingNetworkState};
 use crate::validator::ValidatorOptions;
 use crate::verifiable::Verifiable;
 use crate::{
-    account::{WalletAccount, AccountState, StateOption::{Miner}}, 
+    account::{
+        WalletAccount, 
+        AccountState, 
+        StateOption::ProposedBlock
+    }, 
     claim::{Claim}, 
     txn::Txn, 
     reward::{RewardState, Reward},
@@ -36,38 +40,10 @@ pub struct Block {
     pub miner: String,
     pub state_hash: String,
     pub visible_blocks: Vec<Claim>,
+    pub confirmed_owned_claims: Vec<Claim>,
 }
 
 impl Block {
-
-    /// The genesis method generates the genesis event. It needs to receive
-    /// the reward state, the wallet of the node that initializes the network for the first time.
-    /// the account state and the network state.
-    ///
-    /// ```
-    /// use vrrb_lib::block::Block;
-    /// use vrrb_lib::account::{AccountState, WalletAccount};
-    /// use vrrb_lib::state::NetworkState;
-    /// use vrrb_lib::reward::RewardState;
-    /// use std::sync::{Arc, Mutex}
-    /// let mut network_state = Arc::new(Mutex::new(NetworkState::restore("vrrb_doctest_state.db")));
-    /// let mut reward_state = Arc::new(Mutex::new(RewardState::start(network_state)));
-    /// let mut account_state = Arc::new(Mutex::new(AccountState::start()));
-    /// let mut miner = WalletAccount::new(&mut account_state, &mut network_state);
-    ///
-    /// let (
-    ///     genesis_block, 
-    ///     updated_account_state
-    /// ) = Block::genesis(
-    ///         reward_state, 
-    ///         miner.address.clone(), 
-    ///         &mut account_state, 
-    ///         &mut network_state
-    ///     ).unwrap();
-    ///
-    /// println!("{:?}", genesis_block);
-    /// ```
-    ///
 
     pub fn genesis(
         reward_state: Arc<Mutex<RewardState>>,      // The reward state that needs to be updated when the genesis event occurs
@@ -77,9 +53,23 @@ impl Block {
     ) -> Result<Block, Error>   // Returns a result with either a tuple containing the genesis block and the updated account state (if successful) or an error (if unsuccessful) 
     
     {
-
         // Get the current time in a unix timestamp duration.
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+        
+        let mut claims: HashMap<u128, Claim> = network_state.lock().unwrap().state.get("claims").unwrap();
+        let mut confirmed_owned_claims: Vec<Claim> = vec![];
+
+        claims.clone().iter().for_each(|(claim_number, claim)| {
+            match account_state.lock().unwrap().owned_claims.get(claim_number) {
+                Some(pubkey) => {
+                    if claim.current_owner.0.unwrap() != *pubkey {
+                        claims.insert(*claim_number, claim.clone());
+                        confirmed_owned_claims.push(claim.clone());
+                    }
+                },
+                None => {},
+            }
+        });
 
         // initialize a vector to push claims created by this block to.
         let mut visible_blocks: Vec<Claim> = Vec::with_capacity(20);
@@ -90,12 +80,10 @@ impl Block {
         // set 20 new claims into the vector initialized earlier incrementing each one
         // by 5 nano seconds
         // TODO: Change this to 1 second, 5 nano seconds is just for testing.
-        for i in 1..=20 {
+        for i in 0..20 {
             visible_blocks.push(Claim::new(next_time, i as u128 + 1));
             next_time += 5;
         }
-
-        // TODO: add path field to NetworkState so that this is not hardcoded
 
         let state_hash = network_state.lock().unwrap().hash(&now.as_nanos().to_ne_bytes());
 
@@ -141,16 +129,21 @@ impl Block {
 
             // Set the value of visible blocks to the visible_blocks vector initializes at the top of this method.
             visible_blocks,
+
+            confirmed_owned_claims,
         };
         
         // Update the account state with the miner and new block, this will also set the values to the 
         // network state. Unwrap the result and assign it to the variable updated_account_state to
         // be returned by this method.
-        account_state.lock().unwrap().update(Miner(miner, serde_json::to_string(&genesis).unwrap()), network_state);
+        account_state.lock().unwrap().update(
+            ProposedBlock(miner, 
+                serde_json::to_string(&genesis).unwrap(), 
+                serde_json::to_string(&reward_state.lock().unwrap().clone()).unwrap()
+            ), 
+            network_state);
 
-        // Return an Ok() result with a tuple of the genesis block and the updated account state from the previous line
         Ok(genesis)
-
     }
 
     /// The mine method is used to generate a new block (and an updated account state with the reward set
@@ -168,10 +161,25 @@ impl Block {
         // Initialize a timestamp of the current time.
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
 
+        let mut claims: HashMap<u128, Claim> = network_state.lock().unwrap().state.get("claims").unwrap();
+        let mut confirmed_owned_claims: Vec<Claim> = vec![];
+
+        claims.clone().iter().for_each(|(claim_number, claim)| {
+            match account_state.lock().unwrap().owned_claims.get(claim_number) {
+                Some(pubkey) => {
+                    if claim.current_owner.0.unwrap() != *pubkey {
+                        claims.insert(*claim_number, claim.clone());
+                        confirmed_owned_claims.push(claim.clone());
+                    }
+                },
+                None => {},
+            }
+        });
+
         // initialize a secp256k1 Signature struct from the signature string in the claim (this is to verify claim ownership)
         let claim_signature: Signature = Signature::from_str(
             &claim.clone()
-                .current_owner.2
+                .current_owner.1
                 .unwrap())
                 .ok()
                 .unwrap();
@@ -201,7 +209,13 @@ impl Block {
             let mut visible_blocks: Vec<Claim> = Vec::with_capacity(20);
 
             // Get the claim with the highest maturity timestamp that current exists.
-            let mut furthest_visible_block: u128 = account_state.lock().unwrap().clone().claim_state.furthest_visible_block;
+            let mut furthest_visible_block: u128 = *account_state.lock()
+                                                        .unwrap()
+                                                        .clone()
+                                                        .claims.iter()
+                                                        .map(|(n, _claim)| n)
+                                                        .max_by(|a, b| a.cmp(b))
+                                                        .unwrap();
             
             let highest_claim_number: u128 = last_block.visible_blocks
                 .iter()
@@ -213,10 +227,7 @@ impl Block {
             for _ in 0..20 {
                 furthest_visible_block += 5;
                 visible_blocks.push(Claim::new(furthest_visible_block, highest_claim_number));
-                account_state.lock().unwrap().claim_state.furthest_visible_block = furthest_visible_block;
             }
-
-            account_state.lock().unwrap().claim_state.furthest_visible_block = furthest_visible_block;
 
             // Verify that the claim is indeed owned by the miner attempting to mine this block.
             // Verify returns a result with either a boolean (true or false, but always true if Ok())
@@ -272,6 +283,8 @@ impl Block {
                         // Set the visible blocks to the vector of new claims generated earlier in this method.
                         visible_blocks,
 
+                        confirmed_owned_claims,
+
                     };
 
                     // Generate an updated account state by calling the .update() method
@@ -279,8 +292,6 @@ impl Block {
                     // this returns a result with either an AccountState struct (the updated account state)
                     // if successful, or an error if not successful. Assign this to a variable to be
                     // included in the return expression.
-                    account_state.lock().unwrap().update(Miner(miner, serde_json::to_string(&new_block).unwrap()), network_state);
-
                     // Return a Some() option variant with an Ok() result variant that wraps a tuple that contains
                     // the new block that was just mined and the updated account state.
                     return Some(Ok(new_block));
@@ -321,13 +332,12 @@ pub fn data_validator(data: HashMap<String, Txn>, account_state: AccountState) -
         let valid = account_state.mineable.get(&id);
 
         match valid {
-            Some((_txn, validator_vec)) => {
-                let num_invalid = validator_vec
-                    .iter()
-                    .filter(|&validator| !validator.to_owned().valid)
-                    .count();
+            Some(txn) => {
+                let num_invalid = txn.validators.iter()
+                                        .filter(|&validator| !validator.to_owned().valid)
+                                        .count();
                 
-                let len_of_validators = validator_vec.len();
+                let len_of_validators = txn.validators.len();
 
                 if len_of_validators < 3 {
                     return Some(false);
@@ -367,14 +377,14 @@ impl Verifiable for Block {
             Some(block_options) => {
                 match block_options {
                     ValidatorOptions::NewBlock(last_block, block, pubkey, account_state, reward_state, network_state) => {
-                        
+
                         let block = serde_json::from_str::<Block>(&block).unwrap();
                         let last_block = serde_json::from_str::<Block>(&last_block).unwrap();
                         let network_state = serde_json::from_str::<NetworkState>(&network_state).unwrap();
                         let account_state = serde_json::from_str::<AccountState>(&account_state).unwrap();
                         let reward_state = serde_json::from_str::<RewardState>(&reward_state).unwrap();
 
-                        let valid_signature = match block.clone().claim.current_owner.2 {
+                        let valid_signature = match block.clone().claim.current_owner.1 {
                             Some(sig) => {
                                 let pubkey = match PublicKey::from_str(&pubkey) {
                                     Ok(pk) => {pk}
@@ -412,16 +422,19 @@ impl Verifiable for Block {
                             return Some(false)
                         }
 
-                        let state_hash = network_state.hash(&block.timestamp.to_ne_bytes());
+                        let pending_state = PendingNetworkState::temp(network_state, self.clone());
+
+                        let state_hash = pending_state.hash(&block.timestamp.to_ne_bytes());
                         println!("{}", &state_hash);
                         if block.state_hash != state_hash {
                             println!("Invalid state hash");
+                            // If state hash is invalid cast false vote with the reason why.
                             return Some(false);
                         }
                         
                         let account_state_claim = {
-                            if let Some(claim) = account_state.claim_state.owned_claims.get(
-                                &block.claim.maturation_time
+                            if let Some(claim) = account_state.claims.get(
+                                &block.claim.claim_number
                             ) 
                             {
                                 claim.to_owned()
@@ -467,7 +480,7 @@ impl Verifiable for Block {
                             None => { println!("data validator returned none"); return Some(false) },
                             _ => {}
                         }
-
+                        //TODO: If block is valid cast true vote.
                         Some(true)
                     },    
                     _ => panic!("Invalid options for block"),
@@ -477,44 +490,5 @@ impl Verifiable for Block {
                 Some(false)
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-
-    #[test]
-    fn test_genesis_block_creation() {
-
-    }
-
-    #[test]
-    fn test_mine_block_with_immature_claim() {
-
-    }
-
-    #[test]
-    fn test_mine_block_with_invalid_claim_signature() {
-
-    }
-
-    #[test]
-    fn test_mine_block_with_unconfirmed_txns() {
-
-    }
-
-    #[test]
-    fn test_mine_block_with_invalid_miner_signature() {
-
-    }
-
-    #[test]
-    fn test_mine_block_with_invalid_reward() {
-
-    }
-
-    #[test]
-    fn test_mine_block_with_all_valid_data() {
-
     }
 }

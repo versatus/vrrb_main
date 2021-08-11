@@ -3,11 +3,10 @@ use crate::account::{WalletAccount, AccountState};
 use crate::state::NetworkState;
 use crate::network::protocol::{VrrbNetworkBehavior, build_transport};
 use crate::txn::Txn;
-use crate::validator::{Validator, Message};
-use crate::claim::{Claim, CustodianInfo};
 use crate::block::Block;
 use crate::reward::RewardState;
 use crate::network::voting::BallotBox;
+use crate::network::message;
 use async_std::{io, task};
 use env_logger::{Builder, Env};
 use futures::prelude::*;
@@ -17,7 +16,6 @@ use libp2p::gossipsub::{
     GossipsubConfigBuilder,
     GossipsubMessage, 
     IdentTopic as Topic,
-    TopicHash,
     MessageAuthenticity, 
     ValidationMode,
     Gossipsub,
@@ -36,27 +34,28 @@ use std::{
     thread,
     sync::{Arc, Mutex}
 };
-use std::collections::VecDeque;
+use std::collections::{VecDeque, HashMap};
 use rand::{Rng};
 use hex;
 
 #[allow(dead_code)]
 pub enum NodeAuth {
-    Full(Vec<TopicHash>),
-    Transact(Vec<TopicHash>),
-    Validate(Vec<TopicHash>),
+    Full,
+    Validate,
 }
 
 #[allow(dead_code)]
 pub struct Node {
     pub id: PeerId,
+    pub node_type: NodeAuth,
     pub wallet: Arc<Mutex<WalletAccount>>,
     pub swarm: Swarm<VrrbNetworkBehavior>,
     pub account_state: Arc<Mutex<AccountState>>,
     pub network_state: Arc<Mutex<NetworkState>>,
     pub reward_state: Arc<Mutex<RewardState>>,
     pub last_block: Option<Block>,
-    pub ballot_box: Arc<Mutex<BallotBox>>
+    pub ballot_box: Arc<Mutex<BallotBox>>,
+    pub temp_blocks: Option<HashMap<u128, Block>>,
 }
 
 impl Node {
@@ -66,7 +65,8 @@ impl Node {
         account_state: Arc<Mutex<AccountState>>, 
         network_state: Arc<Mutex<NetworkState>>,
         reward_state: Arc<Mutex<RewardState>>,
-        ballot_box: Arc<Mutex<BallotBox>>
+        ballot_box: Arc<Mutex<BallotBox>>,
+        node_type: NodeAuth,
     ) -> Result<(), Box<dyn Error>> {
 
         Builder::from_env(Env::default().default_filter_or("info")).init();
@@ -131,13 +131,15 @@ impl Node {
 
         let node = Node {
             id: local_peer_id,
+            node_type,
             swarm,
             wallet,
             account_state,
             network_state,
             reward_state,
             last_block: None,
-            ballot_box
+            ballot_box,
+            temp_blocks: None,
         };
 
         let port = rand::thread_rng().gen_range(9292, 19292);
@@ -180,8 +182,7 @@ impl Node {
                 let cloned_node = Arc::clone(&task_node);
                 match atomic_queue.lock().unwrap().pop_front() {
                     Some(message) => {
-                        println!("{:?}", &message);
-                        process_message(message, cloned_node);
+                        message::process_message(message, cloned_node);
                     },
                     None => {},
             }});
@@ -193,7 +194,7 @@ impl Node {
                 let cloned_node = Arc::clone(&task_node);
                 match stdin.try_poll_next_unpin(cx)? {
                     Poll::Ready(Some(line)) => {
-                        handle_input_line(cloned_node.lock().unwrap().swarm.behaviour_mut(), line)
+                        handle_input_line(cloned_node, line)
                     },
                     Poll::Ready(None) => panic!("Stdin closed"),
                     Poll::Pending => break,
@@ -217,358 +218,65 @@ impl Node {
     }
 }
 
-fn handle_input_line(behaviour: &mut VrrbNetworkBehavior, line: String) {
+fn handle_input_line(node: Arc<Mutex<Node>>, line: String) {
     // Message matching
     //
     // Insure topic is correct if so, then publish to topic, 
     // if not then return a message to the local peer indicating 
     // the message topic is incorrect.
-    
-    let message = hex::encode(line.as_bytes());
-    let mut commands = line.split(' ');
+    let args = line.split(' ').collect::<Vec<&str>>();
+    match args[0] {
+        "SENDTXN" | "UPD_TXN" => {
+            let sender = node.lock().unwrap().wallet.clone();
+            let sender_address = sender.lock().unwrap().addresses[&args[1].parse::<u32>().unwrap()].clone();
+            let receiver = args[2].to_string();
+            let amount = args[3].parse::<u128>().unwrap();
+            let mut header: String = "".to_string();
 
-    match commands.next() {
-        Some("NEW_TXN") | Some("UPD_TXN") => {
-            behaviour.gossipsub.publish(Topic::new("txn"), message).unwrap();
+            if args[0] == "SENDTXN" {
+                header.push_str("NEW_TXN");
+            } else {
+                header.push_str("UPD_TXN");
+            }
+
+            let txn = Txn::new(sender, sender_address, receiver, amount).as_bytes();
+
+            let mut message_bytes = vec![];
+            let id = node.lock().unwrap().id.to_string().as_bytes().to_vec();
+            let header = header.as_bytes().to_vec();
+
+            println!("{}", header.len());
+            println!("{}", id.len());
+            
+            message_bytes.extend(header);
+            message_bytes.extend(id);
+            message_bytes.extend(txn);
+
+            let message = hex::encode(message_bytes);
+            node.lock().unwrap()
+                .swarm.behaviour_mut()
+                .gossipsub.publish(Topic::new("txn"), message).unwrap();
         },
         
-        Some("GET_BLK") => {
-            behaviour.gossipsub.publish(Topic::new("block"), message).unwrap();
-        },
-
-        Some("VRRB_IP") | Some("UPDST_P") => {
-            behaviour.gossipsub.publish(Topic::new("test-net"), message).unwrap();
-        },
-        
-        Some("NEW_BLK") => {
-
-        },
-
-        Some(_) => {},
-        None => {},
-
-    }
-}
-
-
-
-pub fn publish_validator(validator: Validator, node: Arc<Mutex<Node>>, header: &str) {
-    // Publish a validator as bytes to the validator channel
-    let processed = validator.validate();
-    let validator_bytes = processed.as_bytes();
-    let header = hex::encode(String::from(header).as_bytes());
-    let data = hex::encode(validator_bytes);
-    let mut message = header.to_owned();
-    message.push_str(" ");
-    message.push_str(&data);
-    node.lock().unwrap().swarm
-        .behaviour_mut().gossipsub
-        .publish(Topic::new("validator"), message.as_bytes()).unwrap();
-}
-
-pub fn publish_last_block(last_block: Block, node: Arc<Mutex<Node>>, header: &str) {
-    // Publish the last confiremd block (directed at the requestor using PeerID)
-    let header = hex::encode(String::from(header).as_bytes());
-    let block_bytes = last_block.as_bytes();
-    let data = hex::encode(block_bytes);
-    let mut message = header.to_owned();
-    message.push_str(" ");
-    message.push_str(&data);
-    node.lock().unwrap().swarm.behaviour_mut().gossipsub
-        .publish(Topic::new("block"), message.as_bytes()).unwrap();
-    
-}
-
-pub fn process_message(message: GossipsubMessage, node: Arc<Mutex<Node>>) {
-    let header = &String::from_utf8_lossy(&message.data)[0..7];
-    let data = &String::from_utf8_lossy(&message.data)[9..];
-    match header {
-        "NEW_TXN" => {
-            match hex::decode(data) {
-                Ok(bytes) => {
-                    let message_node = node.lock().unwrap();
-                    let txn = Txn::from_bytes(&bytes[..]);
-                    let txn_validator = Validator::new(
-                        Message::Txn(
-                            serde_json::to_string(&txn).unwrap(), 
-                            serde_json::to_string(
-                                &message_node.account_state
-                                                .clone()
-                                                .lock()
-                                                .unwrap()
-                                                .clone()
-                                            ).unwrap()
-                        ),
-                        message_node.wallet.clone().lock().unwrap().clone(),
-                        message_node.account_state.clone().lock().unwrap().clone()
-                    );
-                    // UPDATE LOCAL Account State pending balances for sender(s)/
-                    // receivers.
-
-                    drop(message_node);
-
-                    match txn_validator {
-                        Some(validator) => {
-                            publish_validator(validator, node, "TXN_VAL");
-                        },
-                        None => println!("You are not running a validator node or have no claims staked")
-                    };
-
-                },
-                Err(e) => println!("Error encountered while decoding message data: {:?}", e)
-            }
-        },
-        "UPD_TXN" => {
-            // If a transaction is not yet confirmed (and mineable) the original sender can update it
-            // or cancel it. Once a txn is confirmed and mineable it can no longer be reversed.
-        },
-        "CLM_HOM" => {
-            match hex::decode(data) {
-                Ok(bytes) => {
-                    let message_node = node.lock().unwrap();
-                    let claim = Claim::from_bytes(&bytes[..]);
-                    let claim_validator = Validator::new(
-                        Message::ClaimHomesteaded(
-                            serde_json::to_string(&claim).unwrap(), 
-                            claim.current_owner.1.unwrap(), 
-                            serde_json::to_string(&message_node.account_state
-                                                    .clone()
-                                                    .lock()
-                                                    .unwrap()
-                                                    .clone()
-                                                )
-                                                .unwrap()
-                        ), 
-                        message_node.wallet.clone()
-                            .lock()
-                            .unwrap()
-                            .clone(), 
-                        message_node.account_state.clone()
-                            .lock()
-                            .unwrap()
-                            .clone()
-                    );
-                    
-                    drop(message_node);
-
-                    match claim_validator {
-                        Some(validator) => {
-                            publish_validator(validator, node, "CLM_VAL");
-                        },
-                        None => println!("You are not running a validator node or have no claims staked")
-                    }
-                },
-                Err(e) => {println!("Error encountered while decoding message data: {:?}", e)}
-            }
-        },
-        "CLM_SAL" => {
-            // TODO: Need to add a ClaimSale Message in Validator for when a claim holder
-            // places it for sale.
-            match hex::decode(data) {
-                Ok(bytes) => {
-                    let claim = Claim::from_bytes(&bytes[..]);
-                    match claim.clone().chain_of_custody
-                            .get(&claim.clone().current_owner.1.unwrap())
-                            .unwrap()
-                            .get("acquired_from")
-                            .unwrap() 
-                        {
-                        Some(custodian_info) => {
-                            match custodian_info {
-                                CustodianInfo::AcquiredFrom((pubkey, _)) => {
-                                    let message_node = node.lock().unwrap();
-                                    let claim_validator = Validator::new(
-                                        Message::ClaimAcquired(
-                                            serde_json::to_string(&claim).unwrap(), 
-                                            pubkey.as_ref().unwrap().to_owned(), 
-                                            serde_json::to_string(&message_node.account_state
-                                                                    .clone()
-                                                                    .lock()
-                                                                    .unwrap()
-                                                                    .clone()
-                                                                ).unwrap(),
-                                            claim.clone().current_owner.1.unwrap()
-                                    ), 
-                                    message_node.wallet.clone()
-                                        .lock()
-                                        .unwrap()
-                                        .clone(), 
-                                    message_node.account_state.clone()
-                                        .lock()
-                                        .unwrap()
-                                        .clone()
-                                );
-                                
-                                drop(message_node);
-
-                                match claim_validator {
-                                    Some(validator) => {
-                                        publish_validator(validator, node, "CLM_VAL");
-                                    },
-                                    None => println!("You are not running a validator node or have no claims staked")
-                                    }
-                                },
-                                _ => {println!("Invalid CustodianInfo option for this process")}
-
-                            }
-                        },
-                        None => println!("There is no previous owner, this claim cannot be sold or acquired until it has been homesteaded first")
-                    }  
-                },
-                Err(e) => {println!("Error encountered while decoding message data: {:?}", e)}
-            }
-
-        },
-        "CLM_ACQ" => {
-            match hex::decode(data) {
-                Ok(bytes) => {
-                    let claim = Claim::from_bytes(&bytes[..]);
-                    match claim.clone().chain_of_custody
-                            .get(&claim.clone().current_owner.1.unwrap())
-                            .unwrap()
-                            .get("acquired_from")
-                            .unwrap() 
-                        {
-                        Some(custodian_info) => {
-                            match custodian_info {
-                                CustodianInfo::AcquiredFrom((pubkey, _)) => {
-                                    let message_node = node.lock().unwrap();
-                                    let claim_validator = Validator::new(
-                                        Message::ClaimAcquired(
-                                            serde_json::to_string(&claim).unwrap(), 
-                                            pubkey.as_ref().unwrap().to_owned(), 
-                                            serde_json::to_string(
-                                                &message_node.account_state.clone()
-                                                    .lock()
-                                                    .unwrap()
-                                                    .clone()
-                                            ).unwrap(),
-                                            claim.clone().current_owner.1.unwrap()
-                                    ), 
-                                    message_node.wallet.clone()
-                                        .lock()
-                                        .unwrap()
-                                        .clone(), 
-                                    message_node.account_state.clone()
-                                        .lock()
-                                        .unwrap()
-                                        .clone()
-                                );
-                                
-                                    drop(message_node);
-
-                                match claim_validator {
-                                    Some(validator) => {
-                                        publish_validator(validator, node, "CLM_VAL");
-                                    },
-                                    None => println!("You are not running a validator node or have no claims staked")
-                                    }
-                                },
-                                _ => {println!("Invalid CustodianInfo option for this process")}
-
-                            }
-                        },
-                        None => println!("There is no previous owner, this claim cannot be sold or acquired until it has been homesteaded first")
-                    }
-
-                    
-                },
-                Err(e) => {println!("Error encountered while decoding message data: {:?}", e)}
-            }
-        },
-        "NEW_BLK" => {
-            match hex::decode(data) {
-                Ok(bytes) => {
-                    let message_node = node.lock().unwrap();
-                    let block = Block::from_bytes(&bytes[..]);
-                    let block_validator = Validator::new(
-                        Message::NewBlock(
-                            serde_json::to_string(&message_node.last_block.as_ref().unwrap()).unwrap(), 
-                            serde_json::to_string(&block).unwrap(), 
-                            block.miner.clone(), 
-                            serde_json::to_string(&message_node.network_state.clone()
-                                                    .lock()
-                                                    .unwrap()
-                                                    .clone()
-                                                ).unwrap(),
-                            serde_json::to_string(&message_node.account_state.clone()
-                                                    .lock()
-                                                    .unwrap()
-                                                    .clone()
-                                                ).unwrap(),
-                            serde_json::to_string(&message_node.reward_state.clone()
-                                                    .lock()
-                                                    .unwrap()
-                                                    .clone()
-                                                ).unwrap()
-                        ), 
-                        message_node.wallet.clone()
-                            .lock()
-                            .unwrap()
-                            .clone(), 
-                        message_node.account_state.clone()
-                            .lock()
-                            .unwrap()
-                            .clone()
-                    );
-
-                    drop(message_node);
-
-                    match block_validator {
-                        Some(validator) => {publish_validator(validator, node, "BLK_VAL")},
-                        None => {println!("You are not running a validator node or you do not have any claims staked")}
-                    }
-                },
-                Err(e) => {println!("Error encountered while decoding message data: {:?}", e)}
-            }
-        },
         "GET_BLK" => {
-            match hex::decode(data) {
-                Ok(_bytes) => {
-                    // If this message is recieved return a message with the LST_BLK header.
-                    // and the node.last_block as the data.
-                    let message_node = node.lock().unwrap();
-                    let last_block = message_node.last_block.clone();
+            let message = hex::encode(line.as_bytes());
+            node.lock().unwrap()
+                .swarm.behaviour_mut()
+                .gossipsub.publish(Topic::new("block"), message).unwrap();
+        },
+        "GETPEER" => {},
+        "GET_STE" => {},
+        "GET_TXN" => {},
+        "VRRB_IP" | "UPDST_P" => {
+            let message = hex::encode(line.as_bytes());
+            node.lock().unwrap()
+                .swarm.behaviour_mut()
+                .gossipsub.publish(Topic::new("test-net"), message).unwrap();
+        },
+        "MINEBLK" => {},
 
-                    drop(message_node);
-                    
-                    match last_block {
-                        Some(block) => {
-                            publish_last_block(block, node, "LST_BLK");                    
-                        },
-                        None => {println!("No blocks to publish yet")}
-                    }
-                },
-                Err(e) => println!("Error encountered while decoding message data: {:?}", e)
-            }
-        },
-        "VRRB_IP" => {
-            // Store in the ballot_box proposals hashmap with the proosal ID and expiration date.
-            // Ask receiving node if they'd like to vote now, and provide ability to set reminder
-            // at specified intervals to ask the node to cast the vote. 
-        },
-        "UPDST_P" => {
-
-        },
-        "LST_BLK" => {
-
-        },
-        "ALL_BLK" => {
-            // Publish all the blocks from the beginning of the blockchain, 
-            // this is for new archive node
-        },
-        "TXN_VAL" => {
-            // If valid add to validator vector for the txn.
-            // If confirmed (2/3rds of validators with a minimum of 3 returned as valid)
-            // set the txn as mineable. 
-        },
-        "INV_BLK" => {
-            // If the block is invalid, publish an invalid block message directed at the publisher
-            // of the original block (using their PeerID in the message so that other nodes know to)
-            // either ignore or forward to the original publisher.
-        },
-
-        _ => {}
-
+        _ => {},
     }
 }
+
+

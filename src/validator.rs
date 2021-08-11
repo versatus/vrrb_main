@@ -1,20 +1,16 @@
 #![allow(unused_imports)]
 use std::collections::HashMap;
 use crate::{
-    account::{
-        AccountState, 
-        WalletAccount
-    }, 
+    account::{AccountState, WalletAccount}, 
     block::Block, 
-    claim::{
-        Claim
-    }, mpu, 
+    claim::{Claim}, 
+    mpu, 
     reward::{RewardState}, 
     state::NetworkState, 
     txn::Txn
 };
 use serde::{Serialize, Deserialize};
-use std::marker::PhantomData;
+use std::collections::VecDeque;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum InvalidMessageError {
@@ -42,28 +38,31 @@ pub enum Message {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Validator {
-    pub node_wallet: WalletAccount,
+    pub node_wallet: String,
     pub staked_claims: HashMap<u128, Claim>,
     pub message: Message,
     pub valid: bool,
 }
 
 impl Validator {
-    pub fn new(message: Message, wallet: WalletAccount, account_state: AccountState) -> Option<Validator> {
+    pub fn new(message: Message, pubkey: String, account_state: AccountState) -> Option<Validator> {
         let mut check_staked_claims: HashMap<u128, Claim> = HashMap::new();
-        wallet.claims.iter().map(|x| x).for_each(|claim| {
-            match account_state.staked_claims.get(&claim.clone().unwrap().claim_number) {
-                Some(_) => {
-                    check_staked_claims.insert(claim.clone().unwrap().claim_number, claim.clone().unwrap());
-                },
-                None => {}
+        account_state.claims.iter()
+            .filter(|(_claim_number, claim)| claim.current_owner.clone().0.unwrap() == pubkey)
+            .for_each(|(claim_number, claim)| {
+                match account_state.staked_claims.get(claim_number) {
+                    Some(_) => {
+                        check_staked_claims.insert(*claim_number, claim.clone());
+                    },
+                    None => {}
                 }
-            });
+            }
+        );
     
         // If there's no staked claims for the node wallet attempting to launch a validator
         // a validator cannot be launched. Claims must be staked to validate messages
         Some(check_staked_claims).map(|map| Validator {
-            node_wallet: wallet, staked_claims: map.clone(), message, valid: false,
+            node_wallet: pubkey, staked_claims: map.clone(), message, valid: false,
         })
     }
 

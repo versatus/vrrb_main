@@ -25,6 +25,18 @@ use secp256k1::{
 };
 use std::sync::{Arc, Mutex};
 
+pub enum InvalidBlockReason {
+    InvalidStateHash,
+    InvalidBlockHeight,
+    InvalidLastBlockHash,
+    InvalidData(String),
+    InvalidClaim,
+    InvalidBlockHash,
+    InvalidNextBlockReward,
+    InvalidBlockReward,
+
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Block {
     pub block_height: u128,
@@ -60,9 +72,9 @@ impl Block {
         let mut confirmed_owned_claims: Vec<Claim> = vec![];
 
         claims.clone().iter().for_each(|(claim_number, claim)| {
-            match account_state.lock().unwrap().owned_claims.get(claim_number) {
+            match account_state.lock().unwrap().owned_claims.get(&claim_number) {
                 Some(pubkey) => {
-                    if claim.current_owner.0.unwrap() != *pubkey {
+                    if claim.clone().current_owner.0.unwrap() != *pubkey {
                         claims.insert(*claim_number, claim.clone());
                         confirmed_owned_claims.push(claim.clone());
                     }
@@ -167,7 +179,7 @@ impl Block {
         claims.clone().iter().for_each(|(claim_number, claim)| {
             match account_state.lock().unwrap().owned_claims.get(claim_number) {
                 Some(pubkey) => {
-                    if claim.current_owner.0.unwrap() != *pubkey {
+                    if claim.clone().current_owner.0.unwrap() != *pubkey {
                         claims.insert(*claim_number, claim.clone());
                         confirmed_owned_claims.push(claim.clone());
                     }
@@ -376,7 +388,9 @@ impl Verifiable for Block {
         match options {
             Some(block_options) => {
                 match block_options {
-                    ValidatorOptions::NewBlock(last_block, block, pubkey, account_state, reward_state, network_state) => {
+                    ValidatorOptions::NewBlock(
+                        last_block, block, pubkey, account_state, reward_state, network_state,
+                    ) => {
 
                         let block = serde_json::from_str::<Block>(&block).unwrap();
                         let last_block = serde_json::from_str::<Block>(&last_block).unwrap();
@@ -388,24 +402,38 @@ impl Verifiable for Block {
                             Some(sig) => {
                                 let pubkey = match PublicKey::from_str(&pubkey) {
                                     Ok(pk) => {pk}
-                                    Err(_e) => { println!("Invalid Public Key"); return Some(false) }
+                                    Err(_e) => { 
+                                        println!("Invalid Public Key");
+                                        // Cast false vote with proper structure and
+                                        // reason for false vote. 
+                                        return Some(false) 
+                                    }
                                 };
                                 let signature = match Signature::from_str(&sig) {
                                     Ok(sig) => sig,
-                                    Err(_e) => {println!("Invalid Signature Structure"); return Some(false)}
+                                    Err(_e) => { 
+                                        println!("Invalid Signature Structure"); 
+                                        // Cast false vote with proper structure and reason
+                                        // for false vote.
+                                        return Some(false) 
+                                    }
                                 };
 
                                 block.claim.verify(&signature, &pubkey)
                             },
                             None => {
                                 println!("Signature verification returned None");
+                                // Cast false vote with proper structure and reason for false vote
                                 return Some(false)
                             }
                         };
 
                         match valid_signature {
                             Ok(true) => {},
-                            Ok(false) => { println!("Invalid Signature"); return Some(false) },
+                            Ok(false) => { 
+                                println!("Invalid Signature"); 
+                                return Some(false) 
+                            },
                             Err(e) => { 
                                 println!("Signature validation returned error: {}", e);
                                 return Some(false) 
@@ -422,7 +450,7 @@ impl Verifiable for Block {
                             return Some(false)
                         }
 
-                        let pending_state = PendingNetworkState::temp(network_state, self.clone());
+                        let pending_state = PendingNetworkState::temp(Arc::new(Mutex::new(network_state)), self.clone());
 
                         let state_hash = pending_state.hash(&block.timestamp.to_ne_bytes());
                         println!("{}", &state_hash);

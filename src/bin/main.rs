@@ -1,4 +1,4 @@
-use vrrb_lib::network::{node::Node, voting::BallotBox};
+use vrrb_lib::network::{node::{Node, NodeAuth}, voting::BallotBox};
 use vrrb_lib::account::{
     WalletAccount, AccountState
 };
@@ -15,6 +15,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let account_state = Arc::new(Mutex::new(AccountState::start()));
     let network_state = Arc::new(Mutex::new(NetworkState::restore("test.db")));
     let reward_state = Arc::new(Mutex::new(RewardState::start(Arc::clone(&network_state))));
+    let node_type = NodeAuth::Full;
     let wallet = Arc::new(
         Mutex::new(
             WalletAccount::new(
@@ -31,7 +32,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 HashMap::new()
             )));
 
-    let node = Node::start(wallet, account_state, network_state, reward_state, ballot_box);
+    let node = Node::start(wallet, account_state, network_state, reward_state, ballot_box, node_type);
     
     node.await.unwrap();
 

@@ -17,23 +17,23 @@ pub struct BallotBox {
     // A hashmap containing the proposal ID as the key and a hashmap
     // with yes/no as the keys and the vote count as the value.
     // May need a timestamp for expiration.
-    pub proposals: HashMap<String, HashMap<String, u32>>,
+    pub proposals: HashMap<String, HashMap<String, u128>>,
     // A hashmap containing the block height as the key, and a tuple containing
     // the state hash, a hashmap of votes, and a vector of transactions as the value
-    pub state_hash: HashMap<u32, (String, HashMap<String, u32>, Vec<Txn>)>,
+    pub state_hash: HashMap<u128, (String, HashMap<String, u128>, HashMap<String, Txn>)>,
     // May need a queue to communicate with other processes.
-    pub node_count: u32,
+    pub node_count: u128,
     pub proposal_results: HashMap<String, bool>,
-    pub state_hash_results: HashMap<u32, bool>,
+    pub state_hash_results: HashMap<u128, bool>,
 }
 
 impl BallotBox {
     pub fn new(
-        proposals: HashMap<String, HashMap<String, u32>>,
-        state_hash: HashMap<u32, (String, HashMap<String, u32>, Vec<Txn>)>,
-        node_count: u32,
+        proposals: HashMap<String, HashMap<String, u128>>,
+        state_hash: HashMap<u128, (String, HashMap<String, u128>, HashMap<String, Txn>)>,
+        node_count: u128,
         proposal_results: HashMap<String, bool>,
-        state_hash_results: HashMap<u32, bool>,
+        state_hash_results: HashMap<u128, bool>,
     ) -> BallotBox 
     {
         BallotBox { proposals, state_hash, node_count, proposal_results, state_hash_results, }
@@ -47,7 +47,7 @@ impl BallotBox {
         }
     }
 
-    pub fn tally_state_hash_vote(&mut self, block_height: u32, vote: bool) {
+    pub fn tally_state_hash_vote(&mut self, block_height: u128, vote: bool) {
 
         match vote {
             true => { *self.state_hash.get_mut(&block_height).unwrap().1.get_mut("yes").unwrap() +=1; },
@@ -63,7 +63,7 @@ impl BallotBox {
         self.proposal_results.insert(proposal_id, result);
     }
 
-    pub fn state_hash_vote_result(&mut self, block_height: u32) {
+    pub fn state_hash_vote_result(&mut self, block_height: u128) {
         let state_hash_votes = self.state_hash.get_mut(&block_height).unwrap();
         let vote_total = *state_hash_votes.1.get_mut("yes").unwrap() + *state_hash_votes.1.get_mut("no").unwrap();
 

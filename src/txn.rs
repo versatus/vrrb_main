@@ -5,9 +5,10 @@ use secp256k1::{PublicKey, Signature};
 use serde::{Serialize, Deserialize};
 use crate::validator::ValidatorOptions;
 use crate::verifiable::Verifiable;
-use crate::{account::WalletAccount, vrrbcoin::Token, account::AccountState, validator::Validator};
+use crate::{account::WalletAccount, account::AccountState, validator::Validator};
 use uuid::Uuid;
 use sha256::digest_bytes;
+use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Txn {
@@ -16,7 +17,7 @@ pub struct Txn {
     pub sender_address: String,
     pub sender_public_key: String,
     pub receiver_address: String,
-    pub txn_token: Option<Token>,
+    pub txn_token: Option<String>,
     pub txn_amount: u128,
     pub txn_payload: String,
     pub txn_signature: String,
@@ -26,7 +27,7 @@ pub struct Txn {
 impl Txn {
 
     pub fn new(
-        sender: WalletAccount,
+        sender: Arc<Mutex<WalletAccount>>,
         sender_address: String, 
         receiver: String, 
         amount: u128
@@ -36,18 +37,18 @@ impl Txn {
         let payload = format!("{},{},{},{},{}",
             &time.as_nanos().to_string(),
             &sender_address, 
-            &sender.pubkey, 
+            &sender.lock().unwrap().pubkey.clone(), 
             &receiver, &amount.to_string()
         );
     
-        let signature = sender.sign(&payload).unwrap();
+        let signature = sender.lock().unwrap().sign(&payload).unwrap();
         let uid_payload = format!("{},{},{}", &payload, Uuid::new_v4().to_string(), &signature.to_string());
 
         Txn {
             txn_id: digest_bytes(uid_payload.as_bytes()),
             txn_timestamp: time.as_nanos(),
             sender_address: sender_address,
-            sender_public_key: sender.pubkey,
+            sender_public_key: sender.lock().unwrap().pubkey.clone(),
             receiver_address: receiver,
             txn_token: None,
             txn_amount: amount,
@@ -70,12 +71,9 @@ impl Txn {
     }
 
     pub fn from_bytes(data: &[u8]) -> Txn {
-        let mut buffer: Vec<u8> = vec![];
 
-        data.iter().for_each(|x| buffer.push(*x));
-
-        let to_string = String::from_utf8(buffer).unwrap();
-
+        let to_string = String::from_utf8_lossy(data).into_owned();
+        println!("{}", &to_string);
         serde_json::from_str::<Txn>(&to_string).unwrap()
     }
 }

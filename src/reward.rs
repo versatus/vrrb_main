@@ -28,7 +28,7 @@ pub enum Category {
     Genesis(Option<u128>),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub struct RewardState {
     pub epoch: u128,
     pub next_epoch_block: u128,
@@ -95,6 +95,7 @@ impl RewardState {
         let mut n_flakes_ce: u128 = self.n_flakes_current_epoch;
         let mut n_grains_ce: u128 = self.n_grains_current_epoch;
         let remaining_blocks_in_ce: u128 = self.next_epoch_block - (self.current_block + 1);
+
         if remaining_blocks_in_ce != 0 {
             n_nuggets_ce = match last_reward {
                 Category::Nugget(Some(_)) => n_nuggets_ce - 1,
@@ -131,36 +132,30 @@ impl RewardState {
             n_grains_ce = (remaining_blocks as f64 * 0.4f64) as u128;
         }
 
-        let updated_reward_state = Self {
-            current_block: self.current_block + 1,
-            epoch: if self.current_block + 1 != self.next_epoch_block {
-                self.epoch
-            } else {
-                self.epoch + 1
-            },
-            next_epoch_block: if self.current_block + 1 != self.next_epoch_block {
-                self.next_epoch_block
-            } else {
+        self.current_block = self.current_block + 1;
+        self.epoch = if self.current_block + 1 != self.next_epoch_block { self.epoch } else { self.epoch + 1 };
+        self.next_epoch_block = if self.current_block + 1 != self.next_epoch_block { 
+                self.next_epoch_block 
+            } else { 
                 self.next_epoch_block + N_BLOCKS_PER_EPOCH
-            },
-            n_nuggets_remaining: match last_reward {
-                Category::Nugget(Some(_)) => self.n_nuggets_remaining - 1,
-                _ => self.n_nuggets_remaining,
-            },
-            n_veins_remaining: match last_reward {
-                Category::Vein(Some(_)) => self.n_veins_remaining - 1,
-                _ => self.n_veins_remaining,
-            },
-            n_motherlodes_remaining: match last_reward {
-                Category::Motherlode(Some(_)) => self.n_motherlodes_remaining - 1,
-                _ => self.n_motherlodes_remaining,
-            },
-            n_nuggets_current_epoch: n_nuggets_ce,
-            n_veins_current_epoch: n_veins_ce,
-            n_motherlodes_current_epoch: n_motherlodes_ce,
-            n_flakes_current_epoch: n_flakes_ce,
-            n_grains_current_epoch: n_grains_ce,
-            };
+        };
+        self.n_nuggets_remaining = match last_reward {
+            Category::Nugget(Some(_)) => self.n_nuggets_remaining - 1,
+            _ => self.n_nuggets_remaining,
+        };
+        self.n_veins_remaining = match last_reward {
+            Category::Vein(Some(_)) => self.n_veins_remaining - 1,
+            _ => self.n_veins_remaining,
+        };
+        self.n_motherlodes_remaining = match last_reward {
+            Category::Motherlode(Some(_)) => self.n_motherlodes_remaining - 1,
+            _ => self.n_motherlodes_remaining,
+        };
+        self.n_nuggets_current_epoch = n_nuggets_ce;
+        self.n_veins_current_epoch = n_veins_ce;
+        self.n_motherlodes_current_epoch = n_motherlodes_ce;
+        self.n_flakes_current_epoch = n_flakes_ce;
+        self.n_grains_current_epoch = n_grains_ce;
     }
 
     pub fn as_bytes(&self) -> Vec<u8> {

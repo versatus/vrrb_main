@@ -71,8 +71,9 @@ pub struct AccountState {
 /// signed and the signature.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WalletAccount {
+    secretkey: String,
     pub pubkey: String,
-    pub addresses: HashMap<u8, String>,
+    pub addresses: HashMap<u32, String>,
     pub total_balances: HashMap<String, HashMap<String, u128>>,
     pub available_balances: HashMap<String, HashMap<String, u128>>,
     pub claims: Vec<Option<Claim>>,
@@ -228,7 +229,7 @@ impl AccountState {
 
                                         // Push the transaction to pending transactions to be confirmed 
                                         // by validators.
-                                        self.pending.entry(txn.clone().txn_id).or_insert(vec![]);
+                                        self.pending.entry(txn.clone().txn_id).or_insert(txn.clone());
                                         // Pending transactions do not update the network state, only confirmed
                                         // transactions update the network state. 
                                     }
@@ -294,7 +295,7 @@ impl AccountState {
                         }
                     }
             },
-            StateOption::ConfirmedBlock(miner, block, reward_state) => {
+            StateOption::ConfirmedBlock(_miner, _block, _reward_state) => {
                 // If the block has been confirmed by the network, and there is consensus
                 // around the state of the network at the given block.height
                 // confirm the network state by replacing it with the temporary network state
@@ -306,7 +307,7 @@ impl AccountState {
             // fees to the trasnaction's validator.
             StateOption::ConfirmedTxn(txn, validator) => {
                 //TODO: distribute txn fees among validators.
-                let mut txn = serde_json::from_str::<Txn>(&txn).unwrap();
+                let txn = serde_json::from_str::<Txn>(&txn).unwrap();
                 let validator: Validator = serde_json::from_str::<Validator>(&validator).unwrap();
                 self.pending.get(&txn.txn_id).unwrap().clone().validators.push(validator);
 
@@ -377,6 +378,7 @@ impl WalletAccount {
 
         // Generate a wallet struct by assigning the variables to the fields.
         let wallet = Self {
+            secretkey: secret_key.to_string(),
             pubkey: public_key.to_string(),
             addresses,
             total_balances: total_balances.clone(),
@@ -416,7 +418,7 @@ impl WalletAccount {
         let message_hash = blake3::hash(&new_message);
         let message_hash = Message::from_slice(message_hash.as_bytes())?;
         let secp = Secp256k1::new();
-        let sk = SecretKey::from_str(&self.pubkey).unwrap();
+        let sk = SecretKey::from_str(&self.secretkey).unwrap();
         let sig = secp.sign(&message_hash, &sk);
         Ok(sig)
     }
@@ -468,10 +470,10 @@ impl WalletAccount {
     }
 
     pub fn send_txn(
-        &mut self, address_number: u8, account_state: Arc<Mutex<AccountState>>,
+        &mut self, address_number: u32, account_state: Arc<Mutex<AccountState>>,
         receiver: String, amount: u128, network_state: Arc<Mutex<NetworkState>>,
     ) -> Result<Txn, Error> {
-        let txn = Txn::new(self.clone(), self.addresses.get(&address_number).unwrap().clone(), receiver, amount);
+        let txn = Txn::new(Arc::new(Mutex::new(self.clone())), self.addresses.get(&address_number).unwrap().clone(), receiver, amount);
         account_state.lock().unwrap().update(
             StateOption::NewTxn(serde_json::to_string(&txn).unwrap()),
             network_state,
@@ -504,7 +506,7 @@ impl WalletAccount {
 
     pub fn generate_new_address(&mut self) {
         let uid = Uuid::new_v4().to_string();
-        let address_number: u8 = self.addresses.len() as u8 + 1u8;
+        let address_number: u32 = self.addresses.len() as u32 + 1u32;
         let payload = format!("{},{},{}", &address_number, &uid, &self.pubkey);
         let address = digest_bytes(payload.as_bytes());
         self.addresses.insert(address_number, address);
@@ -558,6 +560,7 @@ impl fmt::Display for WalletAccount {
 impl Clone for WalletAccount {
     fn clone(&self) -> WalletAccount {
         WalletAccount {
+            secretkey: self.secretkey.clone(),
             pubkey: self.pubkey.clone(),
             addresses: self.addresses.clone(),
             total_balances: self.total_balances.clone(),

@@ -126,7 +126,7 @@ impl ValidatorProcessor {
                 let malicious: Vec<String> = value
                     .iter()
                     .filter(|&v| v.valid)
-                    .map(|v| v.clone().node_wallet.pubkey).collect();
+                    .map(|v| v.clone().node_wallet).collect();
 
                 for validator in malicious {
                     self.slashed.push(validator);
@@ -143,9 +143,4 @@ impl ValidatorProcessor {
             account_state.owned_claims.retain(|_k, v| *v != *slash);
         });
     }
-}
-
-#[cfg(test)]
-mod tests {
-
 }

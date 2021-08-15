@@ -37,6 +37,8 @@ use std::{
 use std::collections::{VecDeque, HashMap};
 use rand::{Rng};
 use hex;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 
 #[allow(dead_code)]
 pub enum NodeAuth {
@@ -176,7 +178,8 @@ impl Node {
         let mut stdin = io::BufReader::new(io::stdin()).lines();
         let atomic_queue = Arc::clone(&atomic_node.lock().unwrap().swarm.behaviour().queue);
         let task_node = Arc::clone(&atomic_node);
-
+        
+        // Message processing thread
         thread::spawn(move || 
             loop {
                 let cloned_node = Arc::clone(&task_node);
@@ -186,6 +189,88 @@ impl Node {
                     },
                     None => {},
             }});
+        
+        let task_node = Arc::clone(&atomic_node);
+
+        // Claim thread        
+        thread::spawn(move || 
+            loop {
+                // Establish a channel between main thread and this thread, and check if there's a
+                // "HOMESTD" command, if so run the below.
+                // On each loop check the queue, and see if there's a "NOSTEAD" command, if skip the homesteading process
+                // if there is a "ACQRCLM" command, spawn and run the node's wallet acquire_claims() method which
+                // takes a maximum price and maximum maturity to filter the available claims for sale and find claims
+                // that match.
+                // If there is a "SELLCLM" command, spawn a new thread and run the node's wallet sell_claim() method
+                // and publish the message when the claim has been updated.
+                // If there's a "STAKCLM" command, spawn a new thread and run the node's wallet stake_claim() method.
+                let cloned_node = Arc::clone(&task_node);
+                // Iterate through all the claims in the account state and filter those that are available
+                // if there is already an owner this claim would need to be acquired for vrrb (not homesteaded)
+                // so it must fall below the price that the node is willing to pay, and must be the earlist to mature
+                // that fits within that price range, otherwise, it is available to be homesteaded.
+                cloned_node.clone().lock().unwrap()
+                    .account_state.clone().lock().unwrap()
+                    .claims.iter()
+                        .filter(|(_claim_number, claim)| claim.available)
+                        .for_each(|(_claim_number, claim)| {
+                            match &claim.current_owner.0 {
+                                Some(_pubkey) => {},
+                                None => {
+                                    claim.clone().homestead(
+                                        cloned_node.clone().lock().unwrap().wallet.clone(), 
+                                        cloned_node.clone().lock().unwrap().account_state.clone(),
+                            );
+                        }
+                    }
+                });
+            });
+        
+        let task_node = Arc::clone(&atomic_node);
+
+        // Mining thread
+        thread::spawn(move || 
+            loop {
+                // Establish a channel between main thread and this thread, and check if there's a
+                // "MINEBLK" command, if so run the below.
+                // On each loop check the queue, and see if there's a "STPMINE" command, if skip the mining process
+                let cloned_node = Arc::clone(&task_node);
+                // Iterate through local node wallet, and check if any claims are mature
+                // if there are mature claims, mine a block with the claim.
+                cloned_node.clone().lock().unwrap()
+                    .wallet.clone().lock().unwrap()
+                    .claims.iter().filter(|claim_option| {
+                        match claim_option {
+                            Some(claim) => { claim.maturation_time <= SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() },
+                            None => { false }
+                        }
+                    }).for_each(|claim| {
+                        let block = Block::mine(
+                            cloned_node.lock().unwrap().reward_state.clone(), 
+                            claim.clone().unwrap(),
+                            cloned_node.lock().unwrap().last_block.clone().unwrap(),
+                            cloned_node.lock().unwrap().account_state.lock().unwrap().mineable.clone(),
+                            cloned_node.lock().unwrap().account_state.clone(),
+                            cloned_node.lock().unwrap().network_state.clone(),
+                        );
+
+                        if let Some(result) = block {
+                            match result {
+                                Ok(block) => {
+                                    let block_bytes = block.as_bytes();
+                                    let header = "NEW_BLK".as_bytes().to_vec();
+                                    let peer_id = cloned_node.clone().lock().unwrap().id.to_string().as_bytes().to_vec();
+                                    let message = message::structure_message(header, peer_id, block_bytes);
+                                    message::publish_message(cloned_node.clone(), message, "block".to_string());
+                                },
+                                Err(e) => {
+                                    println!("Error while trying to mine new block: {}", e);
+                                }
+                            }
+                        }
+                    });
+
+            });
 
         task::block_on(future::poll_fn(move |cx: &mut Context<'_>| {
             
@@ -247,7 +332,7 @@ fn handle_input_line(node: Arc<Mutex<Node>>, line: String) {
 
             println!("{}", header.len());
             println!("{}", id.len());
-            
+
             message_bytes.extend(header);
             message_bytes.extend(id);
             message_bytes.extend(txn);

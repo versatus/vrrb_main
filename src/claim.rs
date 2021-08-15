@@ -1,6 +1,5 @@
 use crate::account::{AccountState, StateOption::PendingClaimAcquired, WalletAccount};
 use crate::arbiter::Arbiter;
-use crate::state::NetworkState;
 use crate::validator::ValidatorOptions;
 use crate::verifiable::Verifiable;
 use bytebuffer::ByteBuffer;
@@ -64,7 +63,6 @@ impl Claim {
         &mut self,
         acquirer: Arc<Mutex<WalletAccount>>,
         account_state: Arc<Mutex<AccountState>>,
-        network_state: Arc<Mutex<NetworkState>>,
     )
 
     {
@@ -83,7 +81,6 @@ impl Claim {
             );
 
             let signature = acquirer.lock().unwrap().sign(&payload).unwrap();
-            let claim_state = Arc::new(Mutex::new(account_state.lock().unwrap().claims.clone()));
 
             let claim = self
                 .update(
@@ -95,7 +92,6 @@ impl Claim {
                     Some(payload),
                     Some(time.as_nanos()),
                     Arc::clone(&account_state),
-                    Arc::clone(&network_state),
                 ).unwrap();
             
             if let Some(bal) = account_state.lock()
@@ -115,10 +111,6 @@ impl Claim {
             {
                 *bal += self.price as u128;
             };
-
-            let state_result = network_state.lock().unwrap().update(claim_state.lock().unwrap().clone(), "claim_state");
-            
-            if let Err(e) = state_result {println!("Error in updating network state: {:?}", e)}
 
             acquirer.lock().unwrap().claims.push(Some(claim));
 
@@ -175,7 +167,6 @@ impl Claim {
         claim_payload: Option<String>,
         acquisition_time: Option<u128>,
         account_state: Arc<Mutex<AccountState>>,
-        network_state: Arc<Mutex<NetworkState>>,
     ) -> Result<Self, Error> {
 
         let mut custodian_data = HashMap::new();
@@ -218,14 +209,7 @@ impl Claim {
             ..*self
         };
 
-        account_state.lock()
-            .unwrap()
-            .update(
-                PendingClaimAcquired(
-                    serde_json::to_string(&updated_claim)
-                        .unwrap()
-                ), network_state
-            );
+        account_state.lock().unwrap().update(PendingClaimAcquired(serde_json::to_string(&updated_claim).unwrap()));
 
         Ok(updated_claim)
     }
@@ -234,7 +218,6 @@ impl Claim {
         &mut self,
         wallet: Arc<Mutex<WalletAccount>>,
         account_state: Arc<Mutex<AccountState>>,
-        network_state: Arc<Mutex<NetworkState>>,
     ) {
         if self.available {
             let time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
@@ -262,7 +245,6 @@ impl Claim {
                     Some(payload),
                     Some(time.as_nanos()),
                     Arc::clone(&account_state),
-                    Arc::clone(&network_state),
                 )
                 .unwrap();
 

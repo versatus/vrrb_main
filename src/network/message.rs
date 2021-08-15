@@ -8,6 +8,7 @@ use libp2p::gossipsub::{
     GossipsubMessage, 
     IdentTopic as Topic,
 };
+use std::thread;
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -145,7 +146,7 @@ pub fn process_txn_message(data: Vec<u8>, node: Arc<Mutex<Node>>) {
         message_node.wallet.clone().lock().unwrap().pubkey.clone(),
         message_node.account_state.clone().lock().unwrap().clone()
     );
-    // UPDATE LOCAL Account State pending balances for sender(s)/
+    // UPDATE LOCAL Account State pending balances for sender(s)
     // receivers.
 
     drop(message_node);
@@ -164,7 +165,7 @@ pub fn process_claim_homesteading_message(data: Vec<u8>, node: Arc<Mutex<Node>>)
         let claim_validator = Validator::new(
             Message::ClaimHomesteaded(
                 serde_json::to_string(&claim).unwrap(), 
-                claim.current_owner.1.unwrap(), 
+                claim.current_owner.0.unwrap(), 
                 serde_json::to_string(&message_node.lock().unwrap().account_state.clone().lock().unwrap().clone()).unwrap()
             ), 
             message_node.lock().unwrap().wallet.clone().lock().unwrap().pubkey.clone(),
@@ -197,7 +198,7 @@ pub fn process_claim_sale_message(data: Vec<u8>, node: Arc<Mutex<Node>>) {
                             serde_json::to_string(&claim).unwrap(), 
                             pubkey.as_ref().unwrap().to_owned(), 
                             serde_json::to_string(&message_node.account_state.clone().lock().unwrap().clone()).unwrap(),
-                            claim.clone().current_owner.1.unwrap()
+                            claim.clone().current_owner.0.unwrap()
                         ), 
                         message_node.wallet.clone().lock().unwrap().pubkey.clone(), 
                         message_node.account_state.clone().lock().unwrap().clone()
@@ -257,7 +258,7 @@ pub fn process_claim_acquired_message(bytes: Vec<u8>, node: Arc<Mutex<Node>>) {
 pub fn process_new_block_message(data: Vec<u8>, node: Arc<Mutex<Node>>) {
     let message_node = Arc::clone(&node);
     let block = Block::from_bytes(&data);
-    
+
     if block.claim.claim_number < 1000 {
 
         let block_validator = Validator::new(
@@ -329,7 +330,6 @@ pub fn process_get_block_message(peer_id: String, node: Arc<Mutex<Node>>) {
 
 pub fn process_last_block_message(data: Vec<u8>, node: Arc<Mutex<Node>>) {
 
-
     let local_last_block_height = node.lock().unwrap().network_state.clone().lock().unwrap().state.get::<Block>("last_block").unwrap().block_height;
     let last_block = Block::from_bytes(&data);
 
@@ -397,28 +397,32 @@ pub fn process_all_blocks_message(data: Vec<u8>, node: Arc<Mutex<Node>>) {
 }
 
 pub fn process_txn_validator_message(data: Vec<u8>, node: Arc<Mutex<Node>>) {
-    let validator = Validator::from_bytes(&data);
-    match validator.message.clone() {
-        Message::Txn(txn, _) => {
-            let txn = serde_json::from_str::<Txn>(&txn).unwrap();
-            node.lock().unwrap().account_state.lock().unwrap().pending.get_mut(&txn.txn_id).unwrap().validators.push(validator);
+    let txn_validator_thread = thread::spawn(move || {
+        let validator = Validator::from_bytes(&data);
+        match validator.message.clone() {
+            Message::Txn(txn, _) => {
+                let txn = serde_json::from_str::<Txn>(&txn).unwrap();
+                node.lock().unwrap().account_state.lock().unwrap().pending.get_mut(&txn.txn_id).unwrap().validators.push(validator);
 
-            // If the transaction has been validated by more than the number of required validators, move from pending to mineable
-            if ((node.lock().unwrap().account_state.lock().unwrap()
-                            .pending.get(&txn.txn_id).unwrap()
-                            .validators.iter().filter(|v| v.valid).count() as f64 / 
-                node.lock().unwrap().account_state.lock().unwrap()
-                            .pending.get(&txn.txn_id)
-                            .unwrap().validators.len() as f64 
-                ) >= 2.0/3.0) && node.lock().unwrap().account_state.lock().unwrap().pending.get(&txn.txn_id).unwrap().validators.len() >= 10 {
-                    node.lock().unwrap().account_state.lock().unwrap().mineable.insert(txn.txn_id.clone(), txn.clone());
-                    node.lock().unwrap().account_state.lock().unwrap().pending.remove(&txn.txn_id);
-                }
-        },
-        _ => { 
-            // This is an invalid message type for this particular function
-        },
-    }
+                // If the transaction has been validated by more than the number of required validators, move from pending to mineable
+                if ((node.lock().unwrap().account_state.lock().unwrap()
+                                .pending.get(&txn.txn_id).unwrap()
+                                .validators.iter().filter(|v| v.valid).count() as f64 / 
+                    node.lock().unwrap().account_state.lock().unwrap()
+                                .pending.get(&txn.txn_id)
+                                .unwrap().validators.len() as f64 
+                    ) >= 2.0/3.0) && node.lock().unwrap().account_state.lock().unwrap().pending.get(&txn.txn_id).unwrap().validators.len() >= 10 {
+                        node.lock().unwrap().account_state.lock().unwrap().mineable.insert(txn.txn_id.clone(), txn.clone());
+                        node.lock().unwrap().account_state.lock().unwrap().pending.remove(&txn.txn_id);
+                    }
+            },
+            _ => { 
+                // This is an invalid message type for this particular function
+            },
+        }
+    });
+
+    txn_validator_thread.join().unwrap();  
 }
 
 pub fn process_invalid_block_message(node: Arc<Mutex<Node>>) {

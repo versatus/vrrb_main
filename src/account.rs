@@ -35,8 +35,8 @@ pub enum StateOption {
     PendingClaimAcquired(String),
     ConfirmedClaimAcquired(String),
     ConfirmedTxn(String, String),
-    ProposedBlock(String, String, String),
-    ConfirmedBlock(String, String, String),
+    ProposedBlock(String, String, String, String),
+    ConfirmedBlock(String, String, String, String),
 }
 
 /// The State of all accounts. This is used to track balances
@@ -111,7 +111,7 @@ impl AccountState {
     /// Update's the AccountState and NetworkState, takes a StateOption (for function routing)
     /// also requires the NetworkState to be provided in the function call.
     /// TODO: Provide Examples to Doc
-    pub fn update(&mut self, value: StateOption, network_state: Arc<Mutex<NetworkState>>) {
+    pub fn update(&mut self, value: StateOption) {
         match value {
             // If the StateOption variant passed to the update method is a NewAccount
             // set the new account information into the account state, return the account state
@@ -140,18 +140,6 @@ impl AccountState {
                 // The .update() method for the  network state sets a state object (struct)
                 // either account_state, claim_state or reward state) into the pickle db
                 // that represents the network state.
-                
-                if let Err(e) = network_state.lock().unwrap().update(self.clone().accounts_pk, "accounts") {
-                    println!("Error in updating network state: {:?}", e)
-                };
-                
-                if let Err(e) = network_state.lock().unwrap().update(self.clone().credits, "credits") {
-                    println!("Error in updating network state: {:?}", e)
-                }
-
-                if let Err(e) = network_state.lock().unwrap().update(self.clone().debits, "debits") {
-                    println!("Error in updating network state: {:?}", e)
-                }
             }
             // If the StateOption variant passed is a NewTxn process the txn and either return
             // an error if there's obvious validity issues or set it to pending txns to be
@@ -265,8 +253,9 @@ impl AccountState {
             // TODO: mined blocks need to be validated by the network before they're confirmed
             // If it has not yet been confirmed there should be a PendingMiner variant as well
             // as a ConfirmedMiner variant. The logic in this block would be for a ConfirmedMiner
-            StateOption::ProposedBlock(miner, block, reward_state) => {
+            StateOption::ProposedBlock(miner, block, reward_state, network_state) => {
                 let block = serde_json::from_str::<Block>(&block).unwrap();
+                let network_state = Arc::new(Mutex::new(serde_json::from_str::<NetworkState>(&network_state).unwrap()));
                 
                 // Confirm the block is valid and vote, if valid, and the network is in
                 // consensus, a new option will do everything below.
@@ -279,7 +268,7 @@ impl AccountState {
                         serde_json::to_string(&block).unwrap(), 
                         miner_pk.to_string(),
                         serde_json::to_string(&self.clone()).unwrap(),
-                        serde_json::to_string(&network_state.lock().unwrap().clone()).unwrap(),
+                        serde_json::to_string(&network_state.clone().lock().unwrap().clone()).unwrap(),
                         reward_state,
                     ))) {
                         Some(true) => {
@@ -295,7 +284,7 @@ impl AccountState {
                         }
                     }
             },
-            StateOption::ConfirmedBlock(_miner, _block, _reward_state) => {
+            StateOption::ConfirmedBlock(_miner, _block, _reward_state, _network_state) => {
                 // If the block has been confirmed by the network, and there is consensus
                 // around the state of the network at the given block.height
                 // confirm the network state by replacing it with the temporary network state
@@ -347,7 +336,6 @@ impl WalletAccount {
     /// Initiate a new wallet.
     pub fn new(
         account_state: Arc<Mutex<AccountState>>, // A new wallet must also receive the AccountState
-        network_state: Arc<Mutex<NetworkState>>, // The network state as well, as it needs to be updated
     ) -> WalletAccount {
         // Initialize a new Secp256k1 context
         let secp = Secp256k1::new();
@@ -391,8 +379,7 @@ impl WalletAccount {
         // and prevent his from being consumed.
         account_state.lock().unwrap().update(
             StateOption::NewAccount(serde_json::to_string(&wallet).unwrap()),
-            network_state,
-        );
+            );
         wallet
     }
     // Return the wallet and account state
@@ -470,13 +457,11 @@ impl WalletAccount {
     }
 
     pub fn send_txn(
-        &mut self, address_number: u32, account_state: Arc<Mutex<AccountState>>,
-        receiver: String, amount: u128, network_state: Arc<Mutex<NetworkState>>,
+        &mut self, address_number: u32, account_state: Arc<Mutex<AccountState>>, receiver: String, amount: u128
     ) -> Result<Txn, Error> {
         let txn = Txn::new(Arc::new(Mutex::new(self.clone())), self.addresses.get(&address_number).unwrap().clone(), receiver, amount);
         account_state.lock().unwrap().update(
             StateOption::NewTxn(serde_json::to_string(&txn).unwrap()),
-            network_state,
         );
         Ok(txn.clone())
     }

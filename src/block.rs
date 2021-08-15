@@ -151,9 +151,9 @@ impl Block {
         account_state.lock().unwrap().update(
             ProposedBlock(miner, 
                 serde_json::to_string(&genesis).unwrap(), 
-                serde_json::to_string(&reward_state.lock().unwrap().clone()).unwrap()
-            ), 
-            network_state);
+                serde_json::to_string(&reward_state.lock().unwrap().clone()).unwrap(),
+                serde_json::to_string(&network_state.lock().unwrap().clone()).unwrap(),
+            ));
 
         Ok(genesis)
     }

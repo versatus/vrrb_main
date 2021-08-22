@@ -190,7 +190,7 @@ impl NetworkState {
                 Err(_) => PickleDb::new(
                 path, 
                 PickleDbDumpPolicy::DumpUponRequest, 
-                SerializationMethod::Json)
+                SerializationMethod::Bin)
         };
         
         NetworkState {

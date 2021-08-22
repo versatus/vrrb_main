@@ -39,6 +39,7 @@ use std::{
 };
 use std::collections::{VecDeque, HashMap};
 use rand::{Rng};
+use serde::{Deserialize, Serialize};
 
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -64,6 +65,11 @@ pub enum VrrbObject {
     Validator(Validator),
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AccountPk {
+    pub addresses: HashMap<String, String>,
+}
+
 #[allow(dead_code)]
 pub struct Node {
     pub id: PeerId,
@@ -76,7 +82,6 @@ pub struct Node {
     pub last_block: Option<Block>,
     pub ballot_box: Arc<Mutex<BallotBox>>,
     pub temp_blocks: Option<HashMap<u128, Block>>,
-    pub cache_path: String,
     pub wallet: Arc<Mutex<WalletAccount>>,
 }
 
@@ -89,7 +94,6 @@ impl Node {
         account_state: Arc<Mutex<AccountState>>,
         network_state: Arc<Mutex<NetworkState>>,
         reward_state: Arc<Mutex<RewardState>>,
-        cache_path: String,
     ) -> Result<(), Box<dyn Error>> {
 
         Builder::from_env(Env::default().default_filter_or("info")).init();
@@ -166,7 +170,6 @@ impl Node {
             ballot_box,
             temp_blocks: None,
             command_queue: Arc::clone(&command_queue),
-            cache_path,
             account_state: Arc::clone(&account_state),
             network_state: Arc::clone(&network_state),
             reward_state: Arc::clone(&reward_state),
@@ -204,20 +207,23 @@ impl Node {
             }
         }
 
+        let atomic_message_queue = Arc::clone(&atomic_node.lock().unwrap().swarm.behaviour().queue);
+        let task_node = Arc::clone(&atomic_node);
+        thread::spawn(move || 
+            loop {
+                match atomic_message_queue.lock().unwrap().pop_front() {
+                    Some(message) => {
+                        let cloned_node = Arc::clone(&task_node);
+                        thread::spawn(move || {
+                            message::process_message(message, Arc::clone(&cloned_node));
+                        }).join().unwrap();
+                    },
+                    None => {},
+                }});
+
         let mut stdin = io::BufReader::new(io::stdin()).lines();
         
         task::block_on(future::poll_fn(move |cx: &mut Context<'_>| {
-            let atomic_message_queue = Arc::clone(&atomic_node.lock().unwrap().swarm.behaviour().queue);
-            let task_node = Arc::clone(&atomic_node);
-            thread::spawn(move || 
-                loop {
-                    match atomic_message_queue.lock().unwrap().pop_front() {
-                        Some(message) => {
-                            let cloned_node = Arc::clone(&task_node);
-                            message::process_message(message, cloned_node);
-                        },
-                        None => {},
-                }});
 
             let task_node = Arc::clone(&atomic_node);
             loop {
@@ -247,6 +253,21 @@ impl Node {
         }))
     }
 }
+
+impl AccountPk {
+    pub fn as_bytes(&self) -> Vec<u8> {
+        let as_string = serde_json::to_string(self).unwrap();
+        as_string.as_bytes().iter().copied().collect()
+    }
+
+    pub fn from_bytes(data: &[u8]) -> AccountState {
+        let mut buffer: Vec<u8> = vec![];
+        data.iter().for_each(|x| buffer.push(*x));
+        let to_string = String::from_utf8(buffer).unwrap();
+        serde_json::from_str::<AccountState>(&to_string).unwrap()
+    }
+}
+
 
 fn handle_input_line(node: Arc<Mutex<Node>>, line: String) {
     let args: Vec<&str> = line.split(' ').collect();
@@ -278,9 +299,31 @@ fn handle_input_line(node: Arc<Mutex<Node>>, line: String) {
                 }
             });
         },
+        "SENDADR" => {
+            let cloned_node = Arc::clone(&task_node);
+            share_addresses(cloned_node);
+        }
 
         _ => {}
     }
+}
+
+pub fn share_addresses(node: Arc<Mutex<Node>>) {
+    let header = "NEWADDR".to_string().as_bytes().to_vec();
+    let id = node.lock().unwrap().id.clone().to_string().as_bytes().to_vec();
+    let mut addr_pubkey = HashMap::new();
+    let wallet = node.lock().unwrap().wallet.lock().unwrap().clone();
+    let pubkey = wallet.pubkey.clone();
+    wallet.addresses.iter().for_each(|(_addr_num, addr)| {
+        addr_pubkey.insert(addr.clone(), pubkey.clone());
+    });
+    let accounts = AccountPk { addresses: addr_pubkey };
+
+    let accounts_bytes = accounts.as_bytes();
+
+    let message = message::structure_message(header, id, accounts_bytes);
+    message::publish_message(Arc::clone(&node), message, "test-net".to_string());
+
 }
 
 pub fn mine_block(node: Arc<Mutex<Node>>) {
@@ -300,117 +343,15 @@ pub fn mine_block(node: Arc<Mutex<Node>>) {
             let id = cloned_node.lock().unwrap().id.clone().to_string().as_bytes().to_vec();
             let message = message::structure_message(header, id, block.as_bytes());
 
-            cloned_node.lock().unwrap().last_block = Some(block.clone());
-            cloned_node.lock().unwrap().account_state.lock().unwrap().claims.extend(block.owned_claims.clone());
-            let block_archive = cloned_node.lock().unwrap()
-                .network_state.lock().unwrap()
-                .state.get::<HashMap<u128, Block>>("blockarchive").clone();
-
-            if let Some(mut map) = block_archive {
-                map.insert(block.block_height.clone(), block.clone());
-                if let Ok(_) = cloned_node.lock().unwrap().network_state.lock().unwrap().state.set("blockarchive", &map) {
-                    println!("Successfully set block archive to network state");
-                }
-            } else {
-                let mut map: HashMap<u128, Block> = HashMap::new();
-                map.insert(block.block_height.clone(), block.clone());
-                if let Ok(_) = cloned_node.lock().unwrap().network_state.lock().unwrap().state.set("blockarchive", &map) {
-                    println!("Successfully set block to blockarchive");
-                }
-            }
-
-            let claims = cloned_node.lock().unwrap().network_state.lock().unwrap().state.get::<HashMap<u128, Claim>>("claims").clone();
-            if let Some(mut map) = claims {
-                
-                map.extend(block.owned_claims.clone());
-                
-                if let Ok(_) = cloned_node.lock().unwrap().network_state.lock().unwrap().state.set("claims", &map) {
-                    println!("Successfully set new claims to network state");
-                }
-
-            } else {
-                let map = block.owned_claims.clone();
-                if let Ok(_) = cloned_node.lock().unwrap().network_state.lock().unwrap().state.set("claims", &map) {
-                    println!("Successfully set claims to network state");
-                }
-            }
-
-            let credits = cloned_node.lock().unwrap()
-                .network_state.lock().unwrap()
-                .state.get::<HashMap<String, u128>>("credits").clone();
-
-            let debits = cloned_node.lock().unwrap()
-                .network_state.lock().unwrap()
-                .state.get::<HashMap<String, u128>>("debits").clone();
-
-            if let (Some(mut creditmap), Some(mut debitmap)) = (credits, debits) {
-                block.data.iter().for_each(|(_txn_id, txn)| {
-                    if let Some(entry) = creditmap.get_mut(&txn.receiver_address) {
-                        *entry += txn.txn_amount;
-                    } else {
-                        creditmap.insert(txn.receiver_address.clone(), txn.txn_amount.clone());
-                    }
-                    if let Some(entry) = debitmap.get_mut(&txn.sender_address) {
-                        *entry += txn.txn_amount;
-                    } else {
-                        debitmap.insert(txn.sender_address.clone(), txn.txn_amount.clone());
-                    }
-                });
-
-                if let Some(entry) = creditmap.get_mut(&block.miner) {
-                    *entry += block.block_reward.amount;
-                } else {
-                    creditmap.insert(block.miner.clone(), block.block_reward.amount.clone());
-                }
-
-                if let Ok(_) = cloned_node.lock().unwrap().network_state.lock().unwrap().state.set("credits", &creditmap) {
-                    println!("Successfully set credits to network state");
-                }
-
-                if let Ok(_) = cloned_node.lock().unwrap().network_state.lock().unwrap().state.set("debits", &debitmap) {
-                    println!("Successfully set debits to network state");
-                }
-
-                
-            } else {
-                let mut creditmap: HashMap<String, u128> = HashMap::new();
-                let mut debitmap: HashMap<String, u128> = HashMap::new();
-
-                block.data.iter().for_each(|(_txn_id, txn)| {
-                    creditmap.insert(txn.receiver_address.clone(), txn.txn_amount);
-                    debitmap.insert(txn.sender_address.clone(), txn.txn_amount);
-                });
-
-                creditmap.insert(block.miner.clone(), block.block_reward.amount);
-
-                if let Ok(_) = cloned_node.lock().unwrap().network_state.lock().unwrap().state.set("credits", &creditmap) {
-                    println!("Successfully set credits to network state");
-                }
-
-                if let Ok(_) = cloned_node.lock().unwrap().network_state.lock().unwrap().state.set("debits", &debitmap) {
-                    println!("Successfully set debits to network state");
-                }
-            }
-
-            if let Ok(_) = cloned_node.lock().unwrap().network_state.lock().unwrap().state.set("lastblock", &block) {
-                println!("Successfully set last block to network state");
-            }
-
-            let reward_state = Arc::clone(&reward_state);
-            let mut reward_state = reward_state.lock().unwrap().clone();
-            reward_state.update(block.block_reward.category);
-
-            if let Ok(_) = cloned_node.lock().unwrap().network_state.lock().unwrap().state.set("rewardstate", &reward_state) {
-                println!("Successfully set reward_state to network state");
-            }
+            update_last_block(Arc::clone(&cloned_node), &block);
+            update_block_archive(Arc::clone(&cloned_node), &block);
+            update_claims(Arc::clone(&cloned_node), &block);
+            update_credits_and_debits(Arc::clone(&cloned_node), &block);
+            update_reward_state(Arc::clone(&cloned_node), &block);
 
             if let Err(e) = cloned_node.lock().unwrap().network_state.lock().unwrap().state.dump() {
-                println!("Erorr dumping state to file.")
-            };
-
-            cloned_node.lock().unwrap().account_state.lock().unwrap().claims.extend(block.owned_claims.clone());
-
-            println!("Set claims to local account state");
+                println!("Error dumping update to network state: {:?}", e);
+            }
 
             if let Err(e) = cloned_node.lock().unwrap().swarm.behaviour_mut().gossipsub.publish(Topic::new("test-net"), message) {
                 println!("Error sending message to network: {:?}", e);
@@ -438,17 +379,19 @@ pub fn mine_block(node: Arc<Mutex<Node>>) {
                 Arc::clone(&miner)
             );
             if let Some(Ok(block)) = block {
-
-
-
                 let header = "NEW_BLK".to_string().as_bytes().to_vec();
                 let id = cloned_node.lock().unwrap().id.clone().to_string().as_bytes().to_vec();
-                let message = message::structure_message(header, id, block.as_bytes());                
-                cloned_node.lock().unwrap().last_block = Some(block);
-                if let Err(e) = cloned_node.lock().unwrap().swarm.behaviour_mut().gossipsub.publish(Topic::new("test-net"), message) {
-                    println!("Error publishing message: {:?}", e);
-                }
+                let message = message::structure_message(header, id, block.as_bytes());
 
+                update_last_block(Arc::clone(&cloned_node), &block);
+                update_block_archive(Arc::clone(&cloned_node), &block);
+                update_claims(Arc::clone(&cloned_node), &block);
+                update_credits_and_debits(Arc::clone(&cloned_node), &block);
+                update_reward_state(Arc::clone(&cloned_node), &block);
+
+                if let Err(e) = cloned_node.lock().unwrap().swarm.behaviour_mut().gossipsub.publish(Topic::new("test-net"), message) {
+                    println!("Error sending message to network: {:?}", e);
+                }
             }
         } else {
             println!("No claims to mine");
@@ -456,26 +399,121 @@ pub fn mine_block(node: Arc<Mutex<Node>>) {
     }
 }
 
-pub fn update_last_block(node: Arc<Mutex<Node>>, block: Block) {
+pub fn update_last_block(node: Arc<Mutex<Node>>, block: &Block) {
     node.lock().unwrap().last_block = Some(block.clone());
+    if let Ok(_) = node.lock().unwrap().network_state.lock().unwrap().state.set("lastblock", &block) {
+        println!("Successfully set last block to network state");
+    }
 }
 
-pub fn update_block_archive(node: Arc<Mutex<Node>>) {
+pub fn update_block_archive(node: Arc<Mutex<Node>>, block: &Block) {
+
+    let block_archive = node.lock().unwrap()
+                .network_state.lock().unwrap()
+                .state.get::<HashMap<u128, Block>>("blockarchive").clone();
+
+    if let Some(mut map) = block_archive {
+        map.insert(block.block_height.clone(), block.clone());
+        if let Ok(_) = node.lock().unwrap().network_state.lock().unwrap().state.set("blockarchive", &map) {
+            println!("Successfully set block archive to network state");
+        }
+    } else {
+        let mut map: HashMap<u128, Block> = HashMap::new();
+        map.insert(block.block_height.clone(), block.clone());
+        if let Ok(_) = node.lock().unwrap().network_state.lock().unwrap().state.set("blockarchive", &map) {
+            println!("Successfully set block to blockarchive");
+        }
+    }
 
 }
 
-pub fn update_claims(node: Arc<Mutex<Node>>) {
+pub fn update_claims(node: Arc<Mutex<Node>>, block: &Block) {
+    node.lock().unwrap().account_state.lock().unwrap().claims.extend(block.owned_claims.clone());
+    let claims = node.lock().unwrap().network_state.lock().unwrap().state.get::<HashMap<u128, Claim>>("claims").clone();
+    if let Some(mut map) = claims {
+        
+        map.extend(block.owned_claims.clone());
+        
+        if let Ok(_) = node.lock().unwrap().network_state.lock().unwrap().state.set("claims", &map) {
+            println!("Successfully set new claims to network state");
+        }
+
+    } else {
+        let map = block.owned_claims.clone();
+        if let Ok(_) = node.lock().unwrap().network_state.lock().unwrap().state.set("claims", &map) {
+            println!("Successfully set claims to network state");
+        }
+    }
+}
+
+pub fn update_credits_and_debits(node: Arc<Mutex<Node>>, block: &Block) {
+    let credits = node.lock().unwrap()
+                .network_state.lock().unwrap()
+                .state.get::<HashMap<String, u128>>("credits").clone();
+
+    let debits = node.lock().unwrap()
+        .network_state.lock().unwrap()
+        .state.get::<HashMap<String, u128>>("debits").clone();
+
+    if let (Some(mut creditmap), Some(mut debitmap)) = (credits, debits) {
+        block.data.iter().for_each(|(_txn_id, txn)| {
+            if let Some(entry) = creditmap.get_mut(&txn.receiver_address) {
+                *entry += txn.txn_amount;
+            } else {
+                creditmap.insert(txn.receiver_address.clone(), txn.txn_amount.clone());
+            }
+            if let Some(entry) = debitmap.get_mut(&txn.sender_address) {
+                *entry += txn.txn_amount;
+            } else {
+                debitmap.insert(txn.sender_address.clone(), txn.txn_amount.clone());
+            }
+        });
+
+        if let Some(entry) = creditmap.get_mut(&block.miner) {
+            *entry += block.block_reward.amount;
+        } else {
+            creditmap.insert(block.miner.clone(), block.block_reward.amount.clone());
+        }
+
+        if let Ok(_) = node.lock().unwrap().network_state.lock().unwrap().state.set("credits", &creditmap) {
+            println!("Successfully set credits to network state");
+        }
+
+        if let Ok(_) = node.lock().unwrap().network_state.lock().unwrap().state.set("debits", &debitmap) {
+            println!("Successfully set debits to network state");
+        }
+
+        
+    } else {
+        let mut creditmap: HashMap<String, u128> = HashMap::new();
+        let mut debitmap: HashMap<String, u128> = HashMap::new();
+
+        block.data.iter().for_each(|(_txn_id, txn)| {
+            creditmap.insert(txn.receiver_address.clone(), txn.txn_amount);
+            debitmap.insert(txn.sender_address.clone(), txn.txn_amount);
+        });
+
+        creditmap.insert(block.miner.clone(), block.block_reward.amount);
+
+        if let Ok(_) = node.lock().unwrap().network_state.lock().unwrap().state.set("credits", &creditmap) {
+            println!("Successfully set credits to network state");
+        }
+
+        if let Ok(_) = node.lock().unwrap().network_state.lock().unwrap().state.set("debits", &debitmap) {
+            println!("Successfully set debits to network state");
+        }
+    }
 
 }
 
-pub fn update_credits(node: Arc<Mutex<Node>>) {
+pub fn update_reward_state(node: Arc<Mutex<Node>>, block: &Block) {
 
-}
+    let reward_state = Arc::clone(&node.lock().unwrap().reward_state);
+    let mut reward_state = reward_state.lock().unwrap().clone();
+    reward_state.update(block.clone().block_reward.category);
 
-pub fn update_debits(node: Arc<Mutex<Node>>) {
-
-}
-
-pub fn update_reward_state(node: Arc<Mutex<Node>>) {
+    if let Ok(_) = node.lock().unwrap().network_state.lock().unwrap().state.set("rewardstate", &reward_state) {
+        println!("Successfully set reward_state to network state");
+    }
 
 }

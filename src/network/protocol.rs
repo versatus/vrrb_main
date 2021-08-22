@@ -37,6 +37,7 @@ use libp2p::{
     PeerId, 
     Transport,
 };
+use crate::network::message::structure_message;
 use std::io::Error;
 use std::time::Duration;
 use std::collections::VecDeque;
@@ -89,12 +90,6 @@ impl NetworkBehaviourEventProcess<GossipsubEvent> for VrrbNetworkBehavior {
                 message_id: _id,
                 message
             } => {
-
-                // let _header = &String::from_utf8_lossy(&message.data)[0..7];
-                // let _data = &String::from_utf8_lossy(&message.data)[9..];
-                //TODO: Push all message information instead of just the message itself
-                //TODO: Convert the message to a mutable byte array since byte array's implement copy
-                // and can be dereferenced and changed.
                 self.queue.lock().unwrap().push_back(message)
             },
             _ => {}

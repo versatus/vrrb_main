@@ -1,17 +1,7 @@
 use crate::validator::{Validator, ValidatorOptions};
-use bytebuffer::ByteBuffer;
-use secp256k1::Error;
-use secp256k1::{
-    key::{PublicKey, SecretKey},
-    Signature,
-};
-use secp256k1::{Message, Secp256k1};
+use crate::wallet::{WalletAccount};
 use serde::{Deserialize, Serialize};
-use sha256::digest_bytes;
 use std::collections::HashMap;
-use std::fmt;
-use std::str::FromStr;
-use uuid::Uuid;
 // use crate::validator::Validator;
 use crate::{block::Block, claim::Claim, state::NetworkState, txn::Txn, verifiable::Verifiable};
 use std::sync::{Arc, Mutex};
@@ -37,6 +27,7 @@ pub enum StateOption {
     ConfirmedTxn(String, String),
     ProposedBlock(String, String, String, String),
     ConfirmedBlock(String, String, String, String),
+    GenesisBlock(String, String, String, String)
 }
 
 /// The State of all accounts. This is used to track balances
@@ -55,28 +46,10 @@ pub struct AccountState {
     pub balances: HashMap<String, HashMap<String, u128>>, // K: address, V: Hashmap { K: ticker, V: amount }
     pub pending_balances: HashMap<String, HashMap<String, u128>>, // K: address, V: Hashmap { K: ticker, V: amount }
     pub claims: HashMap<u128, Claim>, // K: claim_number, V: claim
-    pub pending_owned_claims: HashMap<u128, String>, // K: claim_number, V: pubkey
-    pub owned_claims: HashMap<u128, String>, // K: claim_number, V: pubkey
-    pub staked_claims: HashMap<u128, String>, // K: claim_number, V: pubkey
+    pub pending_claim_sales: HashMap<u128, String>, // K: claim_number, V: pubkey
     pub pending: HashMap<String, Txn>, // K: txn_id, V: Txn 
     pub mineable: HashMap<String, Txn>, // K: txn_id, V: Txn
     pub last_block: Option<Block>,
-}
-
-/// The WalletAccount struct is the user/node wallet in which coins, tokens and contracts
-/// are held. The WalletAccount has a private/public keypair
-/// phrase are used to restore the Wallet. The private key is
-/// also used to sign transactions, claims and mined blocks for network validation.
-/// Private key signatures can be verified with the wallet's public key, the message that was
-/// signed and the signature.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct WalletAccount {
-    secretkey: String,
-    pub pubkey: String,
-    pub addresses: HashMap<u32, String>,
-    pub total_balances: HashMap<String, HashMap<String, u128>>,
-    pub available_balances: HashMap<String, HashMap<String, u128>>,
-    pub claims: Vec<Option<Claim>>,
 }
 
 /// The state of all accounts in the network. This is one of the 3 core state objects
@@ -99,9 +72,7 @@ impl AccountState {
             balances: HashMap::new(),
             pending_balances: HashMap::new(),
             claims: HashMap::new(),
-            pending_owned_claims: HashMap::new(),
-            owned_claims: HashMap::new(),
-            staked_claims: HashMap::new(),
+            pending_claim_sales: HashMap::new(),
             pending: HashMap::new(),
             mineable: HashMap::new(),
             last_block: None,
@@ -242,9 +213,15 @@ impl AccountState {
                 // TODO: break down PendingClaimAcquired and ConfirmedClaimAcquired as claim acquisition
                 // has to be validated before it can be set into the account_state's claim_state.
                 let claim = serde_json::from_str::<Claim>(&claim).unwrap();
-                self.pending_owned_claims.insert(claim.claim_number, claim.current_owner.0.unwrap());
+                self.pending_claim_sales.insert(claim.claim_number, claim.current_owner.unwrap());
             },
             StateOption::ConfirmedClaimAcquired(_claim) => {
+
+            },
+
+            StateOption::GenesisBlock(_miner, block, _reward_state, _network_state) => {
+                let _block = serde_json::from_str::<Block>(&block).unwrap();
+
 
             },
 
@@ -259,14 +236,12 @@ impl AccountState {
                 
                 // Confirm the block is valid and vote, if valid, and the network is in
                 // consensus, a new option will do everything below.
-
-                let miner_pk = self.accounts_pk.get(&miner).unwrap();
                 
                 match block.is_valid(
                     Some(ValidatorOptions::NewBlock(
                         serde_json::to_string(&self.last_block.clone().unwrap()).unwrap(), 
                         serde_json::to_string(&block).unwrap(), 
-                        miner_pk.to_string(),
+                        miner.to_string(),
                         serde_json::to_string(&self.clone()).unwrap(),
                         serde_json::to_string(&network_state.clone().lock().unwrap().clone()).unwrap(),
                         reward_state,
@@ -332,184 +307,6 @@ impl AccountState {
     }
 }
 
-impl WalletAccount {
-    /// Initiate a new wallet.
-    pub fn new(
-        account_state: Arc<Mutex<AccountState>>, // A new wallet must also receive the AccountState
-    ) -> WalletAccount {
-        // Initialize a new Secp256k1 context
-        let secp = Secp256k1::new();
-
-        // Generate a random number used to seed the new keypair for the wallet
-        // TODO: Instead of using the rng, use a mnemonic seed.
-        let mut rng = rand::thread_rng();
-        // Generate a new secret/public key pair using the random seed.
-        let (secret_key, public_key) = secp.generate_keypair(&mut rng);
-        // Generate 100 addresses by hashing a universally unique IDs + secret_key + public_key
-        let uid_address = digest_bytes(Uuid::new_v4().to_string().as_bytes());
-        // add the testnet prefix to the wallet address (TODO: add handling of testnet/mainnet)
-        let mut address_prefix: String = "0x192".to_string();
-        // push the hashed uuid string to the end of the address prefix
-        address_prefix.push_str(&uid_address);
-
-        // Print the private key string so that the user can save it.
-        // TODO: require a confirmation the private key being saved by the user
-        println!("DO NOT SHARE OR LOSE YOUR PRIVATE KEY:");
-        println!("{:?}\n", &secret_key.to_string());
-        let mut addresses = HashMap::new();
-        addresses.insert(1, address_prefix.clone());
-
-        let mut total_balances = HashMap::new();
-        let mut vrrb_balances = HashMap::new();
-        vrrb_balances.insert("VRRB".to_string(), STARTING_BALANCE);
-        total_balances.insert(address_prefix.clone(), vrrb_balances);
-
-        // Generate a wallet struct by assigning the variables to the fields.
-        let wallet = Self {
-            secretkey: secret_key.to_string(),
-            pubkey: public_key.to_string(),
-            addresses,
-            total_balances: total_balances.clone(),
-            available_balances: total_balances,
-            claims: vec![],
-        };
-        // Update the account state and save it to a variable to return
-        // this is required because this function consumes the account_state
-        // TODO: Use Atomic Reference Counter for shared state concurrency
-        // and prevent his from being consumed.
-        account_state.lock().unwrap().update(
-            StateOption::NewAccount(serde_json::to_string(&wallet).unwrap()),
-            );
-        wallet
-    }
-    // Return the wallet and account state
-    // TODO: Return a Result for error propagation and handling.
-
-    // method for restoring a wallet from the private key
-    // pub fn restore_from_private_key(
-    //     private_key: String,
-    //     account_state: AccountState,
-    // ) -> WalletAccount {
-    // }
-
-    /// Sign a message (transaction, claim, block, etc.)
-    pub fn sign(&self, message: &str) -> Result<Signature, Error> {
-        let message_bytes = message.as_bytes().to_owned();
-        let mut buffer = ByteBuffer::new();
-        buffer.write_bytes(&message_bytes);
-        while buffer.len() < 32 {
-            buffer.write_u8(0);
-        }
-
-        let new_message = buffer.to_bytes();
-        let message_hash = blake3::hash(&new_message);
-        let message_hash = Message::from_slice(message_hash.as_bytes())?;
-        let secp = Secp256k1::new();
-        let sk = SecretKey::from_str(&self.secretkey).unwrap();
-        let sig = secp.sign(&message_hash, &sk);
-        Ok(sig)
-    }
-
-    /// Verify a signature with the signers public key, the message payload and the signature.
-    pub fn verify(message: String, signature: Signature, pk: PublicKey) -> Result<bool, Error> {
-        let message_bytes = message.as_bytes().to_owned();
-
-        let mut buffer = ByteBuffer::new();
-        buffer.write_bytes(&message_bytes);
-        while buffer.len() < 32 {
-            buffer.write_u8(0);
-        }
-        let new_message = buffer.to_bytes();
-        let message_hash = blake3::hash(&new_message);
-        let message_hash = Message::from_slice(message_hash.as_bytes())?;
-        let secp = Secp256k1::new();
-        let valid = secp.verify(&message_hash, &signature, &pk);
-
-        match valid {
-            Ok(()) => Ok(true),
-            _ => Err(Error::IncorrectSignature),
-        }
-    }
-
-    /// get the current available and total balance of the current WalletAccount
-    /// using the .get() method on the account state .total_coin_balances HashMap and
-    /// the .available_coin_balances HashMap. The key for both is the WalletAccount's public key.
-    /// TODO: Add signature verification to this method to ensure that the wallet requesting the
-    /// balance update is the correct wallet.
-    pub fn get_balance(&mut self, account_state: AccountState) {
-        self.addresses.clone()
-            .iter()
-            .map(|x| x)
-            .for_each(|(_i, x)| {
-            self.total_balances
-                .insert(x.clone(), account_state.balances.get(x).unwrap().clone());
-            self.available_balances
-                .insert(x.clone(), account_state.pending_balances.clone().get(x).unwrap().clone());
-            });
-    }
-
-    pub fn remove_mined_claims(&mut self, block: &Block) -> Self {
-        self.claims
-            .iter()
-            .position(|x| x.clone().unwrap() == block.clone().claim)
-            .map(|e| self.claims.remove(e));
-        self.clone()
-    }
-
-    pub fn send_txn(
-        &mut self, address_number: u32, account_state: Arc<Mutex<AccountState>>, receiver: String, amount: u128
-    ) -> Result<Txn, Error> {
-        let txn = Txn::new(Arc::new(Mutex::new(self.clone())), self.addresses.get(&address_number).unwrap().clone(), receiver, amount);
-        account_state.lock().unwrap().update(
-            StateOption::NewTxn(serde_json::to_string(&txn).unwrap()),
-        );
-        Ok(txn.clone())
-    }
-
-    pub fn sell_claim(
-        &mut self, maturity_timestamp: u128, account_state: &mut AccountState, price: u32
-    ) -> Option<(Claim, AccountState)> 
-    {
-        let claim_to_sell = self.claims[self.claims.iter().position(|x| {
-                x.clone().unwrap().maturation_time == maturity_timestamp
-            }).unwrap()].clone();
-
-        match claim_to_sell {
-            Some(mut claim) => {
-                claim.available = true;
-                claim.price = price;
-                // TODO: Add account state option to Update claim when claim goes up for sale.
-                account_state
-                    .owned_claims
-                    .insert(claim.clone().claim_number, claim.clone().current_owner.0.unwrap());
-
-                Some((claim, account_state.clone()))
-            }
-            None => None,
-        }
-    }
-
-    pub fn generate_new_address(&mut self) {
-        let uid = Uuid::new_v4().to_string();
-        let address_number: u32 = self.addresses.len() as u32 + 1u32;
-        let payload = format!("{},{},{}", &address_number, &uid, &self.pubkey);
-        let address = digest_bytes(payload.as_bytes());
-        self.addresses.insert(address_number, address);
-    }
-
-    pub fn as_bytes(&self) -> Vec<u8> {
-        let as_string = serde_json::to_string(self).unwrap();
-        as_string.as_bytes().iter().copied().collect()
-    }
-
-    pub fn from_bytes(data: &[u8]) -> WalletAccount {
-        let mut buffer: Vec<u8> = vec![];
-        data.iter().for_each(|x| buffer.push(*x));
-        let to_string = String::from_utf8(buffer).unwrap();
-        serde_json::from_str::<WalletAccount>(&to_string).unwrap()
-    }
-}
-
 impl StateOption {
     pub fn as_bytes(&self) -> Vec<u8> {
         let as_string = serde_json::to_string(self).unwrap();
@@ -524,37 +321,6 @@ impl StateOption {
     }
 }
 
-impl fmt::Display for WalletAccount {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-
-        write!(
-            f,
-            "Wallet(\n \
-            address: {:?},\n \
-            balances: {:?},\n \
-            available_balance: {:?},\n \
-            claims_owned: {}",
-            self.addresses,
-            self.total_balances,
-            self.available_balances,
-            self.claims.len()
-        )
-    }
-}
-
-impl Clone for WalletAccount {
-    fn clone(&self) -> WalletAccount {
-        WalletAccount {
-            secretkey: self.secretkey.clone(),
-            pubkey: self.pubkey.clone(),
-            addresses: self.addresses.clone(),
-            total_balances: self.total_balances.clone(),
-            available_balances: self.available_balances.clone(),
-            claims: self.claims.clone(),
-        }
-    }
-}
-
 impl Clone for AccountState {
     fn clone(&self) -> Self {
         AccountState {
@@ -566,9 +332,7 @@ impl Clone for AccountState {
             balances: self.balances.clone(),
             pending_balances: self.pending_balances.clone(),
             claims: self.claims.clone(),
-            pending_owned_claims: self.pending_owned_claims.clone(),
-            owned_claims: self.owned_claims.clone(),
-            staked_claims: self.staked_claims.clone(),
+            pending_claim_sales: self.pending_claim_sales.clone(),
             pending: self.pending.clone(),
             mineable: self.mineable.clone(),
             last_block: self.last_block.clone(),

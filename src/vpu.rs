@@ -138,9 +138,7 @@ impl ValidatorProcessor {
     pub fn slash_claims(&mut self, account_state: &mut AccountState) {
         
         self.slashed.iter().for_each(|slash| {
-            account_state.claims.retain(|_k, v| v.current_owner.clone().0.unwrap() != *slash);
-            account_state.staked_claims.retain(|_k, v| *v != *slash);
-            account_state.owned_claims.retain(|_k, v| *v != *slash);
+            account_state.claims.retain(|_k, v| v.current_owner.clone().unwrap() != *slash);
         });
     }
 }

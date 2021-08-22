@@ -1,17 +1,18 @@
 pub mod account;
-pub mod claim;
+pub mod allocator;
+pub mod arbiter;
 pub mod block;
-pub mod txn;
+pub mod claim;
+pub mod mpu;
+pub mod network;
 pub mod reward;
-pub mod utils;
 pub mod state;
+pub mod txn;
+pub mod utils;
 pub mod validator;
 pub mod verifiable;
-pub mod arbiter;
-pub mod mpu;
 pub mod vpu;
-pub mod network;
-
+pub mod wallet;
 
 // #[cfg(test)]
 // mod tests {

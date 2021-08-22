@@ -62,7 +62,6 @@ impl NetworkBehaviourEventProcess<IdentifyEvent> for VrrbNetworkBehavior {
             } => {
                 // If a new peer is received add them to the DHT and ??send Identity back??
                 // Bootstrap the new node.
-                println!("Received Identity of Peer: {:?} -> Info: {:?}", &peer_id, &info);
                 // Add listening addresses to the routing table -> Local Addresses will be
                 // excluded in the future, as the listening address must be external so that
                 // peers will only have a single address.
@@ -71,24 +70,13 @@ impl NetworkBehaviourEventProcess<IdentifyEvent> for VrrbNetworkBehavior {
                 }
                 self.kademlia.bootstrap().unwrap();
             },
-            IdentifyEvent::Sent {
-                peer_id
-            } => {
-                println!("Sent Identify info: {:?}", peer_id);
-                // Nothing more to do if identity info is sent.
-            },
-            IdentifyEvent::Pushed {
-                peer_id
-            } => {
-                println!("Pushed Peer info: {:?}", peer_id);
-                // Nothing more to do if peer info is pushed.
-            },
             IdentifyEvent::Error {
                 peer_id,
                 error,
             } => {
                 println!("Encountered an error: {:?} -> {:?}", error, peer_id);
-            }
+            },
+            _ => {}
         }
     }
 }
@@ -102,24 +90,14 @@ impl NetworkBehaviourEventProcess<GossipsubEvent> for VrrbNetworkBehavior {
                 message
             } => {
 
-                let _header = &String::from_utf8_lossy(&message.data)[0..7];
-                let _data = &String::from_utf8_lossy(&message.data)[9..];
+                // let _header = &String::from_utf8_lossy(&message.data)[0..7];
+                // let _data = &String::from_utf8_lossy(&message.data)[9..];
                 //TODO: Push all message information instead of just the message itself
                 //TODO: Convert the message to a mutable byte array since byte array's implement copy
                 // and can be dereferenced and changed.
                 self.queue.lock().unwrap().push_back(message)
             },
-            GossipsubEvent::Subscribed {
-                peer_id, topic
-            } => {
-                println!("Peer subscribed: {:?} to topic: {:?}", peer_id, topic);
-            
-            },
-            GossipsubEvent::Unsubscribed {
-                peer_id, topic
-            } => {
-                println!("Peer unsubscribed: {:?} from topic: {:?}", peer_id, topic);
-            },
+            _ => {}
         }
     }
 }
@@ -155,20 +133,17 @@ impl NetworkBehaviourEventProcess<PingEvent> for VrrbNetworkBehavior {
 impl NetworkBehaviourEventProcess<KademliaEvent> for VrrbNetworkBehavior {
     fn inject_event(&mut self, message: KademliaEvent) {
         match message {
-            KademliaEvent::QueryResult { id, result, stats } => {
-                println!("Received query result:\n id: {:?} \n result: {:?}, stats: {:?}", &id, &result, &stats);
+            KademliaEvent::QueryResult { result, .. } => {
                 match result {
                     QueryResult::Bootstrap(Ok(ok)) => {
-                        println!("Peer: {:?} bootstrapped. Num remaining: {:?}", ok.peer, ok.num_remaining);
                         self.kademlia.get_closest_peers(ok.peer);
+
                     },
                     QueryResult::Bootstrap(Err(err)) => {
                         println!("Encountered an error while trying to bootstrap peer: {:?}", err);
                     },
-                    QueryResult::GetClosestPeers(Ok(ok)) => {
-                        for (idx, peer) in ok.peers.iter().enumerate() {
-                            println!("Next closest peer: {:?} -> {:?}", ok.key[idx], peer);
-                        }
+                    QueryResult::GetClosestPeers(Ok(_)) => {
+
                     },
                     QueryResult::GetClosestPeers(Err(err)) => {
                         println!("Encountered an error while trying to get closest peers: {:?}", err);
@@ -215,32 +190,33 @@ impl NetworkBehaviourEventProcess<KademliaEvent> for VrrbNetworkBehavior {
                     }
                 }
             }, 
+            _ => {}
+            // TODO: add the below features
+            // KademliaEvent::RoutingUpdated { peer, addresses, old_peer } => {
+            //     println!("Peer Routing has updated: {:?} now at -> Peer Id: {:?} -> Address: {:?}",
+            //         old_peer, peer, addresses);
+            //     // Dial the listening address to connect.
+            // },
+            // KademliaEvent::UnroutablePeer { peer } => {
+            //     println!("Peer {:?} is unroutable", peer);
+            //     // If the peer is unroutable request the listening address and
+            //     // add it to the routing table.
+            // },
+            // KademliaEvent::RoutablePeer { peer, address } => {
+            //     println!("Peer ID {:?} -> Address: {:?}", peer, address);
+            //     // If the peer is routable but not added to the routing table
+            //     // because the table is full, it's insertion into the routing table
+            //     // should be pending the least recently disconnected peer or should be
+            //     // added to the table.
+            //     // If the peer is to be unconditionally added to the routing table, then the
+            //     // peer can be added using the add_address() method.
+            // },
+            // KademliaEvent::PendingRoutablePeer { peer, address } => {
+            //     println!("Pending routability of peer: {:?} -> Address: {:?}", peer, address)
+            //     // If the peer is to be unconditionally added to the routing table, then the
+            //     // peer can be added using add_address() method
 
-            KademliaEvent::RoutingUpdated { peer, addresses, old_peer } => {
-                println!("Peer Routing has updated: {:?} now at -> Peer Id: {:?} -> Address: {:?}",
-                    old_peer, peer, addresses);
-                // Dial the listening address to connect.
-            },
-            KademliaEvent::UnroutablePeer { peer } => {
-                println!("Peer {:?} is unroutable", peer);
-                // If the peer is unroutable request the listening address and
-                // add it to the routing table.
-            },
-            KademliaEvent::RoutablePeer { peer, address } => {
-                println!("Peer ID {:?} -> Address: {:?}", peer, address);
-                // If the peer is routable but not added to the routing table
-                // because the table is full, it's insertion into the routing table
-                // should be pending the least recently disconnected peer or should be
-                // added to the table.
-                // If the peer is to be unconditionally added to the routing table, then the
-                // peer can be added using the add_address() method.
-            },
-            KademliaEvent::PendingRoutablePeer { peer, address } => {
-                println!("Pending routability of peer: {:?} -> Address: {:?}", peer, address)
-                // If the peer is to be unconditionally added to the routing table, then the
-                // peer can be added using add_address() method
-
-            },
+            // },
         }
     }
 }

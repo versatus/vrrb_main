@@ -2,7 +2,7 @@ use rand::{Rng, distributions::{Distribution, WeightedIndex}, thread_rng};
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 use std::sync::{Arc, Mutex};
-use crate::{state::NetworkState, utils::decay_calculator};
+use crate::utils::decay_calculator;
 
 // Generate a random variable reward to include in new blocks
 pub const TOTAL_NUGGETS: u128 = 80000000;
@@ -51,16 +51,16 @@ pub struct Reward {
 }
 
 impl RewardState {
-    pub fn start(network_state: Arc<Mutex<NetworkState>>) -> RewardState {
+    pub fn start() -> RewardState {
         let n_nuggets_ce: u128 = (decay_calculator(
             TOTAL_NUGGETS, NUGGET_FINAL_EPOCH) * 
             TOTAL_NUGGETS as f64) as u128;
         let n_veins_ce: u128 = (decay_calculator(
-            TOTAL_NUGGETS, NUGGET_FINAL_EPOCH) * 
-            TOTAL_NUGGETS as f64) as u128;
+            TOTAL_VEINS, VEIN_FINAL_EPOCH) * 
+            TOTAL_VEINS as f64) as u128;
         let n_motherlodes_ce: u128 = (decay_calculator(
-            TOTAL_NUGGETS, NUGGET_FINAL_EPOCH) * 
-            TOTAL_NUGGETS as f64) as u128;
+            TOTAL_MOTHERLODES, MOTHERLODE_FINAL_EPOCH) * 
+            TOTAL_MOTHERLODES as f64) as u128;
         let remaining_blocks = N_BLOCKS_PER_EPOCH - (n_nuggets_ce + n_veins_ce + n_motherlodes_ce);
         let n_flakes_ce: u128 = (remaining_blocks as f64 * 0.6f64) as u128;
         let n_grains_ce: u128 = (remaining_blocks as f64 * 0.4f64) as u128;
@@ -79,15 +79,10 @@ impl RewardState {
             n_grains_current_epoch: n_grains_ce,
             
         };
-        let state_result = network_state.lock().unwrap().update(reward_state, "reward_state");
-        
-        match state_result {
-            Ok(()) => {},
-            Err(e) => { println!("Error in updating network state: {:?}", e) }
-        }
-        
+
         reward_state
     }
+
     pub fn update(&mut self, last_reward: Category) {
         let mut n_nuggets_ce: u128 = self.n_nuggets_current_epoch;
         let mut n_veins_ce: u128 = self.n_veins_current_epoch;
@@ -226,12 +221,18 @@ impl Category {
     }
 
     pub fn generate_category(reward_state: Arc<Mutex<RewardState>>) -> Category {
+        let n_flakes_current_epoch = reward_state.clone().lock().unwrap().n_flakes_current_epoch.clone();
+        let n_grains_current_epoch = reward_state.clone().lock().unwrap().n_grains_current_epoch.clone();
+        let n_nuggets_current_epoch = reward_state.clone().lock().unwrap().n_grains_current_epoch.clone();
+        let n_veins_current_epoch = reward_state.clone().lock().unwrap().n_veins_current_epoch.clone();
+        let n_motherlodes_current_epoch = reward_state.clone().lock().unwrap().n_motherlodes_current_epoch.clone();
+
         let items = vec![
-            (Category::Flake(None), reward_state.lock().unwrap().n_flakes_current_epoch.clone()),
-            (Category::Grain(None), reward_state.lock().unwrap().n_grains_current_epoch.clone()),
-            (Category::Nugget(None), reward_state.lock().unwrap().n_nuggets_current_epoch.clone()),
-            (Category::Vein(None), reward_state.lock().unwrap().n_veins_current_epoch.clone()),
-            (Category::Motherlode(None), reward_state.lock().unwrap().n_veins_current_epoch.clone()),
+            (Category::Flake(None), n_flakes_current_epoch),
+            (Category::Grain(None), n_grains_current_epoch),
+            (Category::Nugget(None), n_nuggets_current_epoch),
+            (Category::Vein(None), n_veins_current_epoch),
+            (Category::Motherlode(None), n_motherlodes_current_epoch),
             ];
         let dist = WeightedIndex::new(items.iter().map(|item| item.1)).unwrap();
         let mut rng = rand::thread_rng();

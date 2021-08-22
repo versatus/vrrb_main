@@ -1,7 +1,6 @@
 use std::fmt::{self, Debug, Error, Formatter};
-use crate::{block::Block, reward::RewardState, claim::Claim};
+use crate::{block::Block, reward::RewardState, claim::Claim, account::AccountState};
 use pickledb::{PickleDb, PickleDbDumpPolicy, SerializationMethod};
-use pickledb::error;
 use serde::{
     de::{
         self,
@@ -31,15 +30,16 @@ pub struct NetworkState {
 impl PendingNetworkState {
     pub fn temp(
         network_state: Arc<Mutex<NetworkState>>,
+        account_state: Arc<Mutex<AccountState>>,
         block: Block
     ) -> PendingNetworkState {
         
         let mut temp = PendingNetworkState { state: network_state.lock().unwrap().clone().state };
-        temp.update(block);
+        temp.update(account_state, block);
         temp
     }
 
-    pub fn update(&mut self, block: Block) {
+    pub fn update(&mut self, account_state: Arc<Mutex<AccountState>>, block: Block) {
         // Ensure that all transactions in the block are valid
         // and have been included in the account state.
         // update the pending network state before hashing it to
@@ -47,22 +47,18 @@ impl PendingNetworkState {
         // and valid.
         let mut credits: HashMap<String, u128> = self.state.get("credits").unwrap();
         let mut debits: HashMap<String, u128> = self.state.get("debits").unwrap();
-        let mut reward_state: RewardState = self.state.get("reward_state").unwrap();
+        let mut reward_state: RewardState = self.state.get("rewardstate").unwrap();
         let mut claims: HashMap<u128, Claim> = self.state.get("claims").unwrap();
-        let last_block: Block = self.state.get("last_block").unwrap();
-        let block_archive: HashMap<u128, Block> = self.state.get("block_archive").unwrap();
+        let last_block: Block = self.state.get("lastblock").unwrap();
+        let block_archive: HashMap<u128, Block> = self.state.get("blockarchive").unwrap();
 
         block.data.iter().for_each(|(_id, txn)| {
-            *credits.get_mut(&txn.clone().receiver_address).unwrap() += txn.txn_amount;
-            *debits.get_mut(&txn.clone().sender_address).unwrap() += txn.txn_amount;
+            *credits.get_mut(account_state.lock().unwrap().accounts_pk.get(&txn.clone().receiver_address).unwrap()).unwrap() += txn.txn_amount;
+            *debits.get_mut(account_state.lock().unwrap().accounts_pk.get(&txn.clone().sender_address).unwrap()).unwrap() += txn.txn_amount;
         });
 
-        block.confirmed_owned_claims.iter().for_each(|claim| {
-            claims.insert(claim.claim_number, claim.to_owned());
-        });
-
-        block.visible_blocks.iter().for_each(|claim| {
-            claims.insert(claim.claim_number, claim.to_owned());
+        block.owned_claims.iter().for_each(|(claim_number, claim)| {
+            claims.insert(*claim_number, claim.to_owned());
         });
 
         reward_state.update(block.block_reward.category);
@@ -70,9 +66,9 @@ impl PendingNetworkState {
         self.state.set("credits", &credits).unwrap();
         self.state.set("debits", &debits).unwrap();
         self.state.set("claims", &claims).unwrap();
-        self.state.set("reward_state", &reward_state).unwrap();
-        self.state.set("last_block", &last_block).unwrap();
-        self.state.set("block_archive", &block_archive).unwrap();
+        self.state.set("rewardstate", &reward_state).unwrap();
+        self.state.set("lastblock", &last_block).unwrap();
+        self.state.set("blockarchive", &block_archive).unwrap();
 
     }
 
@@ -81,10 +77,10 @@ impl PendingNetworkState {
         let mut credits: Vec<_> = credits.iter().collect();
         let debits = self.state.get::<HashMap<String, u128>>("debits").unwrap();
         let mut debits: Vec<_> = debits.iter().collect();
-        let reward_state = serde_json::to_string::<RewardState>(&self.state.get::<RewardState>("reward_state").unwrap()).unwrap();
+        let reward_state = serde_json::to_string::<RewardState>(&self.state.get::<RewardState>("rewardstate").unwrap()).unwrap();
         let claims = self.state.get::<HashMap<u128, Claim>>("claims").unwrap();
         let mut claims: Vec<_> = claims.iter().collect();
-        let last_block = serde_json::to_string::<Block>(&self.state.get("last_block").unwrap()).unwrap();
+        let last_block = serde_json::to_string::<Block>(&self.state.get("lastblock").unwrap()).unwrap();
         
         let mut reward_state_bytes = reward_state.as_bytes().to_vec();
         let mut block_bytes = last_block.as_bytes().to_vec();
@@ -125,29 +121,76 @@ impl PendingNetworkState {
 
 impl NetworkState {
 
-    pub fn update<T: Serialize>(
-        &mut self, 
-        state_obj: T, 
-        state_obj_type: &str
-    ) -> Result<(), error::ErrorType> 
-    {
-        let result = self.state.set(state_obj_type, &state_obj);
-        if let Err(e) = result {println!("Error setting to state"); return Err(error::Error::get_type(&e))}
+    pub fn init(&mut self, reward_state: RewardState, genesis: Block) {
+        let mut credits: HashMap<String, u128> = HashMap::new();
+        let debits: HashMap<String, u128> = HashMap::new();
+        let mut block_archive: HashMap<u128, Block> = HashMap::new();
+        
+        credits.insert(genesis.clone().miner, genesis.clone().block_reward.amount);
+        let claims = genesis.clone().owned_claims;
+        block_archive.insert(1, genesis.clone());
+     
+        self.state.set("credits", &credits).unwrap();
+        self.state.set("debits", &debits).unwrap();
+        self.state.set("claims", &claims).unwrap();
+        self.state.set("rewardstate", &reward_state).unwrap();
+        self.state.set("lastblock", &genesis).unwrap();
+        self.state.set("blockarchive", &block_archive).unwrap();
+    }  
 
-        Ok(())
+    pub fn update(&mut self, block: Block, account_state: Arc<Mutex<AccountState>>) {
+        // Ensure that all transactions in the block are valid
+        // and have been included in the account state.
+        // update the pending network state before hashing it to
+        // test whether the proposed network state is up to date
+        // and valid.
+        let mut credits: HashMap<String, u128> = self.state.get("credits").unwrap();
+        let mut debits: HashMap<String, u128> = self.state.get("debits").unwrap();
+        let mut reward_state: RewardState = self.state.get("rewardstate").unwrap();
+        let mut claims: HashMap<u128, Claim> = self.state.get("claims").unwrap();
+        let last_block: Block = self.state.get("lastblock").unwrap();
+        let mut block_archive: HashMap<u128, Block> = self.state.get("blockarchive").unwrap();
+        
+        let cloned_account_state = account_state.lock().unwrap().clone();
+
+        println!("Updating network state -> Credits & Debits");
+
+        block.data.iter().for_each(|(_id, txn)| {
+            *credits.get_mut(cloned_account_state.accounts_pk.get(&txn.clone().receiver_address).unwrap()).unwrap() += txn.txn_amount;
+            *debits.get_mut(cloned_account_state.accounts_pk.get(&txn.clone().sender_address).unwrap()).unwrap() += txn.txn_amount;
+        });
+
+        println!("Updating network state -> Claims");
+
+        block.owned_claims.iter().for_each(|(claim_number, claim)| {
+            claims.insert(*claim_number, claim.to_owned());
+        });
+
+        println!("Updating network state -> reward state");
+        reward_state.update(block.block_reward.category);
+
+        block_archive.insert(block.block_height, block.clone());
+
+        self.state.set("credits", &credits).unwrap();
+        self.state.set("debits", &debits).unwrap();
+        self.state.set("claims", &claims).unwrap();
+        self.state.set("rewardstate", &reward_state).unwrap();
+        self.state.set("lastblock", &block).unwrap();
+        self.state.set("blockarchive", &block_archive).unwrap();
+
     }
 
     pub fn restore(path: &str) -> NetworkState {
         let db = match PickleDb::load_bin(
             path, 
-            PickleDbDumpPolicy::AutoDump
+            PickleDbDumpPolicy::DumpUponRequest
             ) {
 
                 Ok(nst) => nst,
                 Err(_) => PickleDb::new(
                 path, 
-                PickleDbDumpPolicy::AutoDump, 
-                SerializationMethod::Bin)
+                PickleDbDumpPolicy::DumpUponRequest, 
+                SerializationMethod::Json)
         };
         
         NetworkState {
@@ -156,13 +199,46 @@ impl NetworkState {
     }
 
     pub fn hash(&self, uts: &[u8; 16]) -> String {
-        let mut network_state_bytes = serde_json::to_string(&self).unwrap().into_bytes();
-        network_state_bytes.sort_unstable();
+        let credits = self.state.get::<HashMap<String,u128>>("credits").unwrap();
+        let mut credits: Vec<_> = credits.iter().collect();
+        let debits = self.state.get::<HashMap<String, u128>>("debits").unwrap();
+        let mut debits: Vec<_> = debits.iter().collect();
+        let reward_state = serde_json::to_string::<RewardState>(&self.state.get::<RewardState>("rewardstate").unwrap()).unwrap();
+        let claims = self.state.get::<HashMap<u128, Claim>>("claims").unwrap();
+        let mut claims: Vec<_> = claims.iter().collect();
+        let last_block = serde_json::to_string::<Block>(&self.state.get("lastblock").unwrap()).unwrap();
+        
+        let mut reward_state_bytes = reward_state.as_bytes().to_vec();
+        let mut block_bytes = last_block.as_bytes().to_vec();
+        reward_state_bytes.sort_unstable();
+        block_bytes.sort_unstable();
+
+        credits.sort_by_key(|x| x.0);
+        debits.sort_by_key(|x| x.0);
+        claims.sort_by_key(|x| x.0);
+
+        let mut network_state_bytes = vec![];
+
+        credits.iter().for_each(|(x, y)| {
+            network_state_bytes.extend(x.as_bytes().to_vec()); 
+            network_state_bytes.extend(y.to_ne_bytes().to_vec());
+        });
+        debits.iter().for_each(|(x, y)| {
+            network_state_bytes.extend(x.as_bytes().to_vec());
+            network_state_bytes.extend(y.to_ne_bytes().to_vec());
+        });
+        claims.iter().for_each(|(x, y)| {
+            network_state_bytes.extend(x.to_ne_bytes().to_vec());
+            network_state_bytes.extend(serde_json::to_string::<Claim>(y).unwrap().to_string().as_bytes().to_vec());
+        });
+
+        network_state_bytes.extend(reward_state_bytes);
+        network_state_bytes.extend(block_bytes);
 
         let ts_hash = digest_bytes(uts);
-        for byte in ts_hash.as_bytes().iter() {
-            network_state_bytes.push(*byte);
-        }
+
+        network_state_bytes.extend(ts_hash.as_bytes().to_vec());
+
         let state_bytes: &[u8] = &network_state_bytes;
 
         digest_bytes(state_bytes)
@@ -186,8 +262,9 @@ impl Clone for NetworkState {
         let credits: Option<HashMap<String, u128>> = self.state.get("credits");
         let debits: Option<HashMap<String, u128>> = self.state.get("debits");
         let claims: Option<HashMap<u128, Claim>> = self.state.get("claims");
-        let reward_state: Option<RewardState> = self.state.get("reward_state");
-        let last_block: Option<Block> = self.state.get("last_block");
+        let reward_state: Option<RewardState> = self.state.get("rewardstate");
+        let last_block: Option<Block> = self.state.get("lastblock");
+        let block_archive: Option<HashMap<u128, Block>> = self.state.get("blockarchive");
 
         if let Some(credits) = credits {
             let cloned_result = cloned_db.set("credits", &credits);
@@ -207,13 +284,19 @@ impl Clone for NetworkState {
         }
 
         if let Some(reward_state) = reward_state {
-            let cloned_result = cloned_db.set("reward_state", &reward_state);
+            let cloned_result = cloned_db.set("rewardstate", &reward_state);
 
             if let Err(e) = cloned_result { println!("Error setting to cloned_state: {}", e) }
         }
 
         if let Some(last_block) = last_block {
-            let cloned_result = cloned_db.set("last_block", &last_block);
+            let cloned_result = cloned_db.set("lastblock", &last_block);
+
+            if let Err(e) = cloned_result { println!("Error setting to cloned_state: {}", e) }
+        }
+
+        if let Some(block_archive) = block_archive {
+            let cloned_result = cloned_db.set("blockarchive", &block_archive);
 
             if let Err(e) = cloned_result { println!("Error setting to cloned_state: {}", e) }
         }
@@ -237,37 +320,59 @@ impl Serialize for NetworkState {
     {
         let mut map: HashMap<&str, String> = HashMap::new();
 
-        let credits = serde_json::to_string::<HashMap<String, HashMap<String, u128>>>(
-            &self.state.get("credits").unwrap()
-        ).unwrap();
+        let credits: Option<HashMap<String, u128>> = self.state.get("credits");
+        let debits: Option<HashMap<String, u128>> = self.state.get("debits");
+        let claims: Option<HashMap<u128, Claim>> = self.state.get("claims");
+        let reward_state: Option<RewardState> = self.state.get("rewardstate");
+        let last_block: Option<Option<Block>> = self.state.get("lastblock");
+        let block_archive: Option<HashMap<u128, Block>> = self.state.get("blockarchive");
 
-        let debits = serde_json::to_string::<HashMap<String, HashMap<String, u128>>>(
-            &self.state.get("debits").unwrap()
-        ).unwrap();
+        if let Some(creditmap) = credits {
+            let credits = serde_json::to_string::<HashMap<String, u128>>(&creditmap).unwrap();
+            map.insert("credits", credits);
+        } else {
+            let credits = serde_json::to_string::<HashMap<String,u128>>(&HashMap::new()).unwrap();
+            map.insert("credits", credits);
+        }
 
-        let reward_state = serde_json::to_string::<RewardState>(
-            &self.state.get("reward_state").unwrap()
-        ).unwrap();
+        if let Some(debits) = debits {
+            let debits = serde_json::to_string::<HashMap<String, u128>>(&debits).unwrap();
+            map.insert("debits", debits);
+        } else {
+            let debits = serde_json::to_string::<HashMap<String,u128>>(&HashMap::new()).unwrap();
+            map.insert("debits", debits); 
+        }
 
-        let claims = serde_json::to_string::<Claim>(
-            &self.state.get("claims").unwrap()
-        ).unwrap();
+        if let Some(reward_state) = reward_state {
+            let reward_state = serde_json::to_string::<RewardState>(&reward_state).unwrap();
+            map.insert("rewardstate", reward_state);
+        } else {
+            let reward_state = serde_json::to_string::<RewardState>(&RewardState::start()).unwrap();
+            map.insert("rewardstate", reward_state);
+        }
 
-        let last_block = serde_json::to_string::<Block>(
-            &self.state.get("last_block").unwrap()
-        ).unwrap();
+        if let Some(claims) = claims {
+            let claims = serde_json::to_string::<HashMap<u128, Claim>>(&claims).unwrap();
+            map.insert("claims", claims);
+        } else {
+            let claims = serde_json::to_string::<HashMap<u128, Claim>>(&HashMap::new()).unwrap();
+            map.insert("claims", claims);
+        }
 
-        let block_archive = serde_json::to_string::<HashMap<String, HashMap<u128, Block>>>(
-            &self.state.get("block_archive").unwrap()
-        ).unwrap();
+        if let Some(block_option) = last_block {
+            let last_block = serde_json::to_string::<Option<Block>>(&block_option).unwrap();
+            map.insert("lastblock", last_block);
+        } else {
+            map.insert("lastblock", serde_json::to_string::<Option<Block>>(&None).unwrap());
+        }
 
-        map.insert("credits", credits);
-        map.insert("debits", debits);
-        map.insert("reward_state", reward_state);
-        map.insert("claims", claims);
-        map.insert("last_block", last_block);
-        map.insert("block_archive", block_archive);
-        
+        if let Some(block_archive) = block_archive {
+            let block_archive = serde_json::to_string::<HashMap<u128, Block>>(&block_archive).unwrap();
+            map.insert("blockarchive", block_archive);
+        } else {
+            map.insert("blockarchive", serde_json::to_string::<HashMap<u128, Block>>(&HashMap::new()).unwrap());
+        }
+
         let mut serialized_map = serializer.serialize_map(Some(map.len()))?;
 
         for (k, v) in map {
@@ -349,10 +454,10 @@ impl<'de> Deserialize<'de> for NetworkState {
                 let mut state = PickleDb::new("temp.db", PickleDbDumpPolicy::NeverDump, SerializationMethod::Bin);
                 let credits_result = state.set("credits", &credits);
                 let debits_result = state.set("debits", &debits);
-                let reward_state_result = state.set("reward_state", &reward_state);
+                let reward_state_result = state.set("rewardstate", &reward_state);
                 let claims_result = state.set("claims", &claims);
-                let last_block_result = state.set("last_block", &last_block);
-                let block_archive = state.set("block_archive", &block_archive);
+                let last_block_result = state.set("lastblock", &last_block);
+                let block_archive = state.set("blockarchive", &block_archive);
 
                 if let Err(e) = credits_result {println!("Error setting to state: {}", e) }
                 if let Err(e) = debits_result {println!("Error setting to state: {}", e) }
@@ -434,10 +539,10 @@ impl<'de> Deserialize<'de> for NetworkState {
                 
                 let credits_result = state.set("credits", &credits);
                 let debits_result = state.set("debits", &debits);
-                let reward_state_result = state.set("reward_state", &reward_state);
+                let reward_state_result = state.set("rewardstate", &reward_state);
                 let claims_result = state.set("claims", &claims);
-                let last_block_result = state.set("last_block", &last_block);
-                let block_archive = state.set("block_archive", &block_archive);
+                let last_block_result = state.set("lastblock", &last_block);
+                let block_archive = state.set("blockarchive", &block_archive);
 
                 if let Err(e) = credits_result { println!("Error setting to state in deserializer: {}", e) }
                 if let Err(e) = debits_result { println!("Error setting to state in deserializer: {}", e) }
@@ -470,9 +575,9 @@ impl Serialize for PendingNetworkState {
         let debits = serde_json::to_string::<HashMap<String, HashMap<String, u128>>>(
             &self.state.get("debits").unwrap()
         ).unwrap();
-
+        
         let reward_state = serde_json::to_string::<RewardState>(
-            &self.state.get("reward_state").unwrap()
+            &self.state.get("rewardstate").unwrap()
         ).unwrap();
 
         let claims = serde_json::to_string::<HashMap<String, HashMap<u128, Claim>>>(
@@ -480,19 +585,19 @@ impl Serialize for PendingNetworkState {
         ).unwrap();
 
         let last_block = serde_json::to_string::<Block>(
-            &self.state.get("last_block").unwrap()
+            &self.state.get("lastblock").unwrap()
         ).unwrap();
-        
+
         let block_archive = serde_json::to_string::<HashMap<String, HashMap<u128, Block>>>(
-            &self.state.get("block_archive").unwrap()
+            &self.state.get("blockarchive").unwrap()
         ).unwrap();
 
         map.insert("credits", credits);
         map.insert("debits", debits);
-        map.insert("reward_state", reward_state);
+        map.insert("rewardstate", reward_state);
         map.insert("claims", claims);
-        map.insert("last_block", last_block);
-        map.insert("block_archive", block_archive);
+        map.insert("lastblock", last_block);
+        map.insert("blockarchive", block_archive);
         
         let mut serialized_map = serializer.serialize_map(Some(map.len()))?;
 
@@ -572,9 +677,9 @@ impl<'de> Deserialize<'de> for PendingNetworkState {
                 let mut state = PickleDb::new("temp.db", PickleDbDumpPolicy::NeverDump, SerializationMethod::Bin);
                 let credits_result = state.set("credits", &credits);
                 let debits_result = state.set("debits", &debits);
-                let reward_state_result = state.set("reward_state", &reward_state);
+                let reward_state_result = state.set("rewardstate", &reward_state);
                 let claims_result = state.set("claims", &claims);
-                let last_block_result = state.set("last_block", &last_block);
+                let last_block_result = state.set("lastblock", &last_block);
 
                 if let Err(e) = credits_result {println!("Error setting to state: {}", e) }
                 if let Err(e) = debits_result {println!("Error setting to state: {}", e) }
@@ -646,9 +751,9 @@ impl<'de> Deserialize<'de> for PendingNetworkState {
                 
                 let credits_result = state.set("credits", &credits);
                 let debits_result = state.set("debits", &debits);
-                let reward_state_result = state.set("reward_state", &reward_state);
+                let reward_state_result = state.set("rewardstate", &reward_state);
                 let claims_result = state.set("claims", &claims);
-                let last_block_result = state.set("last_block", &last_block);
+                let last_block_result = state.set("lastblock", &last_block);
 
                 if let Err(e) = credits_result { println!("Error setting to state in deserializer: {}", e) }
                 if let Err(e) = debits_result { println!("Error setting to state in deserializer: {}", e) }

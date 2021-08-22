@@ -6,14 +6,13 @@ use crate::state::{NetworkState, PendingNetworkState};
 use crate::validator::ValidatorOptions;
 use crate::verifiable::Verifiable;
 use crate::{
-    account::{
-        WalletAccount, 
-        AccountState, 
-        StateOption::ProposedBlock
-    }, 
-    claim::{Claim}, 
+    wallet::WalletAccount,
+    account::AccountState,
+    claim::{Claim, CustodianInfo}, 
     txn::Txn, 
     reward::{RewardState, Reward},
+    allocator::allocate_claims,
+    network::node::Node,
 };
 use secp256k1::{Signature};
 use serde::{Deserialize, Serialize};
@@ -24,6 +23,8 @@ use secp256k1::{
     key::{PublicKey}
 };
 use std::sync::{Arc, Mutex};
+
+const SECOND: u128 = 1000000000;
 
 pub enum InvalidBlockReason {
     InvalidStateHash,
@@ -51,37 +52,21 @@ pub struct Block {
     pub block_payload: String,
     pub miner: String,
     pub state_hash: String,
-    pub visible_blocks: Vec<Claim>,
-    pub confirmed_owned_claims: Vec<Claim>,
+    pub owned_claims: HashMap<u128, Claim>,
 }
 
 impl Block {
 
     pub fn genesis(
-        reward_state: Arc<Mutex<RewardState>>,      // The reward state that needs to be updated when the genesis event occurs
-        miner: String,      // the wallet that will receive the genesis reward (wallet attached to the node that initializes the network)
-        account_state: Arc<Mutex<AccountState>>,   // the account state which needs to be updated when the genesis event occurs
-        network_state: Arc<Mutex<NetworkState>>,   // the network state which needs to be updated with then genesis event occurs
+        miner: Arc<Mutex<WalletAccount>>,      // the wallet that will receive the genesis reward (wallet attached to the node that initializes the network)
+        network_state: Arc<Mutex<NetworkState>>,
+        reward_state: Arc<Mutex<RewardState>>,
     ) -> Result<Block, Error>   // Returns a result with either a tuple containing the genesis block and the updated account state (if successful) or an error (if unsuccessful) 
     
     {
+        println!("Mining Genesis Block");
         // Get the current time in a unix timestamp duration.
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-        
-        let mut claims: HashMap<u128, Claim> = network_state.lock().unwrap().state.get("claims").unwrap();
-        let mut confirmed_owned_claims: Vec<Claim> = vec![];
-
-        claims.clone().iter().for_each(|(claim_number, claim)| {
-            match account_state.lock().unwrap().owned_claims.get(&claim_number) {
-                Some(pubkey) => {
-                    if claim.clone().current_owner.0.unwrap() != *pubkey {
-                        claims.insert(*claim_number, claim.clone());
-                        confirmed_owned_claims.push(claim.clone());
-                    }
-                },
-                None => {},
-            }
-        });
 
         // initialize a vector to push claims created by this block to.
         let mut visible_blocks: Vec<Claim> = Vec::with_capacity(20);
@@ -93,12 +78,21 @@ impl Block {
         // by 5 nano seconds
         // TODO: Change this to 1 second, 5 nano seconds is just for testing.
         for i in 0..20 {
-            visible_blocks.push(Claim::new(next_time, i as u128 + 1));
-            next_time += 5;
+            let claim = Claim::new(next_time, i as u128 + 1);
+            visible_blocks.push(claim);
+            next_time += 10 * SECOND;
         }
 
-        let state_hash = network_state.lock().unwrap().hash(&now.as_nanos().to_ne_bytes());
+        let mut owned_claims = allocate_claims(visible_blocks, Arc::clone(&miner), Arc::clone(&network_state), 1u128);
+        owned_claims = owned_claims.iter_mut().map(|(_, claim)| {
+            claim.staked = true;
+            return (claim.claim_number.clone(), claim.clone())
+        }).collect::<HashMap<u128, Claim>>();
 
+        let state_hash = digest_bytes("Genesis_State_Hash".to_string().as_bytes());
+        println!("Structuring block");
+        let miner_pubkey = miner.lock().unwrap().pubkey.clone();
+        let miner_address = miner.lock().unwrap().addresses[&1].clone();
         // Initialize a new block.
         let genesis = Block {
 
@@ -119,7 +113,7 @@ impl Block {
             // set the value of the block reward to the result of a call to the genesis associated
             // method in the Reward struct. This will generate the Genesis reward and send it to
             // the wallet of the node that initializes the network.
-            block_reward: Reward::genesis(Some(miner.clone())),
+            block_reward: Reward::genesis(Some(miner_pubkey.clone())),
 
             // Set the value of the block signature to the string "Genesis_Signature"
             block_signature: "Genesis_Signature".to_string(),
@@ -135,25 +129,19 @@ impl Block {
             block_payload: "Genesis_Block_Hash".to_string(),
 
             // Set the value of miner to the address of the wallet of the node that initializes the network.
-            miner: miner.clone(),
+            miner: miner_address.clone(),
 
             state_hash,
 
-            // Set the value of visible blocks to the visible_blocks vector initializes at the top of this method.
-            visible_blocks,
+            owned_claims,
 
-            confirmed_owned_claims,
         };
         
         // Update the account state with the miner and new block, this will also set the values to the 
         // network state. Unwrap the result and assign it to the variable updated_account_state to
         // be returned by this method.
-        account_state.lock().unwrap().update(
-            ProposedBlock(miner, 
-                serde_json::to_string(&genesis).unwrap(), 
-                serde_json::to_string(&reward_state.lock().unwrap().clone()).unwrap(),
-                serde_json::to_string(&network_state.lock().unwrap().clone()).unwrap(),
-            ));
+
+        println!("Done mining genesis block");
 
         Ok(genesis)
     }
@@ -161,45 +149,31 @@ impl Block {
     /// The mine method is used to generate a new block (and an updated account state with the reward set
     /// to the miner wallet's balance), this will also update the network state with a new confirmed state.
     pub fn mine(
-        reward_state: Arc<Mutex<RewardState>>,     // The reward state which gets updated in place to reflect the reward for the currently mined block
         claim: Claim,                   // The claim entitling the miner to mine the block.
         last_block: Block,              // The last block, which contains the current block reward.
-        data: HashMap<String, Txn>,     // A hashmap containing transaction IDs and confirmed transactions that will be made official with this block being mined
-        account_state: Arc<Mutex<AccountState>>,   // The account state which will be updated and made official (set into the confirmed network state).
-        network_state: Arc<Mutex<NetworkState>>,   // the network state, which the confirmed state of will be updated for the current block
+        account_state: Arc<Mutex<AccountState>>,
+        reward_state: Arc<Mutex<RewardState>>,
+        network_state: Arc<Mutex<NetworkState>>,
+        wallet: Arc<Mutex<WalletAccount>>,
     ) -> Option<Result<Block, Error>>       // Returns a result containing either a tuple of the new block and the updated account state or an error. 
-    
     {
         // Initialize a timestamp of the current time.
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-
-        let mut claims: HashMap<u128, Claim> = network_state.lock().unwrap().state.get("claims").unwrap();
-        let mut confirmed_owned_claims: Vec<Claim> = vec![];
-
-        claims.clone().iter().for_each(|(claim_number, claim)| {
-            match account_state.lock().unwrap().owned_claims.get(claim_number) {
-                Some(pubkey) => {
-                    if claim.clone().current_owner.0.unwrap() != *pubkey {
-                        claims.insert(*claim_number, claim.clone());
-                        confirmed_owned_claims.push(claim.clone());
-                    }
-                },
-                None => {},
-            }
-        });
-
+        println!("Attempting to mine block");
         // initialize a secp256k1 Signature struct from the signature string in the claim (this is to verify claim ownership)
-        let claim_signature: Signature = Signature::from_str(
-            &claim.clone()
-                .current_owner.1
-                .unwrap())
-                .ok()
-                .unwrap();
+        let signature_string = match claim.clone().chain_of_custody.get(&claim.clone().current_owner.unwrap()).unwrap()
+            .get("buyer_signature").unwrap().clone().unwrap() {
+                CustodianInfo::BuyerSignature(Some(signature_string)) => { signature_string },
+                _ => { panic!("No buyer signature") }
+            };
+
+        let signature = Signature::from_str(&signature_string).unwrap();
 
         // Generate the next block's reward by assigning the result of the Reward::new() method to a variable called "next block reward".
         let next_block_reward = Reward::new(None, Arc::clone(&reward_state));
-        let miner = claim.clone().current_owner.0.unwrap();
-        let pubkey = claim.clone().current_owner.1.unwrap();
+        let miner = wallet.lock().unwrap().addresses[&1].clone();
+        let pubkey = claim.clone().current_owner.unwrap();
+        let data = account_state.clone().lock().unwrap().mineable.clone();
         // Structure the block payload (to be signed by the miner's wallet for network verification).
         let block_payload = format!("{},{},{},{},{},{},{}", 
                         now.as_nanos().to_string(), 
@@ -210,7 +184,7 @@ impl Block {
                         &miner,
                         serde_json::to_string(&next_block_reward).unwrap()
                     );
-                    
+        
         let state_hash = network_state.lock().unwrap().hash(&now.as_nanos().to_ne_bytes());
 
         // Ensure that the claim is mature
@@ -221,26 +195,28 @@ impl Block {
             let mut visible_blocks: Vec<Claim> = Vec::with_capacity(20);
 
             // Get the claim with the highest maturity timestamp that current exists.
-            let mut furthest_visible_block: u128 = *account_state.lock()
+            let mut furthest_visible_block: u128 = account_state.clone().lock()
                                                         .unwrap()
                                                         .clone()
                                                         .claims.iter()
                                                         .map(|(n, _claim)| n)
                                                         .max_by(|a, b| a.cmp(b))
-                                                        .unwrap();
+                                                        .unwrap().clone();
             
-            let highest_claim_number: u128 = last_block.visible_blocks
+            let mut highest_claim_number: u128 = last_block.owned_claims
                 .iter()
-                .map(|x| x.claim_number).max_by(|a, b| a.cmp(b)).unwrap();
+                .map(|(_owner, claim)| claim.claim_number).max_by(|a, b| a.cmp(b)).unwrap();
 
             // Generate 20 new claims, increment each one's maturity timestamp by 5 nanoseconds
             // and push them to the visible_blocks vector.
             // TODO: Change this to 1 second, this is only for testing purposes.
             for _ in 0..20 {
-                furthest_visible_block += 5;
+                furthest_visible_block += 10 * SECOND;
                 visible_blocks.push(Claim::new(furthest_visible_block, highest_claim_number));
+                highest_claim_number += 1;
             }
 
+            let owned_claims = allocate_claims(visible_blocks, Arc::clone(&wallet), Arc::clone(&network_state), last_block.block_height + 1);
             // Verify that the claim is indeed owned by the miner attempting to mine this block.
             // Verify returns a result with either a boolean (true or false, but always true if Ok())
             // or an error.
@@ -248,13 +224,14 @@ impl Block {
                 claim
                 .clone()
                 .claim_payload.unwrap(), 
-                claim_signature, 
+                signature, 
                 PublicKey::from_str(&&pubkey).unwrap(),
             ) {
                 // if it is indeed owned by the miner attempting to mine this block
                 Ok(_t) => {
-                    // generate the new block and assign it to a variable new_block 
-                    let new_block = Block {
+                    // generate the new block and assign it to a variable new_block
+                    println!("structuring new block");
+                    let mut new_block = Block {
 
                         block_height: last_block.block_height + 1,
 
@@ -280,7 +257,7 @@ impl Block {
                         block_hash: digest_bytes(block_payload.as_bytes()),
 
                         // Generate a new reward for the next block.
-                        next_block_reward: Reward::new(None, reward_state),
+                        next_block_reward: Reward::new(None, Arc::clone(&reward_state)),
                         
                         block_payload,
 
@@ -288,14 +265,11 @@ impl Block {
                         miner: miner.clone(),
 
                         // Set the block signature to a string of the claim signature.
-                        block_signature: claim_signature.to_string(),
+                        block_signature: signature.to_string(),
 
                         state_hash,
 
-                        // Set the visible blocks to the vector of new claims generated earlier in this method.
-                        visible_blocks,
-
-                        confirmed_owned_claims,
+                        owned_claims,
 
                     };
 
@@ -306,6 +280,12 @@ impl Block {
                     // included in the return expression.
                     // Return a Some() option variant with an Ok() result variant that wraps a tuple that contains
                     // the new block that was just mined and the updated account state.
+                    let cloned_network_state = Arc::clone(&network_state);
+                    let cloned_account_state = Arc::clone(&account_state);
+                    let temp_state = PendingNetworkState::temp(cloned_network_state, cloned_account_state, new_block.clone());
+                    let state_hash = temp_state.hash(&now.as_nanos().to_ne_bytes());
+                    new_block = Block { state_hash, ..new_block.clone() };
+
                     return Some(Ok(new_block));
                 },
 
@@ -398,7 +378,7 @@ impl Verifiable for Block {
                         let account_state = serde_json::from_str::<AccountState>(&account_state).unwrap();
                         let reward_state = serde_json::from_str::<RewardState>(&reward_state).unwrap();
 
-                        let valid_signature = match block.clone().claim.current_owner.1 {
+                        let valid_signature = match block.clone().claim.current_owner {
                             Some(sig) => {
                                 let pubkey = match PublicKey::from_str(&pubkey) {
                                     Ok(pk) => {pk}
@@ -450,7 +430,11 @@ impl Verifiable for Block {
                             return Some(false)
                         }
 
-                        let pending_state = PendingNetworkState::temp(Arc::new(Mutex::new(network_state)), self.clone());
+                        let pending_state = PendingNetworkState::temp(
+                            Arc::new(Mutex::new(network_state.clone())), 
+                            Arc::new(Mutex::new(account_state.clone())), 
+                            self.clone()
+                        );
 
                         let state_hash = pending_state.hash(&block.timestamp.to_ne_bytes());
                         println!("{}", &state_hash);

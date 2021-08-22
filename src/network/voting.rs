@@ -12,7 +12,7 @@
 // local state before reproposing the block.
 use std::collections::HashMap;
 use crate::txn::Txn;
-
+#[derive(Debug)]
 pub struct BallotBox {
     // A hashmap containing the proposal ID as the key and a hashmap
     // with yes/no as the keys and the vote count as the value.

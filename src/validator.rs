@@ -1,7 +1,8 @@
 #![allow(unused_imports)]
 use std::collections::HashMap;
 use crate::{
-    account::{AccountState, WalletAccount}, 
+    wallet::WalletAccount,
+    account::AccountState, 
     block::Block, 
     claim::{Claim}, 
     mpu, 
@@ -48,9 +49,9 @@ impl Validator {
     pub fn new(message: Message, pubkey: String, account_state: AccountState) -> Option<Validator> {
         let mut check_staked_claims: HashMap<u128, Claim> = HashMap::new();
         account_state.claims.iter()
-            .filter(|(_claim_number, claim)| claim.current_owner.clone().0.unwrap() == pubkey)
+            .filter(|(_claim_number, claim)| claim.current_owner.clone().unwrap() == pubkey)
             .for_each(|(claim_number, claim)| {
-                match account_state.staked_claims.get(claim_number) {
+                match account_state.claims.get(claim_number) {
                     Some(_) => {
                         check_staked_claims.insert(*claim_number, claim.clone());
                     },

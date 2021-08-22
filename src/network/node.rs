@@ -1,12 +1,15 @@
 #[allow(unused_imports)]
-use crate::account::{WalletAccount, AccountState};
-use crate::state::NetworkState;
+use crate::account::AccountState;
 use crate::network::protocol::{VrrbNetworkBehavior, build_transport};
-use crate::txn::Txn;
 use crate::block::Block;
-use crate::reward::RewardState;
+use crate::claim::{Claim, CustodianInfo};
+use crate::txn::Txn;
+use crate::validator::Validator;
 use crate::network::voting::BallotBox;
+use crate::wallet::WalletAccount;
 use crate::network::message;
+use crate::state::NetworkState;
+use crate::reward::RewardState;
 use async_std::{io, task};
 use env_logger::{Builder, Env};
 use futures::prelude::*;
@@ -36,9 +39,15 @@ use std::{
 };
 use std::collections::{VecDeque, HashMap};
 use rand::{Rng};
-use hex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
+#[allow(dead_code)]
+#[derive(Debug)]
+pub enum Command {
+    MineBlock,
+    StopMine,
+    AcquireClaim(u128, u128, u128),     // Maximum Price, Maximum Maturity, Maximum Number of claims to acquire that fit the price/maturity requirements, address to purchase from. 
+    SellClaim(u128, u128),              // Claim Number, Price.
+}
 
 #[allow(dead_code)]
 pub enum NodeAuth {
@@ -47,28 +56,40 @@ pub enum NodeAuth {
 }
 
 #[allow(dead_code)]
+#[derive(Clone, Debug)]
+pub enum VrrbObject {
+    Block(Block),
+    Txn(Txn),
+    Claim(Claim),
+    Validator(Validator),
+}
+
+#[allow(dead_code)]
 pub struct Node {
     pub id: PeerId,
     pub node_type: NodeAuth,
-    pub wallet: Arc<Mutex<WalletAccount>>,
     pub swarm: Swarm<VrrbNetworkBehavior>,
-    pub account_state: Arc<Mutex<AccountState>>,
     pub network_state: Arc<Mutex<NetworkState>>,
+    pub account_state: Arc<Mutex<AccountState>>,
     pub reward_state: Arc<Mutex<RewardState>>,
+    pub command_queue: Arc<Mutex<VecDeque<Vec<String>>>>,
     pub last_block: Option<Block>,
     pub ballot_box: Arc<Mutex<BallotBox>>,
     pub temp_blocks: Option<HashMap<u128, Block>>,
+    pub cache_path: String,
+    pub wallet: Arc<Mutex<WalletAccount>>,
 }
 
 impl Node {
 
     pub async fn start(
-        wallet: Arc<Mutex<WalletAccount>>, 
-        account_state: Arc<Mutex<AccountState>>, 
-        network_state: Arc<Mutex<NetworkState>>,
-        reward_state: Arc<Mutex<RewardState>>,
         ballot_box: Arc<Mutex<BallotBox>>,
         node_type: NodeAuth,
+        wallet: Arc<Mutex<WalletAccount>>,
+        account_state: Arc<Mutex<AccountState>>,
+        network_state: Arc<Mutex<NetworkState>>,
+        reward_state: Arc<Mutex<RewardState>>,
+        cache_path: String,
     ) -> Result<(), Box<dyn Error>> {
 
         Builder::from_env(Env::default().default_filter_or("info")).init();
@@ -130,18 +151,26 @@ impl Node {
         Swarm::new(transport, behaviour, local_peer_id)
         
         };
+        
+        let command_queue: Arc<Mutex<VecDeque<Vec<String>>>> = Arc::new(Mutex::new(VecDeque::new()));
+        let account_state = Arc::clone(&account_state);
+        let network_state = Arc::clone(&network_state);
+        let reward_state = Arc::clone(&reward_state);
+        let wallet = Arc::clone(&wallet);
 
         let node = Node {
             id: local_peer_id,
             node_type,
             swarm,
-            wallet,
-            account_state,
-            network_state,
-            reward_state,
             last_block: None,
             ballot_box,
             temp_blocks: None,
+            command_queue: Arc::clone(&command_queue),
+            cache_path,
+            account_state: Arc::clone(&account_state),
+            network_state: Arc::clone(&network_state),
+            reward_state: Arc::clone(&reward_state),
+            wallet: Arc::clone(&wallet),
         };
 
         let port = rand::thread_rng().gen_range(9292, 19292);
@@ -176,104 +205,20 @@ impl Node {
         }
 
         let mut stdin = io::BufReader::new(io::stdin()).lines();
-        let atomic_queue = Arc::clone(&atomic_node.lock().unwrap().swarm.behaviour().queue);
-        let task_node = Arc::clone(&atomic_node);
         
-        // Message processing thread
-        thread::spawn(move || 
-            loop {
-                let cloned_node = Arc::clone(&task_node);
-                match atomic_queue.lock().unwrap().pop_front() {
-                    Some(message) => {
-                        message::process_message(message, cloned_node);
-                    },
-                    None => {},
-            }});
-        
-        let task_node = Arc::clone(&atomic_node);
-
-        // Claim thread        
-        thread::spawn(move || 
-            loop {
-                // Establish a channel between main thread and this thread, and check if there's a
-                // "HOMESTD" command, if so run the below.
-                // On each loop check the queue, and see if there's a "NOSTEAD" command, if skip the homesteading process
-                // if there is a "ACQRCLM" command, spawn and run the node's wallet acquire_claims() method which
-                // takes a maximum price and maximum maturity to filter the available claims for sale and find claims
-                // that match.
-                // If there is a "SELLCLM" command, spawn a new thread and run the node's wallet sell_claim() method
-                // and publish the message when the claim has been updated.
-                // If there's a "STAKCLM" command, spawn a new thread and run the node's wallet stake_claim() method.
-                let cloned_node = Arc::clone(&task_node);
-                // Iterate through all the claims in the account state and filter those that are available
-                // if there is already an owner this claim would need to be acquired for vrrb (not homesteaded)
-                // so it must fall below the price that the node is willing to pay, and must be the earlist to mature
-                // that fits within that price range, otherwise, it is available to be homesteaded.
-                cloned_node.clone().lock().unwrap()
-                    .account_state.clone().lock().unwrap()
-                    .claims.iter()
-                        .filter(|(_claim_number, claim)| claim.available)
-                        .for_each(|(_claim_number, claim)| {
-                            match &claim.current_owner.0 {
-                                Some(_pubkey) => {},
-                                None => {
-                                    claim.clone().homestead(
-                                        cloned_node.clone().lock().unwrap().wallet.clone(), 
-                                        cloned_node.clone().lock().unwrap().account_state.clone(),
-                            );
-                        }
-                    }
-                });
-            });
-        
-        let task_node = Arc::clone(&atomic_node);
-
-        // Mining thread
-        thread::spawn(move || 
-            loop {
-                // Establish a channel between main thread and this thread, and check if there's a
-                // "MINEBLK" command, if so run the below.
-                // On each loop check the queue, and see if there's a "STPMINE" command, if skip the mining process
-                let cloned_node = Arc::clone(&task_node);
-                // Iterate through local node wallet, and check if any claims are mature
-                // if there are mature claims, mine a block with the claim.
-                cloned_node.clone().lock().unwrap()
-                    .wallet.clone().lock().unwrap()
-                    .claims.iter().filter(|claim_option| {
-                        match claim_option {
-                            Some(claim) => { claim.maturation_time <= SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() },
-                            None => { false }
-                        }
-                    }).for_each(|claim| {
-                        let block = Block::mine(
-                            cloned_node.lock().unwrap().reward_state.clone(), 
-                            claim.clone().unwrap(),
-                            cloned_node.lock().unwrap().last_block.clone().unwrap(),
-                            cloned_node.lock().unwrap().account_state.lock().unwrap().mineable.clone(),
-                            cloned_node.lock().unwrap().account_state.clone(),
-                            cloned_node.lock().unwrap().network_state.clone(),
-                        );
-
-                        if let Some(result) = block {
-                            match result {
-                                Ok(block) => {
-                                    let block_bytes = block.as_bytes();
-                                    let header = "NEW_BLK".as_bytes().to_vec();
-                                    let peer_id = cloned_node.clone().lock().unwrap().id.to_string().as_bytes().to_vec();
-                                    let message = message::structure_message(header, peer_id, block_bytes);
-                                    message::publish_message(cloned_node.clone(), message, "block".to_string());
-                                },
-                                Err(e) => {
-                                    println!("Error while trying to mine new block: {}", e);
-                                }
-                            }
-                        }
-                    });
-
-            });
-
         task::block_on(future::poll_fn(move |cx: &mut Context<'_>| {
-            
+            let atomic_message_queue = Arc::clone(&atomic_node.lock().unwrap().swarm.behaviour().queue);
+            let task_node = Arc::clone(&atomic_node);
+            thread::spawn(move || 
+                loop {
+                    match atomic_message_queue.lock().unwrap().pop_front() {
+                        Some(message) => {
+                            let cloned_node = Arc::clone(&task_node);
+                            message::process_message(message, cloned_node);
+                        },
+                        None => {},
+                }});
+
             let task_node = Arc::clone(&atomic_node);
             loop {
                 let cloned_node = Arc::clone(&task_node);
@@ -304,64 +249,233 @@ impl Node {
 }
 
 fn handle_input_line(node: Arc<Mutex<Node>>, line: String) {
-    // Message matching
-    //
-    // Insure topic is correct if so, then publish to topic, 
-    // if not then return a message to the local peer indicating 
-    // the message topic is incorrect.
-    let args = line.split(' ').collect::<Vec<&str>>();
+    let args: Vec<&str> = line.split(' ').collect();
+    let task_node = Arc::clone(&node);
     match args[0] {
-        "SENDTXN" | "UPD_TXN" => {
-            let sender = node.lock().unwrap().wallet.clone();
-            let sender_address = sender.lock().unwrap().addresses[&args[1].parse::<u32>().unwrap()].clone();
-            let receiver = args[2].to_string();
-            let amount = args[3].parse::<u128>().unwrap();
-            let mut header: String = "".to_string();
+        "SENDTXN" => {
 
-            if args[0] == "SENDTXN" {
-                header.push_str("NEW_TXN");
-            } else {
-                header.push_str("UPD_TXN");
+            let txn = task_node.lock().unwrap().wallet.lock().unwrap().send_txn(
+                args[1].parse::<u32>().unwrap(), 
+                args[2].to_string(), 
+                args[3].parse::<u128>().unwrap()
+            );
+
+            if let Ok(txn) = txn {
+                let header = "NEW_TXN".to_string().as_bytes().to_vec();
+                let id = task_node.lock().unwrap().id.clone().to_string().as_bytes().to_vec();
+                let message = message::structure_message(header, id, txn.as_bytes());
+                if let Err(e) = node.lock().unwrap().swarm.behaviour_mut().gossipsub.publish(Topic::new("test-net"), message) {
+                    println!("Error publishing message: {:?}", e);
+                };
             }
 
-            let txn = Txn::new(sender, sender_address, receiver, amount).as_bytes();
-
-            let mut message_bytes = vec![];
-            let id = node.lock().unwrap().id.to_string().as_bytes().to_vec();
-            let header = header.as_bytes().to_vec();
-
-            println!("{}", header.len());
-            println!("{}", id.len());
-
-            message_bytes.extend(header);
-            message_bytes.extend(id);
-            message_bytes.extend(txn);
-
-            let message = hex::encode(message_bytes);
-            node.lock().unwrap()
-                .swarm.behaviour_mut()
-                .gossipsub.publish(Topic::new("txn"), message).unwrap();
         },
-        
-        "GET_BLK" => {
-            let message = hex::encode(line.as_bytes());
-            node.lock().unwrap()
-                .swarm.behaviour_mut()
-                .gossipsub.publish(Topic::new("block"), message).unwrap();
+        "MINEBLK" => {
+            thread::spawn(move || {
+                loop {
+                    let cloned_node = Arc::clone(&task_node);
+                    mine_block(cloned_node);
+                }
+            });
         },
-        "GETPEER" => {},
-        "GET_STE" => {},
-        "GET_TXN" => {},
-        "VRRB_IP" | "UPDST_P" => {
-            let message = hex::encode(line.as_bytes());
-            node.lock().unwrap()
-                .swarm.behaviour_mut()
-                .gossipsub.publish(Topic::new("test-net"), message).unwrap();
-        },
-        "MINEBLK" => {},
 
-        _ => {},
+        _ => {}
     }
 }
 
+pub fn mine_block(node: Arc<Mutex<Node>>) {
+    let cloned_node = Arc::clone(&node);
+    let last_block = cloned_node.lock().unwrap().last_block.clone();
+    let miner = Arc::clone(&cloned_node.lock().unwrap().wallet);
+    let network_state = Arc::clone(&cloned_node.lock().unwrap().network_state);
+    let reward_state = Arc::clone(&cloned_node.lock().unwrap().reward_state);
+    let account_state = Arc::clone(&cloned_node.lock().unwrap().account_state);
 
+    if let None = last_block {
+
+        let block = Block::genesis(Arc::clone(&miner), Arc::clone(&network_state), Arc::clone(&reward_state));
+        
+        if let Ok(block) = block {
+            let header = "NEW_BLK".to_string().as_bytes().to_vec();
+            let id = cloned_node.lock().unwrap().id.clone().to_string().as_bytes().to_vec();
+            let message = message::structure_message(header, id, block.as_bytes());
+
+            cloned_node.lock().unwrap().last_block = Some(block.clone());
+            cloned_node.lock().unwrap().account_state.lock().unwrap().claims.extend(block.owned_claims.clone());
+            let block_archive = cloned_node.lock().unwrap()
+                .network_state.lock().unwrap()
+                .state.get::<HashMap<u128, Block>>("blockarchive").clone();
+
+            if let Some(mut map) = block_archive {
+                map.insert(block.block_height.clone(), block.clone());
+                if let Ok(_) = cloned_node.lock().unwrap().network_state.lock().unwrap().state.set("blockarchive", &map) {
+                    println!("Successfully set block archive to network state");
+                }
+            } else {
+                let mut map: HashMap<u128, Block> = HashMap::new();
+                map.insert(block.block_height.clone(), block.clone());
+                if let Ok(_) = cloned_node.lock().unwrap().network_state.lock().unwrap().state.set("blockarchive", &map) {
+                    println!("Successfully set block to blockarchive");
+                }
+            }
+
+            let claims = cloned_node.lock().unwrap().network_state.lock().unwrap().state.get::<HashMap<u128, Claim>>("claims").clone();
+            if let Some(mut map) = claims {
+                
+                map.extend(block.owned_claims.clone());
+                
+                if let Ok(_) = cloned_node.lock().unwrap().network_state.lock().unwrap().state.set("claims", &map) {
+                    println!("Successfully set new claims to network state");
+                }
+
+            } else {
+                let map = block.owned_claims.clone();
+                if let Ok(_) = cloned_node.lock().unwrap().network_state.lock().unwrap().state.set("claims", &map) {
+                    println!("Successfully set claims to network state");
+                }
+            }
+
+            let credits = cloned_node.lock().unwrap()
+                .network_state.lock().unwrap()
+                .state.get::<HashMap<String, u128>>("credits").clone();
+
+            let debits = cloned_node.lock().unwrap()
+                .network_state.lock().unwrap()
+                .state.get::<HashMap<String, u128>>("debits").clone();
+
+            if let (Some(mut creditmap), Some(mut debitmap)) = (credits, debits) {
+                block.data.iter().for_each(|(_txn_id, txn)| {
+                    if let Some(entry) = creditmap.get_mut(&txn.receiver_address) {
+                        *entry += txn.txn_amount;
+                    } else {
+                        creditmap.insert(txn.receiver_address.clone(), txn.txn_amount.clone());
+                    }
+                    if let Some(entry) = debitmap.get_mut(&txn.sender_address) {
+                        *entry += txn.txn_amount;
+                    } else {
+                        debitmap.insert(txn.sender_address.clone(), txn.txn_amount.clone());
+                    }
+                });
+
+                if let Some(entry) = creditmap.get_mut(&block.miner) {
+                    *entry += block.block_reward.amount;
+                } else {
+                    creditmap.insert(block.miner.clone(), block.block_reward.amount.clone());
+                }
+
+                if let Ok(_) = cloned_node.lock().unwrap().network_state.lock().unwrap().state.set("credits", &creditmap) {
+                    println!("Successfully set credits to network state");
+                }
+
+                if let Ok(_) = cloned_node.lock().unwrap().network_state.lock().unwrap().state.set("debits", &debitmap) {
+                    println!("Successfully set debits to network state");
+                }
+
+                
+            } else {
+                let mut creditmap: HashMap<String, u128> = HashMap::new();
+                let mut debitmap: HashMap<String, u128> = HashMap::new();
+
+                block.data.iter().for_each(|(_txn_id, txn)| {
+                    creditmap.insert(txn.receiver_address.clone(), txn.txn_amount);
+                    debitmap.insert(txn.sender_address.clone(), txn.txn_amount);
+                });
+
+                creditmap.insert(block.miner.clone(), block.block_reward.amount);
+
+                if let Ok(_) = cloned_node.lock().unwrap().network_state.lock().unwrap().state.set("credits", &creditmap) {
+                    println!("Successfully set credits to network state");
+                }
+
+                if let Ok(_) = cloned_node.lock().unwrap().network_state.lock().unwrap().state.set("debits", &debitmap) {
+                    println!("Successfully set debits to network state");
+                }
+            }
+
+            if let Ok(_) = cloned_node.lock().unwrap().network_state.lock().unwrap().state.set("lastblock", &block) {
+                println!("Successfully set last block to network state");
+            }
+
+            let reward_state = Arc::clone(&reward_state);
+            let mut reward_state = reward_state.lock().unwrap().clone();
+            reward_state.update(block.block_reward.category);
+
+            if let Ok(_) = cloned_node.lock().unwrap().network_state.lock().unwrap().state.set("rewardstate", &reward_state) {
+                println!("Successfully set reward_state to network state");
+            }
+
+            if let Err(e) = cloned_node.lock().unwrap().network_state.lock().unwrap().state.dump() {
+                println!("Erorr dumping state to file.")
+            };
+
+            cloned_node.lock().unwrap().account_state.lock().unwrap().claims.extend(block.owned_claims.clone());
+
+            println!("Set claims to local account state");
+
+            if let Err(e) = cloned_node.lock().unwrap().swarm.behaviour_mut().gossipsub.publish(Topic::new("test-net"), message) {
+                println!("Error sending message to network: {:?}", e);
+            }
+        }
+    } else {
+        let claims = cloned_node.lock().unwrap().account_state.lock().unwrap().claims.clone();
+        let address = cloned_node.lock().unwrap().wallet.lock().unwrap().addresses[&1].clone();
+        if let Some(mut claim) = claims.iter().filter(|(claim_number, claim)| {
+            claim.current_owner == Some(address.clone()) 
+        }).min_by_key(|x| x.0) {
+            let mut claim_to_mine = claim.1.clone();
+            let signature = node.lock().unwrap().wallet.lock().unwrap().sign(&claim_to_mine.claim_payload.clone().unwrap());
+            if let Some(mut map) = claim_to_mine.chain_of_custody.get_mut(&address) {
+                if let Some(entry) = map.get_mut("buyer_signature") {
+                    *entry = Some(CustodianInfo::BuyerSignature(Some(signature.unwrap().to_string())));
+                };
+            }
+            let block = Block::mine(
+                claim_to_mine, 
+                last_block.unwrap(), 
+                Arc::clone(&account_state), 
+                Arc::clone(&reward_state), 
+                Arc::clone(&network_state), 
+                Arc::clone(&miner)
+            );
+            if let Some(Ok(block)) = block {
+
+
+
+                let header = "NEW_BLK".to_string().as_bytes().to_vec();
+                let id = cloned_node.lock().unwrap().id.clone().to_string().as_bytes().to_vec();
+                let message = message::structure_message(header, id, block.as_bytes());                
+                cloned_node.lock().unwrap().last_block = Some(block);
+                if let Err(e) = cloned_node.lock().unwrap().swarm.behaviour_mut().gossipsub.publish(Topic::new("test-net"), message) {
+                    println!("Error publishing message: {:?}", e);
+                }
+
+            }
+        } else {
+            println!("No claims to mine");
+        };
+    }
+}
+
+pub fn update_last_block(node: Arc<Mutex<Node>>, block: Block) {
+    node.lock().unwrap().last_block = Some(block.clone());
+}
+
+pub fn update_block_archive(node: Arc<Mutex<Node>>) {
+
+}
+
+pub fn update_claims(node: Arc<Mutex<Node>>) {
+
+}
+
+pub fn update_credits(node: Arc<Mutex<Node>>) {
+
+}
+
+pub fn update_debits(node: Arc<Mutex<Node>>) {
+
+}
+
+pub fn update_reward_state(node: Arc<Mutex<Node>>) {
+
+}

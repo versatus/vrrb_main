@@ -5,7 +5,7 @@ use secp256k1::{PublicKey, Signature};
 use serde::{Serialize, Deserialize};
 use crate::validator::ValidatorOptions;
 use crate::verifiable::Verifiable;
-use crate::{account::WalletAccount, account::AccountState, validator::Validator};
+use crate::{wallet::WalletAccount, account::AccountState, validator::Validator};
 use uuid::Uuid;
 use sha256::digest_bytes;
 use std::sync::{Arc, Mutex};
@@ -73,7 +73,6 @@ impl Txn {
     pub fn from_bytes(data: &[u8]) -> Txn {
 
         let to_string = String::from_utf8_lossy(data).into_owned();
-        println!("{}", &to_string);
         serde_json::from_str::<Txn>(&to_string).unwrap()
     }
 }

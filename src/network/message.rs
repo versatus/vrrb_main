@@ -1,6 +1,7 @@
 use crate::block::Block;
 use crate::claim::{Claim, CustodianInfo};
 use crate::txn::Txn;
+use crate::state::{NetworkState};
 use crate::network::node::{Node, NodeAuth};
 use crate::validator::{Validator, Message};
 use crate::state::{PendingNetworkState};
@@ -9,6 +10,7 @@ use libp2p::gossipsub::{
     IdentTopic as Topic,
 };
 use std::thread;
+use std::fs;
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -31,280 +33,243 @@ pub fn process_message(message: GossipsubMessage, node: Arc<Mutex<Node>>) {
         ).unwrap()
     ).into_owned();
 
-    let header = &data_string[HEADER_START_INDEX..HEADER_END_INDEX];
-    let sender_id = &data_string[PEER_ID_START_INDEX..PEER_ID_END_INDEX];
-    let data = &data_string[PEER_ID_END_INDEX..];
+    if &data_string.chars().count() > &PEER_ID_END_INDEX {
+        let header = &data_string[HEADER_START_INDEX..HEADER_END_INDEX];
+        let sender_id = &data_string[PEER_ID_START_INDEX..PEER_ID_END_INDEX].to_string();
+        let data = &data_string[PEER_ID_END_INDEX..].to_string();
+        match header {
+            "NEW_TXN" => {
+                process_txn_message(data.as_bytes().to_vec(), Arc::clone(&node));
+            },
+            "UPD_TXN" => {
+                process_txn_message(data.as_bytes().to_vec(), Arc::clone(&node));    
+            },
+            "CLM_SAL" => {
+                // TODO: Need to add a ClaimSale Message in Validator for when a claim holder
+                // places it for sale.
+                process_claim_sale_message(data.as_bytes().to_vec(), Arc::clone(&node));
+            },
+            "CLM_ACQ" => {
+                process_claim_acquired_message(data.as_bytes().to_vec(), Arc::clone(&node));
+            },
+            "NEW_BLK" => {
 
-    println!("{:?}", &data_string[0..7]);
-    println!("{:?}", &data_string[7..59]);
-    println!("{:?}", &data_string[59..]);
-    
-    match header {
-        "NEW_TXN" => {
-            process_txn_message(data.as_bytes().to_vec(), node)
-        },
-        "UPD_TXN" => {
-            process_txn_message(data.as_bytes().to_vec(), node)    
-        },
-        "CLM_HOM" => {
-            process_claim_acquired_message(data.as_bytes().to_vec(), node)
-        },
-        "CLM_SAL" => {
-            // TODO: Need to add a ClaimSale Message in Validator for when a claim holder
-            // places it for sale.
-            process_claim_sale_message(data.as_bytes().to_vec(), node)
-        },
-        "CLM_ACQ" => {
-            process_claim_acquired_message(data.as_bytes().to_vec(), node)
-        },
-        "NEW_BLK" => {
-            process_new_block_message(data.as_bytes().to_vec(), node)
-        },
-        "GET_BLK" => {
-            process_get_block_message(sender_id.to_string(), node);              
-        },
-        "GETBLKS" => {
-            // If node.node_auth == NodeAuth::Full, send a series of messages with blocks starting with
-            // the first block ending with the most recent block.
-            process_get_all_blocks_message(sender_id.to_string(), node);
-        },
-        "VRRB_IP" => {
-            // Store in the ballot_box proposals hashmap with the proosal ID and expiration date.
-            // Ask receiving node if they'd like to vote now, and provide ability to set reminder
-            // at specified intervals to ask the node to cast the vote.
-            let proposal_id = data[0..16].to_string();
-            let proposal_expiration = u128::from_str(&data[16..]).unwrap();
-            process_vrrb_ip_message(proposal_id, proposal_expiration, node);
-        },
-        "UPD_STE" => {
+                process_new_block_message(data.as_bytes().to_vec(), Arc::clone(&node));
+            },
+            "GET_BLK" => {
+                process_get_block_message(sender_id.to_string(), Arc::clone(&node));              
+            },
+            "GETBLKS" => {
+                // If node.node_auth == NodeAuth::Full, send a series of messages with blocks starting with
+                // the first block ending with the most recent block.
+                process_get_all_blocks_message(sender_id.to_string(), Arc::clone(&node));
+            },
+            "VRRB_IP" => {
+                // Store in the ballot_box proposals hashmap with the proosal ID and expiration date.
+                // Ask receiving node if they'd like to vote now, and provide ability to set reminder
+                // at specified intervals to ask the node to cast the vote.
+                let proposal_id = data[0..16].to_string();
+                let proposal_expiration = u128::from_str(&data[16..]).unwrap();
+                process_vrrb_ip_message(proposal_id, proposal_expiration, Arc::clone(&node));
+            },
+            "UPD_STE" => {
 
-            let requestor = data[0..52].to_string();
+                let requestor = data[0..52].to_string();
 
-            if requestor == node.lock().unwrap().id.to_string() {
-                // Request last state + mineable transactions.
+                if requestor == node.lock().unwrap().id.to_string() {
+                    // Request last state + mineable transactions.
+                }
+            },
+            "LST_BLK" => {
+                let requestor = data[0..52].to_string();
+                let data = data[52..].to_string();
+                if requestor == node.lock().unwrap().id.to_string() {          
+                    process_last_block_message(data.as_bytes().to_vec(), Arc::clone(&node));
+                }
+            },
+            "ALLBLKS" => {
+                // Publish all the blocks from the beginning of the blockchain, 
+                // this is for new archive node
+                let requestor = data[0..52].to_string();
+                let data = data[52..].to_string();
+                // the highest block will be included in this message as well, so get the highest block to ensure that
+                // when the highest block is completed, check and ensure that the network state is in consensus.
+                // sequence blocks and store them into a temporary hashmap to then update the state.
+                if requestor == node.lock().unwrap().id.to_string() {
+                    process_all_blocks_message(data.as_bytes().to_vec(), Arc::clone(&node));
+                }
+            },
+            "TXN_VAL" => {
+                // If valid add to validator vector for the txn.
+                // If confirmed (2/3rds of validators with a minimum of 10 returned as valid)
+                // set the txn as mineable.
+                let thread_data = data.clone();
+                thread::spawn(move || {
+                    process_txn_validator_message(thread_data.clone().as_bytes().to_vec(), Arc::clone(&node));
+                }).join().unwrap();
+            },
+            "CLM_VAL" => {
+                // Same as above, but for claim validators
+                let thread_data = data.clone();
+                thread::spawn(move || {
+                    process_claim_sale_validator_message(thread_data.clone().as_bytes().to_vec(), Arc::clone(&node));
+                }).join().unwrap();
+            },
+            "INV_BLK" => {
+                // If this node proposed the block, and the block is invalid, update local state with 
+                // publish an invalid block message directed at the publisher
+                // of the original block (using their PeerID in the message so that other nodes know to)
+                // either ignore or forward to the original publisher.
+                let proposer = data[0..52].to_string();
+                let local_id = node.lock().unwrap().id.clone().to_string();
+                if proposer == local_id {
+                    process_invalid_block_message(Arc::clone(&node));
+                }
+            },
+            "BLKVOTE" => {
+                let vote: u32 = data.chars().nth(0).unwrap().to_digit(10).unwrap().clone();
+                let data = data[1..].to_string().clone();
+                thread::spawn(move || {
+                    process_block_vote_message(data.as_bytes().to_vec(), vote, Arc::clone(&node));
+                }).join().unwrap();
+                    
+            },
+            "BLKARCV" => {
+                let block = Block::from_bytes(data.as_bytes());
+                thread::spawn(move || {
+                    process_block_archive_message(block, Arc::clone(&node));
+                }).join().unwrap();
             }
-        },
-        "LST_BLK" => {
-            let requestor = data[0..52].to_string();
-            let data = data[52..].to_string();
-            if requestor == node.lock().unwrap().id.to_string() {          
-                process_last_block_message(data.as_bytes().to_vec(), node);
-            }
-        },
-        "ALLBLKS" => {
-            // Publish all the blocks from the beginning of the blockchain, 
-            // this is for new archive node
-            let requestor = data[0..52].to_string();
-            let data = data[52..].to_string();
-            // the highest block will be included in this message as well, so get the highest block to ensure that
-            // when the highest block is completed, check and ensure that the network state is in consensus.
-            // sequence blocks and store them into a temporary hashmap to then update the state.
-            if requestor == node.lock().unwrap().id.to_string() {
-                process_all_blocks_message(data.as_bytes().to_vec(), node);
-            }
-        },
-        "TXN_VAL" => {
-            // If valid add to validator vector for the txn.
-            // If confirmed (2/3rds of validators with a minimum of 10 returned as valid)
-            // set the txn as mineable.
-            process_txn_validator_message(data.as_bytes().to_vec(), node);
-        },
-        "INV_BLK" => {
-            // If this node proposed the block, and the block is invalid, update local state with 
-            // publish an invalid block message directed at the publisher
-            // of the original block (using their PeerID in the message so that other nodes know to)
-            // either ignore or forward to the original publisher.
-            let proposer = data[0..52].to_string();
-
-            if proposer == node.lock().unwrap().id.to_string() {
-                process_invalid_block_message(node);
-            }
-        },
-        "BLKVOTE" => {
-            let vote: u32 = data.chars().nth(0).unwrap().to_digit(10).unwrap();
-            let data = data[1..].to_string();
-            process_block_vote_message(data.as_bytes().to_vec(), vote, node);    
-        },
-        "BLKARCV" => {
-            let block = Block::from_bytes(data.as_bytes());
-            process_block_archive_message(block, node);
+            _ => {}
         }
-        _ => {}
-
+    } else {
+        println!("{}", data_string);
+        process_generic_message(Arc::clone(&node), data_string.to_string());
     }
 }
 
 pub fn process_txn_message(data: Vec<u8>, node: Arc<Mutex<Node>>) {
-    let message_node = node.lock().unwrap();
-    let mut txn = Txn::from_bytes(&data);
-    println!("{:?}", &txn);
-    let txn_validator = Validator::new(
-        Message::Txn(
-            serde_json::to_string(&txn).unwrap(), 
-            serde_json::to_string(&message_node.account_state.clone().lock().unwrap().clone()).unwrap()
-        ),
-        message_node.wallet.clone().lock().unwrap().pubkey.clone(),
-        message_node.account_state.clone().lock().unwrap().clone()
-    );
-    // UPDATE LOCAL Account State pending balances for sender(s)
-    // receivers.
-
-    drop(message_node);
-
-    match txn_validator {
-        Some(validator) => { txn.validators.push(validator.clone()); publish_validator(validator, node, "TXN_VAL"); },
-        None => println!("You are not running a validator node or have no claims staked")
-    };
-
-}
-
-pub fn process_claim_homesteading_message(data: Vec<u8>, node: Arc<Mutex<Node>>) {
-    let message_node = Arc::clone(&node);
-    let claim = Claim::from_bytes(&data);
-    if claim.claim_number > 1000 {
-        let claim_validator = Validator::new(
-            Message::ClaimHomesteaded(
-                serde_json::to_string(&claim).unwrap(), 
-                claim.current_owner.0.unwrap(), 
-                serde_json::to_string(&message_node.lock().unwrap().account_state.clone().lock().unwrap().clone()).unwrap()
-            ), 
-            message_node.lock().unwrap().wallet.clone().lock().unwrap().pubkey.clone(),
-            message_node.lock().unwrap().account_state.clone().lock().unwrap().clone()
-        );
-
-        drop(message_node);
-
-        match claim_validator {
-            Some(validator) => {
-                publish_validator(validator, node, "CLM_VAL");
-            },
-            None => println!("You are not running a validator node or have no claims staked")
-        }
-    } else {
-        node.lock().unwrap().account_state.lock().unwrap().claims.entry(claim.claim_number.clone()).or_insert(claim.clone());
-        node.lock().unwrap().account_state.lock().unwrap().owned_claims.entry(claim.claim_number).or_insert(claim.current_owner.0.unwrap().clone());
-    }
+    let txn = Txn::from_bytes(&data);
+    node.lock().unwrap().account_state.lock().unwrap().pending.insert(txn.txn_id.clone(), txn);
+    println!("{:?}", node.lock().unwrap().account_state.lock().unwrap().pending);
 }
 
 pub fn process_claim_sale_message(data: Vec<u8>, node: Arc<Mutex<Node>>) {
     let claim = Claim::from_bytes(&data);
-    match claim.clone().chain_of_custody.get(&claim.clone().current_owner.1.unwrap()).unwrap().get("acquired_from").unwrap() {
-        Some(custodian_info) => {
-            match custodian_info {
-                CustodianInfo::AcquiredFrom((pubkey, _)) => {
-                    let message_node = node.lock().unwrap();
-                    let claim_validator = Validator::new(
-                        Message::ClaimAcquired(
-                            serde_json::to_string(&claim).unwrap(), 
-                            pubkey.as_ref().unwrap().to_owned(), 
-                            serde_json::to_string(&message_node.account_state.clone().lock().unwrap().clone()).unwrap(),
-                            claim.clone().current_owner.0.unwrap()
-                        ), 
-                        message_node.wallet.clone().lock().unwrap().pubkey.clone(), 
-                        message_node.account_state.clone().lock().unwrap().clone()
-                    );
-                                
-                    drop(message_node);
-
-                    match claim_validator {
-                        Some(validator) => {
-                            publish_validator(validator, node, "CLM_VAL");
-                        },
-                        None => println!("You are not running a validator node or have no claims staked")
-                    }
-                },
-                _ => {println!("Invalid CustodianInfo option for this process")}
-            }
-        },
-        None => println!("There is no previous owner, this claim cannot be sold or acquired until it has been homesteaded first")
-    }
+    println!("{:?}", claim);
 }
 
 pub fn process_claim_acquired_message(bytes: Vec<u8>, node: Arc<Mutex<Node>>) {
     let claim = Claim::from_bytes(&bytes[..]);
-    match claim.clone().chain_of_custody.get(&claim.clone().current_owner.1.unwrap()).unwrap().get("acquired_from").unwrap() {
-        Some(custodian_info) => {
-            match custodian_info {
-                CustodianInfo::AcquiredFrom((pubkey, _)) => {
-                    let message_node = node.lock().unwrap();
-                    let claim_validator = Validator::new(
-                        Message::ClaimAcquired(
-                            serde_json::to_string(&claim).unwrap(), 
-                            pubkey.as_ref().unwrap().to_owned(), 
-                            serde_json::to_string(&message_node.account_state.clone().lock().unwrap().clone()).unwrap(),
-                            claim.clone().current_owner.1.unwrap()
-                        ), 
-                        message_node.wallet.clone().lock().unwrap().pubkey.clone(), 
-                        message_node.account_state.clone().lock().unwrap().clone()
-                    );
-                                
-                    drop(message_node);
-
-                    match claim_validator {
-                        Some(validator) => {
-                            publish_validator(validator, node, "CLM_VAL");
-                        },
-                        None => println!("You are not running a validator node or have no claims staked")
-                    }
-                },
-                _ => {println!("Invalid CustodianInfo option for this process")}
-
-            }
-        },
-        None => println!("There is no previous owner, this claim cannot be sold or acquired until it has been homesteaded first")
-    }
+    println!("{:?}", claim);
 }
 
 pub fn process_new_block_message(data: Vec<u8>, node: Arc<Mutex<Node>>) {
-    let message_node = Arc::clone(&node);
     let block = Block::from_bytes(&data);
 
-    if block.claim.claim_number < 1000 {
-
-        let block_validator = Validator::new(
-            Message::NewBlock(
-                serde_json::to_string(&message_node.lock().unwrap().last_block.as_ref().unwrap()).unwrap(), 
-                serde_json::to_string(&block).unwrap(), 
-                block.miner.clone(), 
-                serde_json::to_string(&message_node.lock().unwrap().network_state.clone().lock().unwrap().clone()).unwrap(),
-                serde_json::to_string(&message_node.lock().unwrap().account_state.clone().lock().unwrap().clone()).unwrap(),
-                serde_json::to_string(&message_node.lock().unwrap().reward_state.clone().lock().unwrap().clone()).unwrap()
-            ), 
-            message_node.lock().unwrap().wallet.clone().lock().unwrap().pubkey.clone(),
-            message_node.lock().unwrap().account_state.clone().lock().unwrap().clone()
-        );
-
-        drop(message_node);
-
-        match block_validator {
-            Some(validator) => {
-                match &validator.valid {
-                    true => {
-                        let header = "BLKVOTE".to_string().as_bytes().to_vec();
-                        let id = node.lock().unwrap().id.to_string().as_bytes().to_vec();
-                        let block_height = block.block_height;
-                        let vote = vec![1u8];
-                        let mut message_bytes = vec![];
-                        message_bytes.extend(vote);
-                        message_bytes.extend(block_height.to_ne_bytes().to_vec());
-                        let message_bytes = structure_message(header, id, message_bytes);
-
-                        publish_message(node.clone(), message_bytes, "block".to_string());
-                    },
-                    false => {
-                        // Send false message back to network with reason for rejection
-                        let header = "BLKVOTE".to_string().as_bytes().to_vec();
-                        let id = node.lock().unwrap().id.to_string().as_bytes().to_vec();
-                        let vote = vec![0u8];
-
-                        let message_bytes = structure_message(header, id, vote);
-                        publish_message(node.clone(), message_bytes, "block".to_string());
-                    }
-                }   
-            },
-            None => { println!("You are not running a validator node or you do not have any claims staked") }
+    let block_archive = node.lock().unwrap().network_state.lock().unwrap().state.get::<HashMap<u128, Block>>("blockarchive").clone();
+    if let Some(mut map) = block_archive {
+        map.insert(block.block_height.clone(), block.clone());
+        if let Ok(_) = node.lock().unwrap().network_state.lock().unwrap().state.set("blockarchive", &map) {
+            println!("Successfully set block archive to network state");
+        }
+    } else {
+        let mut map: HashMap<u128, Block> = HashMap::new();
+        map.insert(block.block_height.clone(), block.clone());
+        if let Ok(_) = node.lock().unwrap().network_state.lock().unwrap().state.set("blockarchive", &map) {
+            println!("Successfully set block to blockarchive");
         }
     }
+
+    let claims = node.lock().unwrap().network_state.lock().unwrap().state.get::<HashMap<u128, Claim>>("claims").clone();
+    if let Some(mut map) = claims {
+        map.extend(block.owned_claims.clone());
+        if let Ok(_) = node.lock().unwrap().network_state.lock().unwrap().state.set("claims", &map) {
+            println!("Successfully set new claims to network state");
+        }
+    } else {
+        let map = block.owned_claims.clone();
+        if let Ok(_) = node.lock().unwrap().network_state.lock().unwrap().state.set("claims", &map) {
+            println!("Successfully set claims to network state");
+        }
+    }
+
+    let credits = node.lock().unwrap().network_state.lock().unwrap().state.get::<HashMap<String, u128>>("credits").clone();
+    let debits = node.lock().unwrap().network_state.lock().unwrap().state.get::<HashMap<String, u128>>("debits").clone();
+    if let (Some(mut creditmap), Some(mut debitmap)) = (credits, debits) {
+        block.data.iter().for_each(|(_txn_id, txn)| {
+            if let Some(entry) = creditmap.get_mut(&txn.receiver_address) {
+                *entry += txn.txn_amount;
+            } else {
+                creditmap.insert(txn.receiver_address.clone(), txn.txn_amount.clone());
+            }
+            if let Some(entry) = debitmap.get_mut(&txn.sender_address) {
+                *entry += txn.txn_amount;
+            } else {
+                debitmap.insert(txn.sender_address.clone(), txn.txn_amount.clone());
+            }
+        });
+
+        if let Some(entry) = creditmap.get_mut(&block.miner) {
+            *entry += block.block_reward.amount;
+        } else {
+            creditmap.insert(block.miner.clone(), block.block_reward.amount.clone());
+        }
+
+        if let Ok(_) = node.lock().unwrap().network_state.lock().unwrap().state.set("credits", &creditmap) {
+            println!("Successfully set credits to network state");
+        }
+
+        if let Ok(_) = node.lock().unwrap().network_state.lock().unwrap().state.set("debits", &debitmap) {
+            println!("Successfully set debits to network state");
+        }
+
+
+        let reward_state = node.lock().unwrap().reward_state.lock().unwrap().clone().update(block.block_reward.category);
+        
+        if let Ok(_) = node.lock().unwrap().network_state.lock().unwrap().state.set("rewardstate", &reward_state) {
+            println!("Successfully set reward state to network state");
+        }
+
+        println!("Set claims to local account state: {:?}", node.lock().unwrap().account_state.lock().unwrap().claims.clone());
+
+    } else {
+        let mut creditmap: HashMap<String, u128> = HashMap::new();
+        let mut debitmap: HashMap<String, u128> = HashMap::new();
+
+        block.data.iter().for_each(|(_txn_id, txn)| {
+            creditmap.insert(txn.receiver_address.clone(), txn.txn_amount);
+            debitmap.insert(txn.sender_address.clone(), txn.txn_amount);
+        });
+
+        creditmap.insert(block.miner.clone(), block.block_reward.amount);
+
+        if let Ok(_) = node.lock().unwrap().network_state.lock().unwrap().state.set("credits", &creditmap) {
+            println!("Successfully set credits to network state");
+        }
+
+        if let Ok(_) = node.lock().unwrap().network_state.lock().unwrap().state.set("debits", &debitmap) {
+            println!("Successfully set debits to network state");
+        }
+    }
+
+    if let Ok(_) = node.lock().unwrap().network_state.lock().unwrap().state.set("lastblock", &block) {
+        println!("Successfully set last block to network state");
+    }
+
+    let reward_state = node.lock().unwrap().reward_state.lock().unwrap().clone().update(block.block_reward.category);
+    if let Ok(_) = node.lock().unwrap().network_state.lock().unwrap().state.set("rewardstate", &reward_state) {
+        println!("Successfully set reward state to network state");
+    }
+
+    if let Err(e) = node.lock().unwrap().network_state.lock().unwrap().clone().state.dump() {
+        println!("Error in dumping state to file");
+    }
+
+    node.lock().unwrap().account_state.lock().unwrap().claims.extend(block.owned_claims.clone());
+
+    println!("Set claims to local account state");
+
 }
 
 pub fn process_vrrb_ip_message(proposal_id: String, proposal_expiration: u128, node: Arc<Mutex<Node>>) {
@@ -330,99 +295,35 @@ pub fn process_get_block_message(peer_id: String, node: Arc<Mutex<Node>>) {
 
 pub fn process_last_block_message(data: Vec<u8>, node: Arc<Mutex<Node>>) {
 
-    let local_last_block_height = node.lock().unwrap().network_state.clone().lock().unwrap().state.get::<Block>("last_block").unwrap().block_height;
     let last_block = Block::from_bytes(&data);
-
-    if local_last_block_height == last_block.block_height - 1 {
-        // update state with last block information.
-        let pending_network_state = PendingNetworkState::temp(node.lock().unwrap().network_state.clone(), last_block.clone());
-                            
-        if pending_network_state.hash(&last_block.timestamp.to_ne_bytes()) == last_block.state_hash {
-            // You are now in consensus as of the last block, otherwise you are missing something
-        } else {
-
-            let message = structure_message(
-                "ALLBLKS".as_bytes().to_vec(), 
-                node.lock().unwrap().id.clone().to_string().as_bytes().to_vec(), 
-                node.lock().unwrap().last_block.clone().unwrap().block_height.to_string().as_bytes().to_vec()
-            );
-            publish_message(node, message, "block".to_string());
-        }
-    }
+    println!("{:?}", last_block);
 }
 
 pub fn process_get_all_blocks_message(sender_id: String, node: Arc<Mutex<Node>>) {
-    match node.clone().lock().unwrap().node_type {
-        NodeAuth::Full => {
-            // Get the largest block height (the largest key), and then iterate through
-            // the archived blocks and send a message for each blocks.
-            let block_archive: Option<HashMap<u128, Block>> = node.lock().unwrap().network_state.lock().unwrap().state.get("block_archive");
-            match block_archive {
-                Some(map) => {
-                    // Sort the map by key and send each block in a message.
-                    map.iter().for_each(|(_height, block)| {
-                        let mut message_bytes = sender_id.as_bytes().to_vec();
-                        message_bytes.extend(serde_json::to_string::<Block>(&block).unwrap().as_bytes().to_vec());
-                        let message = structure_message(
-                            "BLKARCV".to_string().as_bytes().to_vec(), 
-                            node.clone().lock().unwrap().id.to_string().as_bytes().to_vec(), 
-                            message_bytes
-                        );
-                        publish_message(node.clone(), message, "block".to_string());
-                    })
-
-                },
-                None => {}
-            }
-        },
-        _ => {
-            // Nothing to do if you're not a running a full node with the archived blocks
-        }
-    }
+    
 }
 
 pub fn process_all_blocks_message(data: Vec<u8>, node: Arc<Mutex<Node>>) {
     let block = Block::from_bytes(&data);
-    match node.lock().unwrap().temp_blocks.clone() {
-        Some(mut map) => {
-            map.entry(block.clone().block_height).or_insert(block.clone());
-        },
-        None => {
-            let mut message_node = node.lock().unwrap();
-            let mut map = HashMap::new();
-            map.entry(block.block_height).or_insert(block);
-            message_node.temp_blocks = Some(map);
-        }
-    }
+    println!("{:?}", block);
 }
 
 pub fn process_txn_validator_message(data: Vec<u8>, node: Arc<Mutex<Node>>) {
-    let txn_validator_thread = thread::spawn(move || {
-        let validator = Validator::from_bytes(&data);
-        match validator.message.clone() {
-            Message::Txn(txn, _) => {
-                let txn = serde_json::from_str::<Txn>(&txn).unwrap();
-                node.lock().unwrap().account_state.lock().unwrap().pending.get_mut(&txn.txn_id).unwrap().validators.push(validator);
+    let validator = Validator::from_bytes(&data);
+    println!("{:?}", validator);
+}
 
-                // If the transaction has been validated by more than the number of required validators, move from pending to mineable
-                if ((node.lock().unwrap().account_state.lock().unwrap()
-                                .pending.get(&txn.txn_id).unwrap()
-                                .validators.iter().filter(|v| v.valid).count() as f64 / 
-                    node.lock().unwrap().account_state.lock().unwrap()
-                                .pending.get(&txn.txn_id)
-                                .unwrap().validators.len() as f64 
-                    ) >= 2.0/3.0) && node.lock().unwrap().account_state.lock().unwrap().pending.get(&txn.txn_id).unwrap().validators.len() >= 10 {
-                        node.lock().unwrap().account_state.lock().unwrap().mineable.insert(txn.txn_id.clone(), txn.clone());
-                        node.lock().unwrap().account_state.lock().unwrap().pending.remove(&txn.txn_id);
-                    }
-            },
-            _ => { 
-                // This is an invalid message type for this particular function
-            },
-        }
-    });
+pub fn process_claim_sale_validator_message(data: Vec<u8>, node: Arc<Mutex<Node>>) {
+    let validator = Validator::from_bytes(&data);
+    println!("{:?}", validator);
+}
 
-    txn_validator_thread.join().unwrap();  
+pub fn process_claim_stake_message(_data: Vec<u8>, _node: Arc<Mutex<Node>>) {
+
+}
+
+pub fn process_claim_available_message(_data: Vec<u8>, _node: Arc<Mutex<Node>>) {
+
 }
 
 pub fn process_invalid_block_message(node: Arc<Mutex<Node>>) {
@@ -475,9 +376,11 @@ pub fn process_block_vote_message(data: Vec<u8>, vote: u32, node: Arc<Mutex<Node
 }
 
 pub fn process_block_archive_message(block: Block, node: Arc<Mutex<Node>>) {
-    let mut block_archive = node.lock().unwrap().network_state.lock().unwrap().state.get::<HashMap<u128, Block>>("block_archive").unwrap();
-    block_archive.entry(block.block_height).or_insert(block);
-    node.lock().unwrap().network_state.lock().unwrap().state.set("block_archive", &block_archive).unwrap();
+
+}
+
+pub fn process_confirmed_block(block: Block, node: Arc<Mutex<Node>>) {
+
 }
 
 pub fn structure_message(header: Vec<u8>, peer_id: Vec<u8>, message: Vec<u8>) -> String {
@@ -507,5 +410,22 @@ pub fn publish_last_block(message: String, node: Arc<Mutex<Node>>) {
 }
 
 pub fn publish_message(node: Arc<Mutex<Node>>, message: String, topic: String) {
-    node.lock().unwrap().swarm.behaviour_mut().gossipsub.publish(Topic::new(topic), message).unwrap();
+    if let Err(e) = node.lock().unwrap().swarm.behaviour_mut().gossipsub.publish(Topic::new(topic), message) {
+        println!("Encountered error trying to publish message: {:?}", e);
+    };
+}
+
+pub fn process_generic_message(node: Arc<Mutex<Node>>, message: String) {
+    let path = node.lock().unwrap().cache_path.clone();
+    if let Ok(contents) = fs::read_to_string(&path.clone()) {
+        let mut parsed: HashMap<u128, String> = serde_json::from_str(&contents).unwrap();
+        let last_message_key = parsed.iter().max_by(|a, b| a.1.cmp(&b.1)).map(|(k, _v)| k).unwrap();
+        let key = last_message_key + 1;
+        parsed.insert(key, message);
+        fs::write(&path.clone(), &serde_json::to_string_pretty(&parsed).unwrap()).unwrap();
+    } else {
+        let mut parsed = HashMap::new();
+        parsed.insert(0, message);
+        fs::write(&path.clone(), &serde_json::to_string_pretty(&parsed).unwrap()).unwrap();
+    }
 }

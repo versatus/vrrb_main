@@ -1,28 +1,25 @@
-use std::collections::HashMap;
-use std::str::FromStr;
-use std::time::{SystemTime, UNIX_EPOCH};
 use crate::reward;
 use crate::state::{NetworkState, PendingNetworkState};
 use crate::validator::ValidatorOptions;
 use crate::verifiable::Verifiable;
 use crate::{
-    wallet::WalletAccount,
     account::AccountState,
-    claim::{Claim, CustodianInfo}, 
-    txn::Txn, 
-    reward::{RewardState, Reward},
     allocator::allocate_claims,
-    network::node::Node,
+    claim::{Claim, CustodianInfo},
+    reward::{Reward, RewardState},
+    txn::Txn,
+    wallet::WalletAccount,
 };
-use secp256k1::{Signature};
+use secp256k1::key::PublicKey;
+use secp256k1::Signature;
 use serde::{Deserialize, Serialize};
 use sha256::digest_bytes;
-use std::io::Error;
+use std::collections::HashMap;
 use std::fmt;
-use secp256k1::{
-    key::{PublicKey}
-};
+use std::io::Error;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const SECOND: u128 = 1000000000;
 
@@ -35,7 +32,6 @@ pub enum InvalidBlockReason {
     InvalidBlockHash,
     InvalidNextBlockReward,
     InvalidBlockReward,
-
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -56,13 +52,12 @@ pub struct Block {
 }
 
 impl Block {
-
     pub fn genesis(
-        miner: Arc<Mutex<WalletAccount>>,      // the wallet that will receive the genesis reward (wallet attached to the node that initializes the network)
+        miner: Arc<Mutex<WalletAccount>>, // the wallet that will receive the genesis reward (wallet attached to the node that initializes the network)
         network_state: Arc<Mutex<NetworkState>>,
         reward_state: Arc<Mutex<RewardState>>,
-    ) -> Result<Block, Error>   // Returns a result with either a tuple containing the genesis block and the updated account state (if successful) or an error (if unsuccessful) 
-    
+        account_state: Arc<Mutex<AccountState>>,
+    ) -> Result<Block, Error> // Returns a result with either a tuple containing the genesis block and the updated account state (if successful) or an error (if unsuccessful)
     {
         println!("Mining Genesis Block");
         // Get the current time in a unix timestamp duration.
@@ -73,21 +68,29 @@ impl Block {
 
         // initialize a variable to increment the maturity timstamp on claims.
         let mut next_time = now.as_nanos();
-
         // set 20 new claims into the vector initialized earlier incrementing each one
         // by 5 nano seconds
         // TODO: Change this to 1 second, 5 nano seconds is just for testing.
         for i in 0..20 {
+            next_time += 10 * SECOND;
             let claim = Claim::new(next_time, i as u128 + 1);
             visible_blocks.push(claim);
-            next_time += 10 * SECOND;
         }
 
-        let mut owned_claims = allocate_claims(visible_blocks, Arc::clone(&miner), Arc::clone(&network_state), 1u128);
-        owned_claims = owned_claims.iter_mut().map(|(_, claim)| {
-            claim.staked = true;
-            return (claim.claim_number.clone(), claim.clone())
-        }).collect::<HashMap<u128, Claim>>();
+        let mut owned_claims = allocate_claims(
+            visible_blocks,
+            Arc::clone(&miner),
+            Arc::clone(&network_state),
+            1u128,
+            Arc::clone(&account_state),
+        );
+        owned_claims = owned_claims
+            .iter_mut()
+            .map(|(_, claim)| {
+                claim.staked = true;
+                return (claim.claim_number.clone(), claim.clone());
+            })
+            .collect::<HashMap<u128, Claim>>();
 
         let state_hash = digest_bytes("Genesis_State_Hash".to_string().as_bytes());
         println!("Structuring block");
@@ -95,15 +98,12 @@ impl Block {
         let miner_address = miner.lock().unwrap().addresses[&1].clone();
         // Initialize a new block.
         let genesis = Block {
-
             block_height: 1,
 
             // set the timestamp to the now variable
             timestamp: now.as_nanos(),
-            
             // set the last block hash to the hash result of the bytes of the string Genesis_Last_Block_Hash
             last_block_hash: digest_bytes("Genesis_Last_Block_Hash".to_string().as_bytes()),
-            
             // set the value of data to an empty hashmap
             data: HashMap::new(),
 
@@ -125,7 +125,6 @@ impl Block {
             next_block_reward: Reward::new(None, Arc::clone(&reward_state)),
 
             // Set the value of block_payload field to the block payload
-
             block_payload: "Genesis_Block_Hash".to_string(),
 
             // Set the value of miner to the address of the wallet of the node that initializes the network.
@@ -134,10 +133,9 @@ impl Block {
             state_hash,
 
             owned_claims,
-
         };
-        
-        // Update the account state with the miner and new block, this will also set the values to the 
+
+        // Update the account state with the miner and new block, this will also set the values to the
         // network state. Unwrap the result and assign it to the variable updated_account_state to
         // be returned by this method.
 
@@ -149,23 +147,32 @@ impl Block {
     /// The mine method is used to generate a new block (and an updated account state with the reward set
     /// to the miner wallet's balance), this will also update the network state with a new confirmed state.
     pub fn mine(
-        claim: Claim,                   // The claim entitling the miner to mine the block.
-        last_block: Block,              // The last block, which contains the current block reward.
+        claim: Claim,      // The claim entitling the miner to mine the block.
+        last_block: Block, // The last block, which contains the current block reward.
         account_state: Arc<Mutex<AccountState>>,
         reward_state: Arc<Mutex<RewardState>>,
         network_state: Arc<Mutex<NetworkState>>,
         wallet: Arc<Mutex<WalletAccount>>,
-    ) -> Option<Result<Block, Error>>       // Returns a result containing either a tuple of the new block and the updated account state or an error. 
+    ) -> Option<Result<Block, Error>> // Returns a result containing either a tuple of the new block and the updated account state or an error.
     {
         // Initialize a timestamp of the current time.
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-        println!("Attempting to mine block");
         // initialize a secp256k1 Signature struct from the signature string in the claim (this is to verify claim ownership)
-        let signature_string = match claim.clone().chain_of_custody.get(&claim.clone().current_owner.unwrap()).unwrap()
-            .get("buyer_signature").unwrap().clone().unwrap() {
-                CustodianInfo::BuyerSignature(Some(signature_string)) => { signature_string },
-                _ => { panic!("No buyer signature") }
-            };
+        let signature_string = match claim
+            .clone()
+            .chain_of_custody
+            .get(&claim.clone().current_owner.unwrap())
+            .unwrap()
+            .get("buyer_signature")
+            .unwrap()
+            .clone()
+            .unwrap()
+        {
+            CustodianInfo::BuyerSignature(Some(signature_string)) => signature_string,
+            _ => {
+                panic!("No buyer signature")
+            }
+        };
 
         let signature = Signature::from_str(&signature_string).unwrap();
 
@@ -175,38 +182,46 @@ impl Block {
         let pubkey = claim.clone().current_owner.unwrap();
         let data = account_state.clone().lock().unwrap().mineable.clone();
         // Structure the block payload (to be signed by the miner's wallet for network verification).
-        let block_payload = format!("{},{},{},{},{},{},{}", 
-                        now.as_nanos().to_string(), 
-                        last_block.block_hash, 
-                        serde_json::to_string(&data).unwrap(), 
-                        serde_json::to_string(&claim).unwrap(),
-                        serde_json::to_string(&last_block.next_block_reward.clone()).unwrap(),
-                        &miner,
-                        serde_json::to_string(&next_block_reward).unwrap()
-                    );
-        
-        let state_hash = network_state.lock().unwrap().hash(&now.as_nanos().to_ne_bytes());
+        let block_payload = format!(
+            "{},{},{},{},{},{},{}",
+            now.as_nanos().to_string(),
+            last_block.block_hash,
+            serde_json::to_string(&data).unwrap(),
+            serde_json::to_string(&claim).unwrap(),
+            serde_json::to_string(&last_block.next_block_reward.clone()).unwrap(),
+            &miner,
+            serde_json::to_string(&next_block_reward).unwrap()
+        );
 
+        let state_hash = network_state
+            .lock()
+            .unwrap()
+            .hash(&now.as_nanos().to_ne_bytes());
         // Ensure that the claim is mature
         if claim.maturation_time <= now.as_nanos() {
-
             // If the claim is mature, initialize a vector with the capacity to hold the new claims that will be created
             // by this new block being mined.
             let mut visible_blocks: Vec<Claim> = Vec::with_capacity(20);
 
             // Get the claim with the highest maturity timestamp that current exists.
-            let mut furthest_visible_block: u128 = account_state.clone().lock()
-                                                        .unwrap()
-                                                        .clone()
-                                                        .claims.iter()
-                                                        .map(|(n, _claim)| n)
-                                                        .max_by(|a, b| a.cmp(b))
-                                                        .unwrap().clone();
-            
-            let mut highest_claim_number: u128 = last_block.owned_claims
+            let mut furthest_visible_block: u128 = account_state
+                .clone()
+                .lock()
+                .unwrap()
+                .clone()
+                .claims
                 .iter()
-                .map(|(_owner, claim)| claim.claim_number).max_by(|a, b| a.cmp(b)).unwrap();
+                .map(|(_n, claim)| claim.maturation_time)
+                .max_by(|a, b| a.cmp(b))
+                .unwrap()
+                .clone();
 
+            let mut highest_claim_number: u128 = last_block
+                .owned_claims
+                .iter()
+                .map(|(_owner, claim)| claim.claim_number)
+                .max_by(|a, b| a.cmp(b))
+                .unwrap();
             // Generate 20 new claims, increment each one's maturity timestamp by 5 nanoseconds
             // and push them to the visible_blocks vector.
             // TODO: Change this to 1 second, this is only for testing purposes.
@@ -216,15 +231,19 @@ impl Block {
                 highest_claim_number += 1;
             }
 
-            let owned_claims = allocate_claims(visible_blocks, Arc::clone(&wallet), Arc::clone(&network_state), last_block.block_height + 1);
+            let owned_claims = allocate_claims(
+                visible_blocks,
+                Arc::clone(&wallet),
+                Arc::clone(&network_state),
+                last_block.block_height + 1,
+                Arc::clone(&account_state),
+            );
             // Verify that the claim is indeed owned by the miner attempting to mine this block.
             // Verify returns a result with either a boolean (true or false, but always true if Ok())
             // or an error.
             match WalletAccount::verify(
-                claim
-                .clone()
-                .claim_payload.unwrap(), 
-                signature, 
+                claim.clone().claim_payload.unwrap(),
+                signature,
                 PublicKey::from_str(&&pubkey).unwrap(),
             ) {
                 // if it is indeed owned by the miner attempting to mine this block
@@ -232,12 +251,10 @@ impl Block {
                     // generate the new block and assign it to a variable new_block
                     println!("structuring new block");
                     let mut new_block = Block {
-
                         block_height: last_block.block_height + 1,
 
                         // set the timestamp value as now (in nanoseconds)
                         timestamp: now.as_nanos(),
-                        
                         // set the last_block_hash value to the block hash of the previous block.
                         last_block_hash: last_block.block_hash,
 
@@ -246,19 +263,19 @@ impl Block {
 
                         // Set the claim to the claim that entitled the miner to mine this block
                         claim,
-                        
-                        // Set the block reward to the previous block reward but with the miner value 
+
+                        // Set the block reward to the previous block reward but with the miner value
                         // as Some() with the miner's wallet address inside.
-                        block_reward: Reward { miner: Some(
-                            miner.clone()
-                        ), ..last_block.next_block_reward },
+                        block_reward: Reward {
+                            miner: Some(miner.clone()),
+                            ..last_block.next_block_reward
+                        },
 
                         // Set the block hash to the resulting hash of the block payload string as bytes.
                         block_hash: digest_bytes(block_payload.as_bytes()),
 
                         // Generate a new reward for the next block.
                         next_block_reward: Reward::new(None, Arc::clone(&reward_state)),
-                        
                         block_payload,
 
                         // Set the miner to the miner wallet address.
@@ -270,7 +287,6 @@ impl Block {
                         state_hash,
 
                         owned_claims,
-
                     };
 
                     // Generate an updated account state by calling the .update() method
@@ -282,32 +298,36 @@ impl Block {
                     // the new block that was just mined and the updated account state.
                     let cloned_network_state = Arc::clone(&network_state);
                     let cloned_account_state = Arc::clone(&account_state);
-                    let temp_state = PendingNetworkState::temp(cloned_network_state, cloned_account_state, new_block.clone());
+                    let temp_state = PendingNetworkState::temp(
+                        cloned_network_state,
+                        cloned_account_state,
+                        new_block.clone(),
+                    );
                     let state_hash = temp_state.hash(&now.as_nanos().to_ne_bytes());
-                    new_block = Block { state_hash, ..new_block.clone() };
+                    new_block = Block {
+                        state_hash,
+                        ..new_block.clone()
+                    };
 
                     return Some(Ok(new_block));
-                },
+                }
 
                 // If the claim is not valid then return a unit struct
-                Err(_e) => ()
+                Err(_e) => (),
             }
         }
 
         // If the claim is not mature then return None.
-        None   
+        None
     }
 
     pub fn as_bytes(&self) -> Vec<u8> {
-
         let as_string = serde_json::to_string(self).unwrap();
 
         as_string.as_bytes().iter().copied().collect()
-
     }
 
     pub fn from_bytes(data: &[u8]) -> Block {
-
         let mut buffer: Vec<u8> = vec![];
 
         data.iter().for_each(|x| buffer.push(*x));
@@ -315,7 +335,6 @@ impl Block {
         let to_string = String::from_utf8(buffer).unwrap();
 
         serde_json::from_str::<Block>(&to_string).unwrap()
-
     }
 }
 
@@ -325,10 +344,11 @@ pub fn data_validator(data: HashMap<String, Txn>, account_state: AccountState) -
 
         match valid {
             Some(txn) => {
-                let num_invalid = txn.validators.iter()
-                                        .filter(|&validator| !validator.to_owned().valid)
-                                        .count();
-                
+                let num_invalid = txn
+                    .validators
+                    .iter()
+                    .filter(|&validator| !validator.to_owned().valid)
+                    .count();
                 let len_of_validators = txn.validators.len();
 
                 if len_of_validators < 3 {
@@ -340,8 +360,8 @@ pub fn data_validator(data: HashMap<String, Txn>, account_state: AccountState) -
                 } else {
                     println!("Txn is valid")
                 }
-            },
-            None => { return Some(false) }
+            }
+            None => return Some(false),
         }
     }
 
@@ -356,9 +376,7 @@ impl fmt::Display for Block {
             reward: {:?},\n \
             next_block_reward: {:?}\n \
             claim: {:?}",
-            self.block_reward,
-            self.next_block_reward,
-            self.claim,
+            self.block_reward, self.next_block_reward, self.claim,
         )
     }
 }
@@ -369,71 +387,77 @@ impl Verifiable for Block {
             Some(block_options) => {
                 match block_options {
                     ValidatorOptions::NewBlock(
-                        last_block, block, pubkey, account_state, reward_state, network_state,
+                        last_block,
+                        block,
+                        pubkey,
+                        account_state,
+                        reward_state,
+                        network_state,
                     ) => {
-
                         let block = serde_json::from_str::<Block>(&block).unwrap();
                         let last_block = serde_json::from_str::<Block>(&last_block).unwrap();
-                        let network_state = serde_json::from_str::<NetworkState>(&network_state).unwrap();
-                        let account_state = serde_json::from_str::<AccountState>(&account_state).unwrap();
-                        let reward_state = serde_json::from_str::<RewardState>(&reward_state).unwrap();
+                        let network_state =
+                            serde_json::from_str::<NetworkState>(&network_state).unwrap();
+                        let account_state =
+                            serde_json::from_str::<AccountState>(&account_state).unwrap();
+                        let reward_state =
+                            serde_json::from_str::<RewardState>(&reward_state).unwrap();
 
                         let valid_signature = match block.clone().claim.current_owner {
                             Some(sig) => {
                                 let pubkey = match PublicKey::from_str(&pubkey) {
-                                    Ok(pk) => {pk}
-                                    Err(_e) => { 
+                                    Ok(pk) => pk,
+                                    Err(_e) => {
                                         println!("Invalid Public Key");
                                         // Cast false vote with proper structure and
-                                        // reason for false vote. 
-                                        return Some(false) 
+                                        // reason for false vote.
+                                        return Some(false);
                                     }
                                 };
                                 let signature = match Signature::from_str(&sig) {
                                     Ok(sig) => sig,
-                                    Err(_e) => { 
-                                        println!("Invalid Signature Structure"); 
+                                    Err(_e) => {
+                                        println!("Invalid Signature Structure");
                                         // Cast false vote with proper structure and reason
                                         // for false vote.
-                                        return Some(false) 
+                                        return Some(false);
                                     }
                                 };
 
                                 block.claim.verify(&signature, &pubkey)
-                            },
+                            }
                             None => {
                                 println!("Signature verification returned None");
                                 // Cast false vote with proper structure and reason for false vote
-                                return Some(false)
+                                return Some(false);
                             }
                         };
 
                         match valid_signature {
-                            Ok(true) => {},
-                            Ok(false) => { 
-                                println!("Invalid Signature"); 
-                                return Some(false) 
-                            },
-                            Err(e) => { 
+                            Ok(true) => {}
+                            Ok(false) => {
+                                println!("Invalid Signature");
+                                return Some(false);
+                            }
+                            Err(e) => {
                                 println!("Signature validation returned error: {}", e);
-                                return Some(false) 
+                                return Some(false);
                             }
                         }
 
                         if block.last_block_hash != last_block.block_hash {
                             println!("Invalid last block hash");
-                            return Some(false)
+                            return Some(false);
                         }
-                        
                         if block.block_hash != digest_bytes(block.block_payload.as_bytes()) {
                             println!("Invalid block hash");
-                            return Some(false)
+                            return Some(false);
                         }
 
                         let pending_state = PendingNetworkState::temp(
-                            Arc::new(Mutex::new(network_state.clone())), 
-                            Arc::new(Mutex::new(account_state.clone())), 
-                            self.clone()
+                            Arc::new(Mutex::new(network_state.clone())),
+                            Arc::new(Mutex::new(account_state.clone())),
+                            self.clone(),
                         );
 
                         let state_hash = pending_state.hash(&block.timestamp.to_ne_bytes());
@@ -443,64 +467,68 @@ impl Verifiable for Block {
                             // If state hash is invalid cast false vote with the reason why.
                             return Some(false);
                         }
-                        
                         let account_state_claim = {
-                            if let Some(claim) = account_state.claims.get(
-                                &block.claim.claim_number
-                            ) 
+                            if let Some(claim) = account_state.claims.get(&block.claim.claim_number)
                             {
                                 claim.to_owned()
                             } else {
                                 println!("unable to find block claim");
-                                return Some(false)
+                                return Some(false);
                             }
                         };
 
                         if account_state_claim != block.claim {
                             println!("invalid block claim");
-                            return Some(false)
+                            return Some(false);
                         }
 
                         if last_block.next_block_reward.amount != block.block_reward.amount {
                             println!("invalid block reward doesn't match last block reward");
-                            return Some(false)
+                            return Some(false);
                         }
 
                         match reward::valid_reward(block.block_reward.category, reward_state) {
                             Some(false) => {
                                 println!("invalid block reward");
-                                return Some(false)
-                            },
-                            None => {println!("reward validation returned None"); return Some(false)},
+                                return Some(false);
+                            }
+                            None => {
+                                println!("reward validation returned None");
+                                return Some(false);
+                            }
                             _ => {}
                         }
 
                         match reward::valid_reward(block.next_block_reward.category, reward_state) {
                             Some(false) => {
                                 println!("invalid next block reward");
-                                return Some(false)
-                            },
-                            None => {println!("reward validation returned None"); return Some(false)},
+                                return Some(false);
+                            }
+                            None => {
+                                println!("reward validation returned None");
+                                return Some(false);
+                            }
                             _ => {}
                         }
 
                         match data_validator(block.data, account_state) {
-                            Some(false) => { 
+                            Some(false) => {
                                 println!("Invalid Data");
-                                return Some(false) 
-                            },
-                            None => { println!("data validator returned none"); return Some(false) },
+                                return Some(false);
+                            }
+                            None => {
+                                println!("data validator returned none");
+                                return Some(false);
+                            }
                             _ => {}
                         }
                         //TODO: If block is valid cast true vote.
                         Some(true)
-                    },    
+                    }
                     _ => panic!("Invalid options for block"),
                 }
-            },
-            None => {
-                Some(false)
             }
+            None => Some(false),
         }
     }
 }

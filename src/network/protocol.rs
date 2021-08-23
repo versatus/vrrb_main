@@ -37,7 +37,6 @@ use libp2p::{
     PeerId, 
     Transport,
 };
-use crate::network::message::structure_message;
 use std::io::Error;
 use std::time::Duration;
 use std::collections::VecDeque;

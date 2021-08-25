@@ -1,7 +1,6 @@
 use crate::validator::{Message, Validator, ValidatorOptions};
 use crate::verifiable::Verifiable;
 use crate::txn::Txn;
-use crate::block::Block;
 use crate::claim::Claim;
 
 
@@ -88,48 +87,11 @@ pub fn message_processor(validator: Validator) -> Validator {
                 }               
 
             },
-            Message::ClaimHomesteaded(claim, pubkey, account_state) => {
-                // If the message is a claim homesteading message
-                // the message will contain a claim and the wallet which
-                // is attempting to homestead the claim's public key
-                // Pass the claim.is_valid() method Some(ClaimOption::Homestead)
-                // so that the method knows to implement logic related to validating
-                // a homesteaded claim not an acquired claim.
-                let claim_to_validate = serde_json::from_str::<Claim>(&claim).unwrap();
-
-                match claim_to_validate.is_valid(Some(ValidatorOptions::ClaimHomestead(account_state.clone()))) {
-                    // If the claim is validly homesteaded, return 
-                    // the validator with the valid field set to tru
-                    // and the message.
-                    Some(true) => { 
-                        Validator {
-                            valid: true,
-                            message: Message::ClaimHomesteaded(claim, pubkey, account_state),
-                            ..validator
-                        }
-                    },
-                    // If the claim is invalidly homesteaded
-                    // then return the validator as is
-                    Some(false) => { 
-                        validator
-                    },
-                    // If the is_valid() method returns none, then something
-                    // went wrong.
-                    // TODO: propogate a custom error to provide a message to be handled
-                    // by the main.
-                    None => {
-                        panic!("Invalid Claim Homesteading Message!")
-                    }, 
-                }
-            },
-            Message::NewBlock(last_block, block, pubkey, network_state, account_state, reward_state) => {
+            Message::NewBlock(last_block, block, pubkey, account_state, reward_state, network_state) => {
                 // If a message is a new block, then check that the block is
                 // valid, by calling the block.is_valid() method and passing None
                 // as the options, as only Claim validation requires an option
-
-                let block_to_validate = serde_json::from_str::<Block>(&block).unwrap();
-
-                match block_to_validate.is_valid(Some(ValidatorOptions::NewBlock(
+                match block.is_valid(Some(ValidatorOptions::NewBlock(
                     last_block.clone(),
                     block.clone(), 
                     pubkey.clone(), 
@@ -146,10 +108,10 @@ pub fn message_processor(validator: Validator) -> Validator {
                             message: Message::NewBlock(
                                 last_block,
                                 block, 
-                                pubkey, 
-                                network_state, 
+                                pubkey,  
                                 account_state, 
-                                reward_state),
+                                reward_state,
+                                network_state),
                             ..validator
                         }
                     },

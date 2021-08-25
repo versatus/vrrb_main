@@ -1,5 +1,5 @@
 use crate::reward;
-use crate::state::{NetworkState, PendingNetworkState};
+use crate::state::{NetworkState};
 use crate::validator::ValidatorOptions;
 use crate::verifiable::Verifiable;
 use crate::{
@@ -193,10 +193,6 @@ impl Block {
             serde_json::to_string(&next_block_reward).unwrap()
         );
 
-        let state_hash = network_state
-            .lock()
-            .unwrap()
-            .hash(&now.as_nanos().to_ne_bytes());
         // Ensure that the claim is mature
         if claim.maturation_time <= now.as_nanos() {
             // If the claim is mature, initialize a vector with the capacity to hold the new claims that will be created
@@ -256,7 +252,7 @@ impl Block {
                         // set the timestamp value as now (in nanoseconds)
                         timestamp: now.as_nanos(),
                         // set the last_block_hash value to the block hash of the previous block.
-                        last_block_hash: last_block.block_hash,
+                        last_block_hash: last_block.block_hash.clone(),
 
                         // Set the data value to data passed into this method in the signature
                         data,
@@ -284,7 +280,7 @@ impl Block {
                         // Set the block signature to a string of the claim signature.
                         block_signature: signature.to_string(),
 
-                        state_hash,
+                        state_hash: last_block.block_hash.clone(),
 
                         owned_claims,
                     };
@@ -296,14 +292,7 @@ impl Block {
                     // included in the return expression.
                     // Return a Some() option variant with an Ok() result variant that wraps a tuple that contains
                     // the new block that was just mined and the updated account state.
-                    let cloned_network_state = Arc::clone(&network_state);
-                    let cloned_account_state = Arc::clone(&account_state);
-                    let temp_state = PendingNetworkState::temp(
-                        cloned_network_state,
-                        cloned_account_state,
-                        new_block.clone(),
-                    );
-                    let state_hash = temp_state.hash(&now.as_nanos().to_ne_bytes());
+                    let state_hash = network_state.lock().unwrap().hash(new_block.clone(), &now.as_nanos().to_ne_bytes());
                     new_block = Block {
                         state_hash,
                         ..new_block.clone()
@@ -322,9 +311,7 @@ impl Block {
     }
 
     pub fn as_bytes(&self) -> Vec<u8> {
-        let as_string = serde_json::to_string(self).unwrap();
-
-        as_string.as_bytes().iter().copied().collect()
+        self.to_string().as_bytes().to_vec()
     }
 
     pub fn from_bytes(data: &[u8]) -> Block {
@@ -335,6 +322,10 @@ impl Block {
         let to_string = String::from_utf8(buffer).unwrap();
 
         serde_json::from_str::<Block>(&to_string).unwrap()
+    }
+
+    pub fn to_string(&self) -> String {
+        serde_json::to_string(self).unwrap()
     }
 }
 
@@ -394,37 +385,36 @@ impl Verifiable for Block {
                         reward_state,
                         network_state,
                     ) => {
-                        let block = serde_json::from_str::<Block>(&block).unwrap();
-                        let last_block = serde_json::from_str::<Block>(&last_block).unwrap();
-                        let network_state =
-                            serde_json::from_str::<NetworkState>(&network_state).unwrap();
-                        let account_state =
-                            serde_json::from_str::<AccountState>(&account_state).unwrap();
-                        let reward_state =
-                            serde_json::from_str::<RewardState>(&reward_state).unwrap();
+                        let valid_signature = match block.clone().claim.chain_of_custody.get(&block.clone().claim.current_owner.unwrap()) {
+                            Some(map) => {
+                                match map.get("buyer_signature") {
+                                    Some(Some(CustodianInfo::BuyerSignature(Some(sig)))) => {
+                                        let pubkey = match PublicKey::from_str(&pubkey) {
+                                            Ok(pk) => pk,
+                                            Err(_e) => {
+                                                println!("Invalid Public Key");
+                                                // Cast false vote with proper structure and
+                                                // reason for false vote.
+                                                return Some(false);
+                                            }
+                                        };
+                                        let signature = match Signature::from_str(&sig) {
+                                            Ok(sig) => sig,
+                                            Err(_e) => {
+                                                println!("Invalid Signature Structure");
+                                                // Cast false vote with proper structure and reason
+                                                // for false vote.
+                                                return Some(false);
+                                            }
+                                        };
 
-                        let valid_signature = match block.clone().claim.current_owner {
-                            Some(sig) => {
-                                let pubkey = match PublicKey::from_str(&pubkey) {
-                                    Ok(pk) => pk,
-                                    Err(_e) => {
-                                        println!("Invalid Public Key");
-                                        // Cast false vote with proper structure and
-                                        // reason for false vote.
+                                        block.claim.verify(&signature, &pubkey)
+                                    },
+                                    _ => {
+                                        println!("Buyer never signed claim");
                                         return Some(false);
                                     }
-                                };
-                                let signature = match Signature::from_str(&sig) {
-                                    Ok(sig) => sig,
-                                    Err(_e) => {
-                                        println!("Invalid Signature Structure");
-                                        // Cast false vote with proper structure and reason
-                                        // for false vote.
-                                        return Some(false);
                                     }
-                                };
-
-                                block.claim.verify(&signature, &pubkey)
                             }
                             None => {
                                 println!("Signature verification returned None");
@@ -454,13 +444,7 @@ impl Verifiable for Block {
                             return Some(false);
                         }
 
-                        let pending_state = PendingNetworkState::temp(
-                            Arc::new(Mutex::new(network_state.clone())),
-                            Arc::new(Mutex::new(account_state.clone())),
-                            self.clone(),
-                        );
-
-                        let state_hash = pending_state.hash(&block.timestamp.to_ne_bytes());
+                        let state_hash = network_state.hash(block.clone(), &block.timestamp.to_ne_bytes());
                         println!("{}", &state_hash);
                         if block.state_hash != state_hash {
                             println!("Invalid state hash");
@@ -476,11 +460,6 @@ impl Verifiable for Block {
                                 return Some(false);
                             }
                         };
-
-                        if account_state_claim != block.claim {
-                            println!("invalid block claim");
-                            return Some(false);
-                        }
 
                         if last_block.next_block_reward.amount != block.block_reward.amount {
                             println!("invalid block reward doesn't match last block reward");

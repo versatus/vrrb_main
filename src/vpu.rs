@@ -3,7 +3,6 @@ use crate::{
     validator::{Validator, Message}, 
     verifiable::Verifiable, 
     claim::Claim,
-    block::Block,
     txn::Txn,
 };
 use std::collections::HashMap;
@@ -31,20 +30,6 @@ impl ValidatorProcessor {
     pub fn new_validator(&mut self, validator: Validator) {
 
         match validator.clone().message {
-            Message::ClaimHomesteaded(
-                claim, 
-                _homesteader, 
-                _account_state
-            ) => {
-
-                let claim_to_validate = serde_json::from_str::<Claim>(&claim).unwrap();
-
-                if let Some(entry) = self.validators.get_mut(&claim_to_validate.claim_number.to_string()) {
-                    entry.push(validator);
-                } else {
-                    self.validators.insert(claim_to_validate.claim_number.to_string(), vec![validator]);
-                }
-            },
             Message::ClaimAcquired(
                 claim, 
                 _seller_pubkey, 
@@ -82,12 +67,10 @@ impl ValidatorProcessor {
                 _,
             ) => {
 
-                let block_to_validate = serde_json::from_str::<Block>(&block).unwrap();
-
-                if let Some(entry) = self.validators.get_mut(&block_to_validate.block_hash) {
+                if let Some(entry) = self.validators.get_mut(&block.block_hash) {
                     entry.push(validator)
                 } else {
-                    self.validators.insert(block_to_validate.block_hash, vec![validator]);
+                    self.validators.insert(block.block_hash, vec![validator]);
                 }
             }
         };
@@ -107,9 +90,6 @@ impl ValidatorProcessor {
             if valid as f64 / value.len() as f64 >= 2.0/3.0 {
 
                 match value[0].clone().message {
-                    Message::ClaimHomesteaded(claim, _, _) => {
-                        self.confirmed.entry(key.to_owned()).or_insert_with(|| Box::new(serde_json::from_str::<Claim>(&claim).unwrap()));
-                    },
                     Message::ClaimAcquired(claim, _, _, _) => {
 
                         self.confirmed.entry(key.to_owned()).or_insert_with(|| Box::new(serde_json::from_str::<Claim>(&claim).unwrap()));
@@ -118,7 +98,7 @@ impl ValidatorProcessor {
                         self.confirmed.entry(key.to_owned()).or_insert_with(|| Box::new(serde_json::from_str::<Txn>(&txn).unwrap()));
                     },
                     Message::NewBlock(_, block, _, _, _, _) => {
-                        self.confirmed.entry(key.to_owned()).or_insert_with(|| Box::new(serde_json::from_str::<Block>(&block).unwrap()));
+                        self.confirmed.entry(key.to_owned()).or_insert_with(|| Box::new(block));
                     }
                 }
 

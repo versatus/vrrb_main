@@ -156,7 +156,7 @@ impl WalletAccount {
     }
 
     pub fn send_txn(
-        &mut self, address_number: u32, receiver: String, amount: u128
+        self, address_number: u32, receiver: String, amount: u128
     ) -> Result<Txn, Error> {
         let txn = Txn::new(Arc::new(Mutex::new(self.clone())), self.addresses.get(&address_number).unwrap().clone(), receiver, amount);
         Ok(txn)

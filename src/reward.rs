@@ -65,7 +65,7 @@ impl RewardState {
         let n_flakes_ce: u128 = (remaining_blocks as f64 * 0.6f64) as u128;
         let n_grains_ce: u128 = (remaining_blocks as f64 * 0.4f64) as u128;
 
-        let reward_state = RewardState {
+        RewardState {
             current_block: 0,
             epoch: 1,
             next_epoch_block: 16000000,
@@ -78,9 +78,7 @@ impl RewardState {
             n_flakes_current_epoch: n_flakes_ce,
             n_grains_current_epoch: n_grains_ce,
             
-        };
-
-        reward_state
+        }
     }
 
     pub fn update(&mut self, last_reward: Category) {
@@ -154,9 +152,7 @@ impl RewardState {
     }
 
     pub fn as_bytes(&self) -> Vec<u8> {
-        let as_string = serde_json::to_string(self).unwrap();
-        
-        as_string.as_bytes().iter().copied().collect()
+        self.to_string().as_bytes().to_vec()
     }
 
     pub fn from_bytes(data: &[u8]) -> RewardState {
@@ -167,6 +163,10 @@ impl RewardState {
         let to_string = String::from_utf8(buffer).unwrap();
 
         serde_json::from_str::<RewardState>(&to_string).unwrap()
+    }
+
+    pub fn to_string(&self) -> String {
+        serde_json::to_string(self).unwrap()
     }
 }
 

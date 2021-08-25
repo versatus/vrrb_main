@@ -37,6 +37,7 @@ use libp2p::{
     PeerId, 
     Transport,
 };
+use crate::network::command_utils::Command;
 use std::io::Error;
 use std::time::Duration;
 use std::collections::VecDeque;
@@ -49,7 +50,9 @@ pub struct VrrbNetworkBehavior {
     pub kademlia: Kademlia<MemoryStore>,
     pub ping: Ping,
     #[behaviour(ignore)]
-    pub queue: Arc<Mutex<VecDeque<GossipsubMessage>>>
+    pub queue: Arc<Mutex<VecDeque<GossipsubMessage>>>,
+    #[behaviour(ignore)]
+    pub command_queue: Arc<Mutex<VecDeque<Command>>>
 }
 
 impl NetworkBehaviourEventProcess<IdentifyEvent> for VrrbNetworkBehavior {
@@ -69,6 +72,12 @@ impl NetworkBehaviourEventProcess<IdentifyEvent> for VrrbNetworkBehavior {
                     self.kademlia.add_address(&peer_id, addr);
                 }
                 self.kademlia.bootstrap().unwrap();
+                // After a new peer has been bootstrapped, have a `trusted` node send them a
+                // message with the most recent state.
+                // This command will trigger the structuring and sending of a state update message.
+                if let Some(command) = Command::from_str(&format!("SENDSTE {}", peer_id.to_string())) {
+                    self.command_queue.lock().unwrap().push_back(command);
+                }
             },
             IdentifyEvent::Error {
                 peer_id,

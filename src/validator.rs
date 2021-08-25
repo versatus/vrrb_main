@@ -1,39 +1,30 @@
 #![allow(unused_imports)]
-use std::collections::HashMap;
 use crate::{
-    wallet::WalletAccount,
-    account::AccountState, 
-    block::Block, 
-    claim::{Claim}, 
-    mpu, 
-    reward::{RewardState}, 
-    state::NetworkState, 
-    txn::Txn
+    account::AccountState, block::Block, claim::Claim, mpu, reward::RewardState,
+    state::NetworkState, txn::Txn, wallet::WalletAccount,
 };
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::collections::VecDeque;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum InvalidMessageError {
     InvalidTxnError(String),
     InvalidClaimAcquisition(String),
-    InvalidClaimHomesteading(String),
     InvalidBlock(String),
 }
 
 #[derive(Serialize, Deserialize)]
 pub enum ValidatorOptions {
-    ClaimHomestead(String),
     ClaimAcquire(String, String),
-    NewBlock(String, String, String, String, String, String),
-    Transaction(String)
+    NewBlock(Block, Block, String, AccountState, RewardState, NetworkState),
+    Transaction(String),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Message {
     ClaimAcquired(String, String, String, String),
-    ClaimHomesteaded(String, String, String),
-    NewBlock(String, String, String, String, String, String),
+    NewBlock(Block, Block, String, AccountState, RewardState, NetworkState),
     Txn(String, String),
 }
 
@@ -48,22 +39,25 @@ pub struct Validator {
 impl Validator {
     pub fn new(message: Message, pubkey: String, account_state: AccountState) -> Option<Validator> {
         let mut check_staked_claims: HashMap<u128, Claim> = HashMap::new();
-        account_state.claims.iter()
+        account_state
+            .claims
+            .iter()
             .filter(|(_claim_number, claim)| claim.current_owner.clone().unwrap() == pubkey)
-            .for_each(|(claim_number, claim)| {
-                match account_state.claims.get(claim_number) {
+            .for_each(
+                |(claim_number, claim)| match account_state.claims.get(claim_number) {
                     Some(_) => {
                         check_staked_claims.insert(*claim_number, claim.clone());
-                    },
+                    }
                     None => {}
-                }
-            }
-        );
-    
+                },
+            );
         // If there's no staked claims for the node wallet attempting to launch a validator
         // a validator cannot be launched. Claims must be staked to validate messages
         Some(check_staked_claims).map(|map| Validator {
-            node_wallet: pubkey, staked_claims: map.clone(), message, valid: false,
+            node_wallet: pubkey,
+            staked_claims: map.clone(),
+            message,
+            valid: false,
         })
     }
 
@@ -92,7 +86,6 @@ impl ValidatorOptions {
 
         as_string.as_bytes().iter().copied().collect()
     }
-    
     pub fn from_bytes(data: &[u8]) -> ValidatorOptions {
         let mut buffer: Vec<u8> = vec![];
         data.iter().for_each(|x| buffer.push(*x));

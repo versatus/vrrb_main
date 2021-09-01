@@ -1,26 +1,43 @@
-use vrrb_lib::network::{node::{Node, NodeAuth}, voting::BallotBox};
+use rand::Rng;
+use ritelinked::LinkedHashMap;
+use std::sync::{Arc, Mutex};
 use vrrb_lib::account::AccountState;
-use vrrb_lib::wallet::WalletAccount;
+use vrrb_lib::network::{
+    node::{Node, NodeAuth},
+    voting::BallotBox,
+};
+use vrrb_lib::pool::{Pool, PoolKind};
 use vrrb_lib::reward::RewardState;
 use vrrb_lib::state::NetworkState;
-use std::sync::{Arc, Mutex};
-use std::collections::HashMap;
-use rand::Rng;
+use vrrb_lib::wallet::WalletAccount;
 
 #[async_std::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-
     let mut rng = rand::thread_rng();
     let file_suffix: u32 = rng.gen();
-    let account_state = Arc::new(Mutex::new(AccountState::start()));
-    let path = format!("test_{}.db", file_suffix);
+    let txn_pool = Pool::new(PoolKind::Txn);
+    let claim_pool = Pool::new(PoolKind::Claim);
+    let account_state = Arc::new(Mutex::new(AccountState::start(txn_pool, claim_pool)));
+    let path = format!("./data/test_{}.db", file_suffix);
     let network_state = Arc::new(Mutex::new(NetworkState::restore(&path)));
     let reward_state = Arc::new(Mutex::new(RewardState::start()));
     let node_type = NodeAuth::Full;
-    let wallet = Arc::new(Mutex::new(WalletAccount::new(Arc::clone(&account_state))));
-    let ballot_box = Arc::new(Mutex::new(BallotBox::new(HashMap::new(), HashMap::new(), 1, HashMap::new(), HashMap::new())));
-    let node = Node::start(ballot_box, node_type, wallet, account_state, network_state, reward_state);
-    
+    let wallet = Arc::new(Mutex::new(WalletAccount::new()));
+    let ballot_box = Arc::new(Mutex::new(BallotBox::new(
+        LinkedHashMap::new(),
+        LinkedHashMap::new(),
+        1,
+        LinkedHashMap::new(),
+        LinkedHashMap::new(),
+    )));
+    let node = Node::start(
+        ballot_box,
+        node_type,
+        wallet,
+        account_state,
+        network_state,
+        reward_state,
+    );
     node.await.unwrap();
 
     Ok(())

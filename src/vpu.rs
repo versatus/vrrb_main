@@ -32,8 +32,9 @@ impl ValidatorProcessor {
         match validator.clone().message {
             Message::ClaimAcquired(
                 claim, 
-                _seller_pubkey, 
+                _network_state,
                 _account_state, 
+                _seller_pubkey, 
                 _buyer_pubkey
             ) => {
 
@@ -46,23 +47,22 @@ impl ValidatorProcessor {
                 }
             },
             Message::Txn(
-                txn, 
-                _account_state
+                txn_string, 
+                _account_state,
+                _network_state
             ) => {
 
-                let txn_to_validate = serde_json::from_str::<Txn>(&txn).unwrap();
+                let txn = Txn::from_string(&txn_string);
 
-                if let Some(entry) = self.validators.get_mut(&txn_to_validate.txn_id) {
+                if let Some(entry) = self.validators.get_mut(&txn.txn_id) {
                     entry.push(validator)
                 } else {
-                    self.validators.insert(txn_to_validate.txn_id, vec![validator]);
+                    self.validators.insert(txn.txn_id, vec![validator]);
                 }
             },
             Message::NewBlock(
                 _,
                 block,
-                _,
-                _,
                 _,
                 _,
             ) => {
@@ -90,14 +90,14 @@ impl ValidatorProcessor {
             if valid as f64 / value.len() as f64 >= 2.0/3.0 {
 
                 match value[0].clone().message {
-                    Message::ClaimAcquired(claim, _, _, _) => {
+                    Message::ClaimAcquired(claim, _, _, _, _) => {
 
                         self.confirmed.entry(key.to_owned()).or_insert_with(|| Box::new(serde_json::from_str::<Claim>(&claim).unwrap()));
                     },
-                    Message::Txn(txn, _) => {
+                    Message::Txn(txn, _, _) => {
                         self.confirmed.entry(key.to_owned()).or_insert_with(|| Box::new(serde_json::from_str::<Txn>(&txn).unwrap()));
                     },
-                    Message::NewBlock(_, block, _, _, _, _) => {
+                    Message::NewBlock(_, block, _, _) => {
                         self.confirmed.entry(key.to_owned()).or_insert_with(|| Box::new(block));
                     }
                 }
@@ -118,7 +118,7 @@ impl ValidatorProcessor {
     pub fn slash_claims(&mut self, account_state: &mut AccountState) {
         
         self.slashed.iter().for_each(|slash| {
-            account_state.claims.retain(|_k, v| v.current_owner.clone().unwrap() != *slash);
+            account_state.claim_pool.confirmed.retain(|_k, v| v.current_owner.clone().unwrap() != *slash);
         });
     }
 }

@@ -1,57 +1,67 @@
 use crate::account::AccountState;
-use crate::claim::{Claim, CustodianInfo};
-use crate::state::NetworkState;
+use crate::claim::{Claim, CustodianInfo, CustodianOption};
 use crate::wallet::WalletAccount;
 use rand::{
     distributions::{Distribution, WeightedIndex},
     thread_rng,
 };
-use std::collections::HashMap;
+use ritelinked::LinkedHashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn allocate_claims(
     claim_vec: Vec<Claim>,
     miner: Arc<Mutex<WalletAccount>>,
-    network_state: Arc<Mutex<NetworkState>>,
     block_number: u128,
     account_state: Arc<Mutex<AccountState>>,
-) -> HashMap<u128, Claim> {
+) -> LinkedHashMap<u128, Claim> {
     if block_number > 1 {
         // get all the claims owned
-        let claims_owned: HashMap<u128, Claim> =
-            network_state.lock().unwrap().state.get("claims").unwrap();
+        let claims_owned: LinkedHashMap<u128, Claim> = account_state.lock().unwrap().claim_pool.confirmed.clone();
         let accounts_pk = account_state.lock().unwrap().accounts_pk.clone();
+
+        //ISSUE: O(n) operation
         let accounts: Vec<String> = accounts_pk
             .values()
             .map(|value| value.clone())
             .collect::<Vec<String>>();
-
+        
+        println!("collecting claim owners");
         // current owner is the pubkey
+        //ISSUE: O(n) operation
         let claim_owners: Vec<String> = claims_owned
             .clone()
             .iter()
             .map(|(_, value)| value.current_owner.clone().unwrap())
             .collect();
 
-        let mut owner_map: HashMap<String, u128> = HashMap::new();
+        println!("claim owners collected");
 
+        let mut owner_map: LinkedHashMap<String, u128> = LinkedHashMap::new();
+        
+        //ISSUE: O(n) operation
         claim_owners.iter().for_each(|owner| {
             let counter = owner_map.entry(owner.to_owned()).or_insert(0);
             *counter += 1;
         });
 
+
         let total_claims: u128 = claims_owned.len() as u128;
-        let no_claims_owned: HashMap<String, u128> = accounts
+        
+        //ISSUE: O(n) operation
+        let no_claims_owned: LinkedHashMap<String, u128> = accounts
             .iter()
             .filter(|pubkey| !owner_map.contains_key(pubkey.clone()))
             .map(|pubkey| return (pubkey.clone(), 0u128))
-            .collect::<HashMap<String, u128>>();
+            .collect::<LinkedHashMap<String, u128>>();
 
+        //ISSUE: O(n) operation
         let mut claims_owned: Vec<_> = owner_map.iter().collect();
+        //ISSUE: O(n) operation
         let no_claims_owned: Vec<_> = no_claims_owned.iter().collect();
         claims_owned.extend(no_claims_owned);
 
+        //ISSUE: O(n) operation
         let mut claim_allocation_choices: Vec<(String, f64)> = claims_owned
             .iter()
             .map(|(account, claims_owned)| {
@@ -68,7 +78,7 @@ pub fn allocate_claims(
         let dist = WeightedIndex::new(claim_allocation_choices.iter().map(|item| item.1)).unwrap();
         let mut rng = thread_rng();
 
-        let mut claims_awarded: HashMap<u128, Claim> = HashMap::new();
+        let mut claims_awarded: LinkedHashMap<u128, Claim> = LinkedHashMap::new();
 
         for claim in claim_vec {
             let mut updated_claim = claim.clone();
@@ -78,34 +88,34 @@ pub fn allocate_claims(
                 .unwrap()
                 .as_nanos();
             let winner = claim_allocation_choices[dist.sample(&mut rng)].0.clone();
-            let mut custodian_info: HashMap<String, Option<CustodianInfo>> = HashMap::new();
+            let mut custodian_info: LinkedHashMap<CustodianOption, Option<CustodianInfo>> = LinkedHashMap::new();
 
             custodian_info.insert(
-                "homesteader".to_string(),
+                CustodianOption::Homesteader,
                 Some(CustodianInfo::Homesteader(true)),
             );
             custodian_info.insert(
-                "acquisition_timestamp".to_string(),
+                CustodianOption::AcquisitionTime,
                 Some(CustodianInfo::AcquisitionTimestamp(time)),
             );
             custodian_info.insert(
-                "acquisition_price".to_string(),
+                CustodianOption::Price,
                 Some(CustodianInfo::AcquisitionPrice(0)),
             );
             custodian_info.insert(
-                "acquired_from".to_string(),
+                CustodianOption::Seller,
                 Some(CustodianInfo::AcquiredFrom(Some(miner_pubkey))),
             );
             custodian_info.insert(
-                "owner_number".to_string(),
+                CustodianOption::OwnerNumber,
                 Some(CustodianInfo::OwnerNumber(1)),
             );
             custodian_info.insert(
-                "buyer_signature".to_string(),
+                CustodianOption::BuyerSignature,
                 Some(CustodianInfo::BuyerSignature(None)),
             );
             custodian_info.insert(
-                "seller_signature".to_string(),
+                CustodianOption::SellerSignature,
                 Some(CustodianInfo::SellerSignature(None)),
             );
 
@@ -117,7 +127,7 @@ pub fn allocate_claims(
                 serde_json::to_string(&updated_claim.chain_of_custody).unwrap();
             let payload = format!(
                 "{},{},{},{}",
-                &claim.maturation_time.to_string(),
+                &claim.expiration_time.to_string(),
                 &claim.price.to_string(),
                 &claim.available.to_string(),
                 &serialized_chain_of_custody
@@ -130,7 +140,7 @@ pub fn allocate_claims(
                 .get_mut(&winner.clone())
                 .unwrap()
                 .insert(
-                    "seller_signature".to_string(),
+                    CustodianOption::SellerSignature,
                     Some(CustodianInfo::SellerSignature(Some(miner_signature))),
                 );
             updated_claim.current_owner = Some(winner.clone());
@@ -144,7 +154,7 @@ pub fn allocate_claims(
 
         claims_awarded
     } else {
-        let mut claims_awarded: HashMap<u128, Claim> = HashMap::new();
+        let mut claims_awarded: LinkedHashMap<u128, Claim> = LinkedHashMap::new();
 
         for claim in claim_vec {
             let mut updated_claim = claim.clone();
@@ -154,34 +164,34 @@ pub fn allocate_claims(
                 .unwrap()
                 .as_nanos();
             let winner = miner_pubkey.clone();
-            let mut custodian_info: HashMap<String, Option<CustodianInfo>> = HashMap::new();
+            let mut custodian_info: LinkedHashMap<CustodianOption, Option<CustodianInfo>> = LinkedHashMap::new();
 
             custodian_info.insert(
-                "homesteader".to_string(),
+                CustodianOption::Homesteader,
                 Some(CustodianInfo::Homesteader(true)),
             );
             custodian_info.insert(
-                "acquisition_timestamp".to_string(),
+                CustodianOption::AcquisitionTime,
                 Some(CustodianInfo::AcquisitionTimestamp(time)),
             );
             custodian_info.insert(
-                "acquisition_price".to_string(),
+                CustodianOption::Price,
                 Some(CustodianInfo::AcquisitionPrice(0)),
             );
             custodian_info.insert(
-                "acquired_from".to_string(),
+                CustodianOption::Seller,
                 Some(CustodianInfo::AcquiredFrom(Some(miner_pubkey.clone()))),
             );
             custodian_info.insert(
-                "owner_number".to_string(),
+                CustodianOption::OwnerNumber,
                 Some(CustodianInfo::OwnerNumber(1)),
             );
             custodian_info.insert(
-                "buyer_signature".to_string(),
+                CustodianOption::BuyerSignature,
                 Some(CustodianInfo::BuyerSignature(None)),
             );
             custodian_info.insert(
-                "seller_signature".to_string(),
+                CustodianOption::SellerSignature,
                 Some(CustodianInfo::SellerSignature(None)),
             );
 
@@ -193,7 +203,7 @@ pub fn allocate_claims(
                 serde_json::to_string(&updated_claim.chain_of_custody).unwrap();
             let payload = format!(
                 "{},{},{},{}",
-                &claim.maturation_time.to_string(),
+                &claim.expiration_time.to_string(),
                 &claim.price.to_string(),
                 &claim.available.to_string(),
                 &serialized_chain_of_custody
@@ -212,7 +222,7 @@ pub fn allocate_claims(
                 .get_mut(&winner.clone())
                 .unwrap()
                 .insert(
-                    "seller_signature".to_string(),
+                    CustodianOption::SellerSignature,
                     Some(CustodianInfo::SellerSignature(Some(miner_signature))),
                 );
             updated_claim.current_owner = Some(winner.clone());

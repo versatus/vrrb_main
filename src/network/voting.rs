@@ -10,30 +10,30 @@
 // if it's 60% of casted votes, approve the block and confirm the state at the
 // current block height. If not, require the proposing node to update their
 // local state before reproposing the block.
-use std::collections::HashMap;
+use ritelinked::LinkedHashMap;
 use crate::txn::Txn;
 #[derive(Debug)]
 pub struct BallotBox {
     // A hashmap containing the proposal ID as the key and a hashmap
     // with yes/no as the keys and the vote count as the value.
     // May need a timestamp for expiration.
-    pub proposals: HashMap<String, HashMap<String, u128>>,
+    pub proposals: LinkedHashMap<String, LinkedHashMap<String, u128>>,
     // A hashmap containing the block height as the key, and a tuple containing
     // the state hash, a hashmap of votes, and a vector of transactions as the value
-    pub state_hash: HashMap<u128, (String, HashMap<String, u128>, HashMap<String, Txn>)>,
+    pub state_hash: LinkedHashMap<u128, (String, LinkedHashMap<String, u128>, LinkedHashMap<String, Txn>)>,
     // May need a queue to communicate with other processes.
     pub node_count: u128,
-    pub proposal_results: HashMap<String, bool>,
-    pub state_hash_results: HashMap<u128, bool>,
+    pub proposal_results: LinkedHashMap<String, bool>,
+    pub state_hash_results: LinkedHashMap<u128, bool>,
 }
 
 impl BallotBox {
     pub fn new(
-        proposals: HashMap<String, HashMap<String, u128>>,
-        state_hash: HashMap<u128, (String, HashMap<String, u128>, HashMap<String, Txn>)>,
+        proposals: LinkedHashMap<String, LinkedHashMap<String, u128>>,
+        state_hash: LinkedHashMap<u128, (String, LinkedHashMap<String, u128>, LinkedHashMap<String, Txn>)>,
         node_count: u128,
-        proposal_results: HashMap<String, bool>,
-        state_hash_results: HashMap<u128, bool>,
+        proposal_results: LinkedHashMap<String, bool>,
+        state_hash_results: LinkedHashMap<u128, bool>,
     ) -> BallotBox 
     {
         BallotBox { proposals, state_hash, node_count, proposal_results, state_hash_results, }

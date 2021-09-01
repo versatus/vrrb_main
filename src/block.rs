@@ -1,27 +1,28 @@
 use crate::reward;
-use crate::state::{NetworkState};
+use crate::state::NetworkState;
 use crate::validator::ValidatorOptions;
 use crate::verifiable::Verifiable;
 use crate::{
     account::AccountState,
     allocator::allocate_claims,
-    claim::{Claim, CustodianInfo},
+    claim::{Claim, CustodianInfo, CustodianOption},
     reward::{Reward, RewardState},
     txn::Txn,
     wallet::WalletAccount,
 };
+use log::{info, warn};
 use secp256k1::key::PublicKey;
 use secp256k1::Signature;
 use serde::{Deserialize, Serialize};
 use sha256::digest_bytes;
-use std::collections::HashMap;
+use ritelinked::LinkedHashMap;
 use std::fmt;
 use std::io::Error;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-
 const SECOND: u128 = 1000000000;
+const VALIDATOR_THRESHOLD: f64 = 0.60;
 
 pub enum InvalidBlockReason {
     InvalidStateHash,
@@ -35,11 +36,12 @@ pub enum InvalidBlockReason {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[repr(C)]
 pub struct Block {
     pub block_height: u128,
     pub timestamp: u128,
     pub last_block_hash: String,
-    pub data: HashMap<String, Txn>,
+    pub data: LinkedHashMap<String, Txn>,
     pub claim: Claim,
     pub block_reward: Reward,
     pub block_signature: String,
@@ -48,18 +50,16 @@ pub struct Block {
     pub block_payload: String,
     pub miner: String,
     pub state_hash: String,
-    pub owned_claims: HashMap<u128, Claim>,
+    pub owned_claims: LinkedHashMap<u128, Claim>,
 }
 
 impl Block {
     pub fn genesis(
         miner: Arc<Mutex<WalletAccount>>, // the wallet that will receive the genesis reward (wallet attached to the node that initializes the network)
-        network_state: Arc<Mutex<NetworkState>>,
         reward_state: Arc<Mutex<RewardState>>,
         account_state: Arc<Mutex<AccountState>>,
     ) -> Result<Block, Error> // Returns a result with either a tuple containing the genesis block and the updated account state (if successful) or an error (if unsuccessful)
     {
-        println!("Mining Genesis Block");
         // Get the current time in a unix timestamp duration.
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
 
@@ -72,7 +72,7 @@ impl Block {
         // by 5 nano seconds
         // TODO: Change this to 1 second, 5 nano seconds is just for testing.
         for i in 0..20 {
-            next_time += 10 * SECOND;
+            next_time += 30 * SECOND;
             let claim = Claim::new(next_time, i as u128 + 1);
             visible_blocks.push(claim);
         }
@@ -80,7 +80,6 @@ impl Block {
         let mut owned_claims = allocate_claims(
             visible_blocks,
             Arc::clone(&miner),
-            Arc::clone(&network_state),
             1u128,
             Arc::clone(&account_state),
         );
@@ -90,25 +89,24 @@ impl Block {
                 claim.staked = true;
                 return (claim.claim_number.clone(), claim.clone());
             })
-            .collect::<HashMap<u128, Claim>>();
+            .collect::<LinkedHashMap<u128, Claim>>();
 
         let state_hash = digest_bytes("Genesis_State_Hash".to_string().as_bytes());
-        println!("Structuring block");
         let miner_pubkey = miner.lock().unwrap().pubkey.clone();
         let miner_address = miner.lock().unwrap().addresses[&1].clone();
         // Initialize a new block.
         let genesis = Block {
-            block_height: 1,
+            block_height: 0,
 
             // set the timestamp to the now variable
             timestamp: now.as_nanos(),
             // set the last block hash to the hash result of the bytes of the string Genesis_Last_Block_Hash
             last_block_hash: digest_bytes("Genesis_Last_Block_Hash".to_string().as_bytes()),
             // set the value of data to an empty hashmap
-            data: HashMap::new(),
+            data: LinkedHashMap::new(),
 
             // set the value of the claim to a new claim with the maturity timestamp of now
-            claim: Claim::new(now.as_nanos(), 1),
+            claim: Claim::new(now.as_nanos() + 5 * SECOND, 0),
 
             // set the value of the block reward to the result of a call to the genesis associated
             // method in the Reward struct. This will generate the Genesis reward and send it to
@@ -139,8 +137,6 @@ impl Block {
         // network state. Unwrap the result and assign it to the variable updated_account_state to
         // be returned by this method.
 
-        println!("Done mining genesis block");
-
         Ok(genesis)
     }
 
@@ -163,7 +159,7 @@ impl Block {
             .chain_of_custody
             .get(&claim.clone().current_owner.unwrap())
             .unwrap()
-            .get("buyer_signature")
+            .get(&CustodianOption::BuyerSignature)
             .unwrap()
             .clone()
             .unwrap()
@@ -180,7 +176,13 @@ impl Block {
         let next_block_reward = Reward::new(None, Arc::clone(&reward_state));
         let miner = wallet.lock().unwrap().addresses[&1].clone();
         let pubkey = claim.clone().current_owner.unwrap();
-        let data = account_state.clone().lock().unwrap().mineable.clone();
+        let data = account_state
+            .clone()
+            .lock()
+            .unwrap()
+            .txn_pool
+            .confirmed
+            .clone();
         // Structure the block payload (to be signed by the miner's wallet for network verification).
         let block_payload = format!(
             "{},{},{},{},{},{},{}",
@@ -194,43 +196,36 @@ impl Block {
         );
 
         // Ensure that the claim is mature
-        if claim.maturation_time <= now.as_nanos() {
+        if claim.claim_number == last_block.claim.claim_number + 1 {
             // If the claim is mature, initialize a vector with the capacity to hold the new claims that will be created
             // by this new block being mined.
             let mut visible_blocks: Vec<Claim> = Vec::with_capacity(20);
 
             // Get the claim with the highest maturity timestamp that current exists.
-            let mut furthest_visible_block: u128 = account_state
-                .clone()
-                .lock()
-                .unwrap()
-                .clone()
-                .claims
-                .iter()
-                .map(|(_n, claim)| claim.maturation_time)
-                .max_by(|a, b| a.cmp(b))
-                .unwrap()
-                .clone();
+            let mut furthest_visible_block: u128 = if let Some((_, claim)) = account_state.lock().unwrap().clone().claim_pool.confirmed.back() {
+                claim.expiration_time
+            } else {
+                now.clone().as_nanos()
+            };
+                
 
-            let mut highest_claim_number: u128 = last_block
-                .owned_claims
-                .iter()
-                .map(|(_owner, claim)| claim.claim_number)
-                .max_by(|a, b| a.cmp(b))
-                .unwrap();
+            let mut highest_claim_number: u128 = if let Some((claim_number, _)) = last_block.owned_claims.back() {
+                *claim_number
+            } else {
+                0
+            };
             // Generate 20 new claims, increment each one's maturity timestamp by 5 nanoseconds
             // and push them to the visible_blocks vector.
-            // TODO: Change this to 1 second, this is only for testing purposes.
-            for _ in 0..20 {
-                furthest_visible_block += 10 * SECOND;
-                visible_blocks.push(Claim::new(furthest_visible_block, highest_claim_number));
+            // TODO: Add capacity feature to max number of claims available to 1 million.
+            (0..20).for_each(|_| {
+                furthest_visible_block += 30 * SECOND;
                 highest_claim_number += 1;
-            }
+                visible_blocks.push(Claim::new(furthest_visible_block, highest_claim_number));
+            });
 
             let owned_claims = allocate_claims(
                 visible_blocks,
                 Arc::clone(&wallet),
-                Arc::clone(&network_state),
                 last_block.block_height + 1,
                 Arc::clone(&account_state),
             );
@@ -245,7 +240,6 @@ impl Block {
                 // if it is indeed owned by the miner attempting to mine this block
                 Ok(_t) => {
                     // generate the new block and assign it to a variable new_block
-                    println!("structuring new block");
                     let mut new_block = Block {
                         block_height: last_block.block_height + 1,
 
@@ -258,7 +252,7 @@ impl Block {
                         data,
 
                         // Set the claim to the claim that entitled the miner to mine this block
-                        claim,
+                        claim: claim.clone(),
 
                         // Set the block reward to the previous block reward but with the miner value
                         // as Some() with the miner's wallet address inside.
@@ -292,7 +286,9 @@ impl Block {
                     // included in the return expression.
                     // Return a Some() option variant with an Ok() result variant that wraps a tuple that contains
                     // the new block that was just mined and the updated account state.
-                    let state_hash = network_state.lock().unwrap().hash(new_block.clone(), &now.as_nanos().to_ne_bytes());
+                    let mut hashable_state = network_state.lock().unwrap().clone();
+                    let state_hash =
+                        hashable_state.hash(new_block.clone(), &now.as_nanos().to_ne_bytes());
                     new_block = Block {
                         state_hash,
                         ..new_block.clone()
@@ -329,34 +325,17 @@ impl Block {
     }
 }
 
-pub fn data_validator(data: HashMap<String, Txn>, account_state: AccountState) -> Option<bool> {
-    for (id, _txn) in data {
-        let valid = account_state.mineable.get(&id);
+pub fn data_validator(data: LinkedHashMap<String, Txn>) -> Option<bool> {
+    let mut valid_data: bool = true;
 
-        match valid {
-            Some(txn) => {
-                let num_invalid = txn
-                    .validators
-                    .iter()
-                    .filter(|&validator| !validator.to_owned().valid)
-                    .count();
-                let len_of_validators = txn.validators.len();
-
-                if len_of_validators < 3 {
-                    return Some(false);
-                }
-
-                if num_invalid as f32 / len_of_validators as f32 > 1.0 / 3.0 {
-                    return Some(false);
-                } else {
-                    println!("Txn is valid")
-                }
-            }
-            None => return Some(false),
+    data.iter().for_each(|(_, txn)| {
+        let n_valid = txn.validators.iter().filter(|(_, &valid)| valid).count();
+        if (n_valid as f64 / txn.validators.len() as f64) < VALIDATOR_THRESHOLD {
+            valid_data = false
         }
-    }
+    });
 
-    Some(true)
+    Some(valid_data)
 }
 
 impl fmt::Display for Block {
@@ -377,19 +356,24 @@ impl Verifiable for Block {
         match options {
             Some(block_options) => {
                 match block_options {
-                    ValidatorOptions::NewBlock(
-                        last_block,
-                        block,
-                        pubkey,
-                        account_state,
-                        reward_state,
-                        network_state,
-                    ) => {
-                        let valid_signature = match block.clone().claim.chain_of_custody.get(&block.clone().claim.current_owner.unwrap()) {
+                    ValidatorOptions::NewBlock(last_block, reward_state, network_state) => {
+                        if self.claim.claim_number != last_block.claim.claim_number + 1 {
+                            println!("Invalid claim sequence");
+                            return Some(false);
+                        }
+
+                        let valid_signature = match self
+                            .clone()
+                            .claim
+                            .chain_of_custody
+                            .get(&self.clone().claim.current_owner.unwrap())
+                        {
                             Some(map) => {
-                                match map.get("buyer_signature") {
+                                match map.get(&CustodianOption::BuyerSignature) {
                                     Some(Some(CustodianInfo::BuyerSignature(Some(sig)))) => {
-                                        let pubkey = match PublicKey::from_str(&pubkey) {
+                                        let pubkey_string =
+                                            &self.clone().claim.current_owner.unwrap().clone();
+                                        let pubkey = match PublicKey::from_str(&pubkey_string) {
                                             Ok(pk) => pk,
                                             Err(_e) => {
                                                 println!("Invalid Public Key");
@@ -408,13 +392,13 @@ impl Verifiable for Block {
                                             }
                                         };
 
-                                        block.claim.verify(&signature, &pubkey)
-                                    },
+                                        self.claim.verify(&signature, &pubkey)
+                                    }
                                     _ => {
                                         println!("Buyer never signed claim");
                                         return Some(false);
                                     }
-                                    }
+                                }
                             }
                             None => {
                                 println!("Signature verification returned None");
@@ -435,38 +419,34 @@ impl Verifiable for Block {
                             }
                         }
 
-                        if block.last_block_hash != last_block.block_hash {
-                            println!("Invalid last block hash");
+                        if self.last_block_hash != last_block.block_hash {
+                            info!(target: "block_height","{} - 1 == {}", &self.block_height, last_block.block_height);
+                            info!(target: "block_hash", "{} == {}", &self.last_block_hash, last_block.block_hash);
+                            warn!(target: "invalid_block_hash", "Invalid last block hash");
                             return Some(false);
                         }
-                        if block.block_hash != digest_bytes(block.block_payload.as_bytes()) {
+                        if self.block_hash != digest_bytes(self.block_payload.as_bytes()) {
                             println!("Invalid block hash");
                             return Some(false);
                         }
 
-                        let state_hash = network_state.hash(block.clone(), &block.timestamp.to_ne_bytes());
-                        println!("{}", &state_hash);
-                        if block.state_hash != state_hash {
+                        let mut hashable_state = network_state.clone();
+
+                        let state_hash =
+                            hashable_state.hash(self.clone(), &self.timestamp.to_ne_bytes());
+
+                        if self.state_hash != state_hash {
                             println!("Invalid state hash");
                             // If state hash is invalid cast false vote with the reason why.
                             return Some(false);
                         }
-                        let account_state_claim = {
-                            if let Some(claim) = account_state.claims.get(&block.claim.claim_number)
-                            {
-                                claim.to_owned()
-                            } else {
-                                println!("unable to find block claim");
-                                return Some(false);
-                            }
-                        };
 
-                        if last_block.next_block_reward.amount != block.block_reward.amount {
+                        if last_block.next_block_reward.amount != self.block_reward.amount {
                             println!("invalid block reward doesn't match last block reward");
                             return Some(false);
                         }
 
-                        match reward::valid_reward(block.block_reward.category, reward_state) {
+                        match reward::valid_reward(self.block_reward.category, reward_state) {
                             Some(false) => {
                                 println!("invalid block reward");
                                 return Some(false);
@@ -478,7 +458,7 @@ impl Verifiable for Block {
                             _ => {}
                         }
 
-                        match reward::valid_reward(block.next_block_reward.category, reward_state) {
+                        match reward::valid_reward(self.next_block_reward.category, reward_state) {
                             Some(false) => {
                                 println!("invalid next block reward");
                                 return Some(false);
@@ -490,7 +470,7 @@ impl Verifiable for Block {
                             _ => {}
                         }
 
-                        match data_validator(block.data, account_state) {
+                        match data_validator(self.data.clone()) {
                             Some(false) => {
                                 println!("Invalid Data");
                                 return Some(false);

@@ -1,19 +1,19 @@
 use crate::block::Block;
 use crate::claim::Claim;
-use crate::state::NetworkState;
 use crate::txn::Txn;
-use crate::validator::Validator;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use ritelinked::LinkedHashMap;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum MessageType {
     AccountPubkeyMessage {
-        addresses: HashMap<String, String>,
+        addresses: LinkedHashMap<String, String>,
         sender_id: String,
     },
     NetworkStateMessage {
-        network_state: NetworkState,
+        data: Vec<u8>,
+        chunk_number: u32,
+        total_chunks: u32,
         requestor: String,
         sender_id: String,
     },
@@ -25,12 +25,20 @@ pub enum MessageType {
         sender_id: String,
     },
     TxnValidatorMessage {
-        validator: Validator,
+        txn_id: String,
+        vote: bool,
+        validator_pubkey: String,
         sender_id: String,
     },
     BlockMessage {
         block: Block,
         sender_id: String,
+    },
+    BlockChunkMessage {
+        block_height: u128,
+        chunk_number: u128,
+        total_chunks: u128,
+        data: Vec<u8>,
     },
     NeedBlockMessage {
         last_block: u128,
@@ -51,7 +59,13 @@ pub enum MessageType {
         sender_id: String,
     },
     ClaimValidator {
-        validator: Validator,
+        claim_number: u128,
+        vote: bool,
+        validator_pubkey: String,
+        sender_id: String,
+    },
+    ExpiredClaimMessage {
+        claim_number: u128,
         sender_id: String,
     },
     VIPMessage {

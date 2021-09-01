@@ -1,40 +1,34 @@
 #[allow(unused_imports)]
 use crate::account::AccountState;
 use crate::block::Block;
+use crate::network::command_utils;
+use crate::network::command_utils::Command;
 use crate::network::message;
-use crate::network::protocol::{build_transport, VrrbNetworkBehavior};
+use crate::network::message_utils;
+use crate::network::protocol::{VrrbNetworkBehavior};
 use crate::network::voting::BallotBox;
 use crate::reward::RewardState;
 use crate::state::NetworkState;
-use crate::network::command_utils;
-use crate::network::command_utils::{Command};
 use crate::wallet::WalletAccount;
+use crate::network::config_utils;
 use async_std::{io, task};
-use env_logger::{Builder, Env};
 use futures::prelude::*;
-use libp2p::gossipsub::MessageId;
-use libp2p::gossipsub::{
-    Gossipsub, GossipsubConfigBuilder, GossipsubMessage, IdentTopic as Topic, MessageAuthenticity,
-    ValidationMode,
-};
-use libp2p::identify::{Identify, IdentifyConfig};
-use libp2p::kad::{record::store::MemoryStore, Kademlia};
 use libp2p::multiaddr::multiaddr;
-use libp2p::ping::{Ping, PingConfig};
 use libp2p::swarm::Swarm;
 use libp2p::{identity, Multiaddr, PeerId};
+use log::info;
 use rand::Rng;
-use std::collections::hash_map::DefaultHasher;
-use std::collections::{HashMap, VecDeque};
-use std::hash::{Hash, Hasher};
-use std::time::Duration;
+use simplelog::{Config, LevelFilter, WriteLogger};
+use std::fs::File;
 use std::{
     error::Error,
-    sync::{Arc, Mutex},
+    sync::{mpsc::channel, mpsc::Sender, Arc, Mutex},
     task::{Context, Poll},
     thread,
 };
+use std::collections::{HashMap, VecDeque};
 
+pub const MAX_TRANSMIT_SIZE: usize = 2000000;
 
 #[allow(dead_code)]
 pub enum NodeAuth {
@@ -50,13 +44,15 @@ pub struct Node {
     pub network_state: Arc<Mutex<NetworkState>>,
     pub account_state: Arc<Mutex<AccountState>>,
     pub reward_state: Arc<Mutex<RewardState>>,
-    pub command_queue: Arc<Mutex<VecDeque<Vec<String>>>>,
+    pub command_sender: Sender<Command>,
+    pub mining_sender: Sender<Command>,
     pub last_block: Option<Block>,
+    pub block_sender: Sender<Block>,
+    pub state_sender: Sender<Command>,
     pub ballot_box: Arc<Mutex<BallotBox>>,
-    pub temp_blocks: Option<HashMap<u128, Block>>,
     pub wallet: Arc<Mutex<WalletAccount>>,
+    pub state_chunks: HashMap<u32, Vec<u8>>,
 }
-
 
 impl Node {
     pub async fn start(
@@ -67,70 +63,26 @@ impl Node {
         network_state: Arc<Mutex<NetworkState>>,
         reward_state: Arc<Mutex<RewardState>>,
     ) -> Result<(), Box<dyn Error>> {
-        Builder::from_env(Env::default().default_filter_or("info")).init();
+        let mut rng = rand::thread_rng();
+        let log_file_suffix = rng.gen::<u8>();
+        let log_file_path = format!("./data/vrrb_log_file_{}.log", log_file_suffix);
+        let _ = WriteLogger::init(
+            LevelFilter::Info,
+            Config::default(),
+            File::create(log_file_path).unwrap(),
+        );
 
         let local_key = identity::Keypair::generate_ed25519();
         let local_peer_id = PeerId::from(local_key.public());
 
-        // TODO pass topics in through the function header
-        // such that not every node is required to subscribe/publish to every topic
-        let testnet_topic = Topic::new("test-net");
-        let txn_topic = Topic::new("txn");
-        let claim_topic = Topic::new("claim");
-        let block_topic = Topic::new("block");
-        let validator_topic = Topic::new("validator");
+        let (message_sender, message_receiver) = channel();
+        let (command_sender, command_receiver) = channel();
+        let (block_sender, block_receiver) = channel();
+        let (mining_sender, mining_receiver) = channel();
+        let (state_sender, state_receiver) = channel();
 
-        let swarm = {
-            let message_id_fn = |message: &GossipsubMessage| {
-                let mut s = DefaultHasher::new();
-                message.data.hash(&mut s);
-                MessageId::from(s.finish().to_string())
-            };
+        let swarm = config_utils::configure_swarm(message_sender.clone(), command_sender.clone()).await;
 
-            let gossipsub_config = GossipsubConfigBuilder::default()
-                .heartbeat_interval(Duration::from_secs(10))
-                .validation_mode(ValidationMode::Strict)
-                .message_id_fn(message_id_fn)
-                .build()
-                .expect("Valid config");
-
-            let mut gossipsub: Gossipsub = Gossipsub::new(
-                MessageAuthenticity::Signed(local_key.clone()),
-                gossipsub_config,
-            )
-            .expect("Correct configuration");
-
-            gossipsub.subscribe(&testnet_topic).unwrap();
-            gossipsub.subscribe(&txn_topic).unwrap();
-            gossipsub.subscribe(&claim_topic).unwrap();
-            gossipsub.subscribe(&block_topic).unwrap();
-            gossipsub.subscribe(&validator_topic).unwrap();
-            let store = MemoryStore::new(local_peer_id);
-            let kademlia = Kademlia::new(local_peer_id, store);
-            let identify_config =
-                IdentifyConfig::new("vrrb/test-net/1.0.0".to_string(), local_key.public());
-
-            let identify = Identify::new(identify_config);
-            let ping = Ping::new(PingConfig::new());
-            let queue: Arc<Mutex<VecDeque<GossipsubMessage>>> =
-                Arc::new(Mutex::new(VecDeque::new()));
-            let command_queue: Arc<Mutex<VecDeque<Command>>> = Arc::new(Mutex::new(VecDeque::new()));
-
-            let behaviour = VrrbNetworkBehavior {
-                gossipsub,
-                identify,
-                kademlia,
-                ping,
-                queue,
-                command_queue,
-            };
-
-            let transport = build_transport(local_key).await.unwrap();
-            Swarm::new(transport, behaviour, local_peer_id)
-        };
-
-        let command_queue: Arc<Mutex<VecDeque<Vec<String>>>> =
-            Arc::new(Mutex::new(VecDeque::new()));
         let account_state = Arc::clone(&account_state);
         let network_state = Arc::clone(&network_state);
         let reward_state = Arc::clone(&reward_state);
@@ -142,12 +94,16 @@ impl Node {
             swarm,
             last_block: None,
             ballot_box,
-            temp_blocks: None,
-            command_queue: Arc::clone(&command_queue),
+            command_sender: command_sender.clone(),
+            mining_sender: mining_sender.clone(),
+            block_sender: block_sender.clone(),
+            state_sender: state_sender.clone(),
             account_state: Arc::clone(&account_state),
             network_state: Arc::clone(&network_state),
             reward_state: Arc::clone(&reward_state),
             wallet: Arc::clone(&wallet),
+            state_chunks: HashMap::new(),
+
         };
 
         let port = rand::thread_rng().gen_range(9292, 19292);
@@ -165,6 +121,34 @@ impl Node {
             .swarm
             .listen_on(addr.clone())
             .unwrap();
+
+        let pubkey = atomic_node
+            .lock()
+            .unwrap()
+            .wallet
+            .lock()
+            .unwrap()
+            .pubkey
+            .clone()
+            .to_string();
+        let addresses = atomic_node
+            .lock()
+            .unwrap()
+            .wallet
+            .lock()
+            .unwrap()
+            .addresses
+            .clone();
+        addresses.iter().for_each(|(_, addr)| {
+            atomic_node
+                .lock()
+                .unwrap()
+                .account_state
+                .lock()
+                .unwrap()
+                .accounts_pk
+                .insert(addr.to_string(), pubkey.clone());
+        });
 
         atomic_node
             .lock()
@@ -187,10 +171,9 @@ impl Node {
             }
         }
 
-        let atomic_message_queue = Arc::clone(&atomic_node.lock().unwrap().swarm.behaviour().queue);
         let task_node = Arc::clone(&atomic_node);
         thread::spawn(move || loop {
-            while let Some(message) = atomic_message_queue.lock().unwrap().pop_front() {
+            while let Some(message) = message_receiver.iter().next() {
                 let cloned_node = Arc::clone(&task_node);
                 thread::spawn(move || {
                     message::process_message(message, Arc::clone(&cloned_node));
@@ -200,17 +183,142 @@ impl Node {
             }
         });
 
-        let atomic_command_queue =
-            Arc::clone(&atomic_node.lock().unwrap().swarm.behaviour().command_queue);
         let task_node = Arc::clone(&atomic_node);
         thread::spawn(move || loop {
-            while let Some(command) = atomic_command_queue.lock().unwrap().pop_front() {
+            while let Some(command) = command_receiver.iter().next() {
                 let cloned_node = Arc::clone(&task_node);
                 thread::spawn(move || {
-                    command_utils::handle_command(cloned_node, command);
+                    command_utils::handle_command(Arc::clone(&cloned_node), command);
                 })
                 .join()
                 .unwrap()
+            }
+        });
+
+        let mut temp_blocks: VecDeque<Block> = VecDeque::new();
+        let mut mining = false;
+        let mut updating_state = false;
+        let task_node = Arc::clone(&atomic_node);
+        thread::spawn(move || loop {
+            let cloned_node = Arc::clone(&task_node);
+
+            if let Some(command) = mining_receiver.try_iter().next() {
+                match command {
+                    Command::MineBlock => {
+                        mining = true;
+                        info!(target: "starting_mining", "This node has started mining: {}", mining);
+                    },
+                    Command::StopMine => {
+                        mining = false;
+                        info!(target: "stopped_mining", "This node has stopped mining: {}", mining);
+                    },
+                    _ => { info!(target: "mining", "Invalid command.") }
+                }
+            }
+
+            if let Some(command) = state_receiver.try_iter().next() {
+                // send message to state updating thread to start updating state
+                // when it is done updating the state send message back to this 
+                // thread to stop updating state.
+                match command {
+                    Command::GetState => {
+                        info!(target: "get_state", "getting state");
+                        updating_state = true;
+                    },
+                    Command::StateUpdateCompleted => {
+                        info!(target: "get_state", "completed updating state");
+                        updating_state = false;
+                    },
+                    Command::StoreStateChunk(chunk, chunk_number, total_chunks) => {
+                        info!(target: "get_state", "received state chunk");
+                        info!(target: "get_state", "received chunk {} of {}", &chunk_number, &total_chunks);
+                        let state_chunks_length = cloned_node.lock().unwrap().state_chunks.clone().len();
+                        if chunk_number == total_chunks && state_chunks_length as u32 == total_chunks - 1 {
+                            cloned_node.lock().unwrap().state_chunks.insert(chunk_number, chunk);
+
+                            let state_chunks = cloned_node.lock().unwrap().state_chunks.clone();
+                            let mut chunk_vec = vec![];
+                            (1..=total_chunks).map(|x| x).for_each(|x| {
+                                if let Some(chunk) = state_chunks.get(&x) {
+                                    chunk_vec.extend(chunk);
+                                }
+                                info!(target: "get_state", "extended chunk vec with chunk {}", &x);
+                            });
+
+                            info!(target: "get_state", "chunk_vec length: {}", &chunk_vec.len());
+                            let network_state = NetworkState::from_bytes(&chunk_vec);
+                            cloned_node.lock().unwrap().network_state.lock().unwrap().credits = network_state.credits.clone();
+                            cloned_node.lock().unwrap().network_state.lock().unwrap().debits = network_state.debits.clone();
+                            cloned_node.lock().unwrap().network_state.lock().unwrap().reward_state = network_state.reward_state.clone();
+                            cloned_node.lock().unwrap().network_state.lock().unwrap().claims = network_state.claims.clone();
+                            cloned_node.lock().unwrap().network_state.lock().unwrap().block_archive = network_state.block_archive.clone();
+                            cloned_node.lock().unwrap().network_state.lock().unwrap().last_block = network_state.last_block.clone();
+                            cloned_node.lock().unwrap().reward_state = Arc::new(Mutex::new(network_state.reward_state.clone()));
+                            cloned_node.lock().unwrap().last_block = network_state.last_block.clone();
+                            command_utils::handle_command(Arc::clone(&cloned_node), Command::ProcessBacklog);
+                            info!(target: "last_block", "last block: {}", cloned_node.lock().unwrap().last_block.clone().unwrap().block_height);
+
+                        } else {
+                            info!(target: "get_state", "stashed chunk: {} of {}", &chunk_number, &total_chunks);
+                            cloned_node.lock().unwrap().state_chunks.insert(chunk_number, chunk);
+                        }
+                    },
+                    Command::ProcessBacklog => {
+                        let task_node = Arc::clone(&cloned_node);
+                        'backlog_processing: loop {
+                            let inner_node = Arc::clone(&task_node);
+                            let last_block = cloned_node.lock().unwrap().last_block.clone();
+                            temp_blocks.retain(|block| block.block_height > last_block.clone().unwrap().block_height);
+                            if let Some(block) = temp_blocks.pop_front() {
+                                info!(target: "state_update", "processing block {}", &block.block_height);
+                                message_utils::process_block(block, Arc::clone(&inner_node));
+                            } else {
+                                break 'backlog_processing
+                            }
+                        }
+                        info!("Finished processing backlog, last block: {}", cloned_node.lock().unwrap().last_block.clone().unwrap().block_height);
+                        command_utils::handle_command(Arc::clone(&cloned_node), Command::StateUpdateCompleted);
+                    }
+                    ,
+                    _ => { info!(target: "get_state", "invalid command sent to state receiver"); }
+                }
+            }
+
+            if let Some(block) = block_receiver.try_iter().next() {
+                temp_blocks.push_back(block.clone());
+                info!(target: "stashed_block", "Stashed block: {}", block.block_height);
+            }
+
+            if !updating_state {
+                'block_processing: loop {
+                    let cloned_node = Arc::clone(&task_node);
+                    let last_block = cloned_node.lock().unwrap().last_block.clone();
+                    if let Some(block) = temp_blocks.pop_front() {
+                        if &block.block_height > &0 {
+                            if let None = last_block {                        
+                                temp_blocks.push_front(block);
+                                message_utils::request_state(Arc::clone(&cloned_node));
+                                break 'block_processing
+                            } else {
+                                info!(
+                                    target: "Block", "Block: {}, block_claim_current_owner: {:?}", 
+                                    &block.block_height, &block.claim.current_owner
+                                );
+                                message_utils::process_block(block.clone(), Arc::clone(&cloned_node));
+                            }
+                        } else {
+                            message_utils::process_block(block.clone(), Arc::clone(&cloned_node));
+                        }
+                    } else {
+                            break 'block_processing
+                    }
+                    
+                }
+            }
+
+            if mining && !updating_state {
+                let inner_node = Arc::clone(&cloned_node);
+                message_utils::mine_block(Arc::clone(&inner_node));
             }
         });
 
@@ -245,6 +353,3 @@ impl Node {
         }))
     }
 }
-
-
-

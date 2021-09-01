@@ -1,30 +1,7 @@
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-// use crate::validator::Validator;
+use crate::pool::Pool;
 use crate::{block::Block, claim::Claim, txn::Txn};
-
-// TODO: Move to a different module
-// Account State object is effectively the local
-// database of all WalletAccounts. This is updated
-// whenever transactions are sent/received
-// and is "approved" by the network via consensus after
-// each transaction and each block. It requires a hashmap
-// with a vector of hashmaps that contains information for restoring a wallet.
-#[derive(Serialize, Deserialize)]
-pub enum StateOption {
-    // TODO: Change WalletAccount usage to tuples of types of
-    // data from the Wallet needed. Using actual WalletAccount object
-    // is unsafe.
-    NewTxn(String),
-    NewAccount(String),
-    PendingClaimAcquired(String),
-    ConfirmedClaimAcquired(String),
-    ConfirmedTxn(String, String),
-    ProposedBlock(String, String, String, String),
-    ConfirmedBlock(String, String, String, String),
-    GenesisBlock(String, String, String, String)
-}
-
+use serde::{Deserialize, Serialize};
+use ritelinked::LinkedHashMap;
 /// The State of all accounts. This is used to track balances
 /// this is also used to track the state of the network in general
 /// along with the ClaimState and RewardState. Will need to adjust
@@ -33,17 +10,9 @@ pub enum StateOption {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AccountState {
     // Map of account address to public key
-    pub accounts_pk: HashMap<String, String>,   // K: address, V: pubkey
-    pub credits: HashMap<String, HashMap<String, u128>>,    // K: address, V: Hashmap { K: ticker, V: amount }
-    pub pending_credits: HashMap<String, HashMap<String, u128>>,    // K: address, V: Hashmap { K: ticker, V: amount }
-    pub debits: HashMap<String, HashMap<String, u128>>, // K: address, V: Hashmap { K: ticker, V: amount }
-    pub pending_debits: HashMap<String, HashMap<String, u128>>, // K: address, V: Hashmap { K: ticker, V: amount }
-    pub balances: HashMap<String, HashMap<String, u128>>, // K: address, V: Hashmap { K: ticker, V: amount }
-    pub pending_balances: HashMap<String, HashMap<String, u128>>, // K: address, V: Hashmap { K: ticker, V: amount }
-    pub claims: HashMap<u128, Claim>, // K: claim_number, V: claim
-    pub pending_claim_sales: HashMap<u128, String>, // K: claim_number, V: pubkey
-    pub pending: HashMap<String, Txn>, // K: txn_id, V: Txn 
-    pub mineable: HashMap<String, Txn>, // K: txn_id, V: Txn
+    pub accounts_pk: LinkedHashMap<String, String>, // K: address, V: pubkey
+    pub txn_pool: Pool<String, Txn>,
+    pub claim_pool: Pool<u128, Claim>,
     pub last_block: Option<Block>,
 }
 
@@ -54,31 +23,55 @@ pub struct AccountState {
 /// transactions are set into the pending vector and the confirmed transactions
 /// are set in the mineable vector.
 impl AccountState {
-    /// Instantiates a new AccountState instance
-    /// TODO: Add restoration functionality/optionality to restore an existing
-    /// account state on a node that has previously operated but was stopped.
-    pub fn start() -> AccountState {
+    pub fn start(txn_pool: Pool<String, Txn>, claim_pool: Pool<u128, Claim>) -> AccountState {
         AccountState {
-            accounts_pk: HashMap::new(),
-            credits: HashMap::new(),
-            pending_credits: HashMap::new(),
-            debits: HashMap::new(),
-            pending_debits: HashMap::new(),
-            balances: HashMap::new(),
-            pending_balances: HashMap::new(),
-            claims: HashMap::new(),
-            pending_claim_sales: HashMap::new(),
-            pending: HashMap::new(),
-            mineable: HashMap::new(),
+            accounts_pk: LinkedHashMap::new(),
+            txn_pool,
+            claim_pool,
             last_block: None,
         }
     }
 
-    /// Update's the AccountState and NetworkState, takes a StateOption (for function routing)
-    /// also requires the NetworkState to be provided in the function call.
-    /// TODO: Provide Examples to Doc
-    pub fn update(&mut self, _value: StateOption) {
+    pub fn pending_credits(&self, address: String) -> Option<u128> {
+        let mut receipts = self.txn_pool.pending.clone();
+        receipts.retain(|_, v| v.receiver_address == address);
 
+        if receipts.is_empty() {
+            return None;
+        } else {
+            let amounts: Vec<u128> = receipts.iter().map(|(_, v)| return v.txn_amount).collect();
+            let pending_credits = amounts.iter().sum();
+            Some(pending_credits)
+        }
+    }
+
+    pub fn pending_debits(&self, address: String) -> Option<u128> {
+        let mut receipts = self.txn_pool.pending.clone();
+        receipts.retain(|_, v| v.sender_address == address);
+
+        if receipts.is_empty() {
+            return None;
+        } else {
+            let amounts: Vec<u128> = receipts.iter().map(|(_, v)| return v.txn_amount).collect();
+            let pending_debits = amounts.iter().sum();
+            Some(pending_debits)
+        }
+    }
+
+    pub fn pending_balance(&self, address: String) -> Option<(u128, u128)> {
+        let pending_credits = if let Some(amount) = self.pending_credits(address.clone()) {
+            amount
+        } else {
+            0
+        };
+
+        let pending_debits = if let Some(amount) = self.pending_debits(address.clone()) {
+            amount
+        } else {
+            0
+        };
+
+        Some((pending_credits, pending_debits))
     }
 
     pub fn as_bytes(&self) -> Vec<u8> {
@@ -89,25 +82,15 @@ impl AccountState {
         let mut buffer: Vec<u8> = vec![];
         data.iter().for_each(|x| buffer.push(*x));
         let to_string = String::from_utf8(buffer).unwrap();
-        serde_json::from_str::<AccountState>(&to_string).unwrap()
+        AccountState::from_string(&to_string)
     }
 
     pub fn to_string(&self) -> String {
         serde_json::to_string(self).unwrap()
     }
-}
 
-impl StateOption {
-    pub fn as_bytes(&self) -> Vec<u8> {
-        let as_string = serde_json::to_string(self).unwrap();
-        as_string.as_bytes().iter().copied().collect()
-    }
-
-    pub fn from_bytes(data: &[u8]) -> StateOption {
-        let mut buffer: Vec<u8> = vec![];
-        data.iter().for_each(|x| buffer.push(*x));
-        let to_string = String::from_utf8(buffer).unwrap();
-        serde_json::from_str::<StateOption>(&to_string).unwrap()
+    pub fn from_string(string: &String) -> AccountState {
+        serde_json::from_str::<AccountState>(string).unwrap()
     }
 }
 
@@ -115,18 +98,9 @@ impl Clone for AccountState {
     fn clone(&self) -> Self {
         AccountState {
             accounts_pk: self.accounts_pk.clone(),
-            credits: self.credits.clone(),
-            pending_credits: self.pending_credits.clone(),
-            debits: self.debits.clone(),
-            pending_debits: self.pending_debits.clone(),
-            balances: self.balances.clone(),
-            pending_balances: self.pending_balances.clone(),
-            claims: self.claims.clone(),
-            pending_claim_sales: self.pending_claim_sales.clone(),
-            pending: self.pending.clone(),
-            mineable: self.mineable.clone(),
+            txn_pool: self.txn_pool.clone(),
+            claim_pool: self.claim_pool.clone(),
             last_block: self.last_block.clone(),
         }
     }
 }
-

@@ -16,16 +16,25 @@ pub enum InvalidMessageError {
 
 #[derive(Serialize, Deserialize)]
 pub enum ValidatorOptions {
-    ClaimAcquire(String, String),
-    NewBlock(Block, Block, String, AccountState, RewardState, NetworkState),
-    Transaction(String),
+    ClaimAcquire(NetworkState, AccountState, String, String),
+    NewBlock(
+        Block,
+        RewardState,
+        NetworkState,
+    ),
+    Transaction(AccountState, NetworkState),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Message {
-    ClaimAcquired(String, String, String, String),
-    NewBlock(Block, Block, String, AccountState, RewardState, NetworkState),
-    Txn(String, String),
+    ClaimAcquired(String, String, String, String, String), // Claim as string, NetworkState as string, Account State as String, Seller Pubkey, Buyer pubkey
+    NewBlock(
+        Block,
+        Block,
+        RewardState,
+        NetworkState,
+    ),
+    Txn(String, String, String),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -40,17 +49,18 @@ impl Validator {
     pub fn new(message: Message, pubkey: String, account_state: AccountState) -> Option<Validator> {
         let mut check_staked_claims: HashMap<u128, Claim> = HashMap::new();
         account_state
-            .claims
+            .claim_pool
+            .confirmed
             .iter()
             .filter(|(_claim_number, claim)| claim.current_owner.clone().unwrap() == pubkey)
-            .for_each(
-                |(claim_number, claim)| match account_state.claims.get(claim_number) {
+            .for_each(|(claim_number, claim)| {
+                match account_state.claim_pool.confirmed.get(claim_number) {
                     Some(_) => {
                         check_staked_claims.insert(*claim_number, claim.clone());
                     }
                     None => {}
-                },
-            );
+                }
+            });
         // If there's no staked claims for the node wallet attempting to launch a validator
         // a validator cannot be launched. Claims must be staked to validate messages
         Some(check_staked_claims).map(|map| Validator {
@@ -61,8 +71,8 @@ impl Validator {
         })
     }
 
-    pub fn validate(&self) -> Self {
-        mpu::message_processor(self.clone())
+    pub fn validate(&mut self) {
+        mpu::message_processor(self)
     }
 
     pub fn as_bytes(&self) -> Vec<u8> {

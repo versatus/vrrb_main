@@ -259,6 +259,17 @@ pub fn update_claims(node: Arc<Mutex<Node>>, block: &Block) {
         .unwrap()
         .claims
         .remove(&block.claim.claim_number);
+    
+    // increment the claim_counter for each claim allocated to an owner
+    block.owned_claims.clone().iter().for_each(|(_, v)| {
+        let mut claim_counter = node.lock().unwrap().account_state.lock().unwrap().claim_counter.clone();
+        if let Some(entry) = claim_counter.get_mut(&v.current_owner.clone().unwrap()) {
+            *entry += 1;
+        } else {
+            claim_counter.insert(v.current_owner.clone().unwrap(), 1);
+        }
+        node.lock().unwrap().account_state.lock().unwrap().claim_counter = claim_counter;
+    })
 }
 
 pub fn update_credits_and_debits(node: Arc<Mutex<Node>>, block: &Block) {
@@ -298,7 +309,7 @@ pub fn update_credits_and_debits(node: Arc<Mutex<Node>>, block: &Block) {
             .unwrap()
             .txn_pool
             .confirmed
-            .retain(|k, _| k != txn_id);
+            .remove(&txn_id.clone());
         node.lock()
             .unwrap()
             .account_state
@@ -306,7 +317,7 @@ pub fn update_credits_and_debits(node: Arc<Mutex<Node>>, block: &Block) {
             .unwrap()
             .txn_pool
             .pending
-            .retain(|k, _| k != txn_id);
+            .remove(&txn_id.clone());
     });
 
     if let Some(entry) = credits.get_mut(&block.miner) {
@@ -314,6 +325,9 @@ pub fn update_credits_and_debits(node: Arc<Mutex<Node>>, block: &Block) {
     } else {
         credits.insert(block.miner.clone(), block.block_reward.amount.clone());
     }
+
+    info!(target: "credits", "{:?}", credits);
+    info!(target: "debits", "{:?}", debits);
 
     node.lock().unwrap().network_state.lock().unwrap().credits = credits;
     node.lock().unwrap().network_state.lock().unwrap().debits = debits;
@@ -383,11 +397,9 @@ pub fn send_state(node: Arc<Mutex<Node>>, requestor: String) {
             };
             let network_state_bytes = network_state_message.as_bytes();
             let message = message::structure_message(network_state_bytes);
-            println!("Publishing state chunk {} message", index);
             message::publish_message(Arc::clone(&cloned_node), message, "test-net");
         });
     } else {
-        println!("structuring single chunk message");
         let network_state_message = MessageType::NetworkStateMessage {
             data: network_state.as_bytes(),
             chunk_number: 1,
@@ -397,7 +409,6 @@ pub fn send_state(node: Arc<Mutex<Node>>, requestor: String) {
         };
         let network_state_bytes = network_state_message.as_bytes();
         let message = message::structure_message(network_state_bytes);
-        println!("Publishing state message");
         message::publish_message(Arc::clone(&cloned_node), message, "test-net");
     }
 }
@@ -474,7 +485,6 @@ pub fn process_block(block: Block, node: Arc<Mutex<Node>>) {
 }
 
 pub fn state_chunks(state: NetworkState) -> Option<Vec<Vec<u8>>> {
-    println!("{}", state.as_bytes().len());
     if state.as_bytes().len() >= (MAX_TRANSMIT_SIZE / 10) {
         let mut chunks: Vec<Vec<u8>> = vec![];
         let mut n_chunks = state.as_bytes().len() / (MAX_TRANSMIT_SIZE / 10);
@@ -493,10 +503,8 @@ pub fn state_chunks(state: NetworkState) -> Option<Vec<Vec<u8>>> {
                     last_slice_end = slice_end;
                 }
             });
-        println!("multiple chunks");
         Some(chunks)
     } else {
-        println!("Single chunk");
         None
     }
 }

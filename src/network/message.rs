@@ -18,6 +18,7 @@ use log::info;
 use ritelinked::LinkedHashMap;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::collections::HashSet;
 
 pub const PROPOSAL_EXPIRATION_KEY: &str = "expires";
 pub const PROPOSAL_YES_VOTE_KEY: &str = "yes";
@@ -74,11 +75,17 @@ pub fn process_message(message: GossipsubMessage, node: Arc<Mutex<Node>>) {
         }
         MessageType::GetNetworkStateMessage { sender_id } => {
             let thread_node = Arc::clone(&node);
-            thread::spawn(move || {
-                message_utils::send_state(Arc::clone(&thread_node), sender_id);
-            })
-            .join()
-            .unwrap();
+            let last_block = thread_node.lock().unwrap().last_block.clone();
+            let miner_pubkey = thread_node.lock().unwrap().wallet.lock().unwrap().pubkey.clone();
+            if let Some(block) = last_block {
+                if block.claim.current_owner == Some(miner_pubkey) {
+                    thread::spawn(move || {
+                        message_utils::send_state(Arc::clone(&thread_node), sender_id);
+                    })
+                    .join()
+                    .unwrap();
+                }
+            }
         }
         MessageType::NetworkStateMessage {
             data,
@@ -183,6 +190,31 @@ pub fn process_message(message: GossipsubMessage, node: Arc<Mutex<Node>>) {
                     .unwrap()
                     .accounts_pk
                     .extend(addresses.clone());
+                
+                let mut pubkey = HashSet::new();
+
+                addresses.iter().for_each(|(_, v)| {
+                    pubkey.insert(v);
+                });
+
+                let pubkey = pubkey.iter().next().unwrap().clone();
+
+                let mut claim_counter = thread_node.lock().unwrap().account_state.lock().unwrap().claim_counter.clone();
+                if let None = claim_counter.get_mut(&pubkey.clone()) {
+                    claim_counter.insert(pubkey.clone(), 0);
+                }
+
+                let claims_owned: u128 = thread_node.lock().unwrap().account_state.lock().unwrap().claim_pool.confirmed.iter().filter(|(_, v)| {
+                    v.current_owner == Some(pubkey.clone())
+                }).count() as u128;
+
+                if let Some(entry) = claim_counter.get_mut(&pubkey.clone()) {
+                    *entry += claims_owned;
+                }
+
+                println!("{:?}", claim_counter);
+                thread_node.lock().unwrap().account_state.lock().unwrap().claim_counter = claim_counter;
+
             })
             .join()
             .unwrap();

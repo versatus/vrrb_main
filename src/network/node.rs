@@ -150,6 +150,9 @@ impl Node {
                 .insert(addr.to_string(), pubkey.clone());
         });
 
+        let n_claims_owned = atomic_node.lock().unwrap().wallet.lock().unwrap().claims.len().clone() as u128;
+        atomic_node.lock().unwrap().account_state.lock().unwrap().claim_counter.insert(pubkey, n_claims_owned);
+
         atomic_node
             .lock()
             .unwrap()

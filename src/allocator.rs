@@ -1,6 +1,7 @@
 use crate::account::AccountState;
 use crate::claim::{Claim, CustodianInfo, CustodianOption};
 use crate::wallet::WalletAccount;
+use log::info;
 use rand::{
     distributions::{Distribution, WeightedIndex},
     thread_rng,
@@ -17,49 +18,11 @@ pub fn allocate_claims(
 ) -> LinkedHashMap<u128, Claim> {
     if block_number > 1 {
         // get all the claims owned
-        let claims_owned: LinkedHashMap<u128, Claim> = account_state.lock().unwrap().claim_pool.confirmed.clone();
-        let accounts_pk = account_state.lock().unwrap().accounts_pk.clone();
-
-        //ISSUE: O(n) operation
-        let accounts: Vec<String> = accounts_pk
-            .values()
-            .map(|value| value.clone())
-            .collect::<Vec<String>>();
-        
-        println!("collecting claim owners");
-        // current owner is the pubkey
-        //ISSUE: O(n) operation
-        let claim_owners: Vec<String> = claims_owned
-            .clone()
-            .iter()
-            .map(|(_, value)| value.current_owner.clone().unwrap())
-            .collect();
-
-        println!("claim owners collected");
-
-        let mut owner_map: LinkedHashMap<String, u128> = LinkedHashMap::new();
+        let owner_map = account_state.lock().unwrap().claim_counter.clone();
+        let total_claims: u128 = account_state.lock().unwrap().claim_pool.confirmed.clone().len() as u128;
         
         //ISSUE: O(n) operation
-        claim_owners.iter().for_each(|owner| {
-            let counter = owner_map.entry(owner.to_owned()).or_insert(0);
-            *counter += 1;
-        });
-
-
-        let total_claims: u128 = claims_owned.len() as u128;
-        
-        //ISSUE: O(n) operation
-        let no_claims_owned: LinkedHashMap<String, u128> = accounts
-            .iter()
-            .filter(|pubkey| !owner_map.contains_key(pubkey.clone()))
-            .map(|pubkey| return (pubkey.clone(), 0u128))
-            .collect::<LinkedHashMap<String, u128>>();
-
-        //ISSUE: O(n) operation
-        let mut claims_owned: Vec<_> = owner_map.iter().collect();
-        //ISSUE: O(n) operation
-        let no_claims_owned: Vec<_> = no_claims_owned.iter().collect();
-        claims_owned.extend(no_claims_owned);
+        let claims_owned: Vec<_> = owner_map.iter().collect();
 
         //ISSUE: O(n) operation
         let mut claim_allocation_choices: Vec<(String, f64)> = claims_owned
@@ -87,8 +50,18 @@ pub fn allocate_claims(
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
+
             let winner = claim_allocation_choices[dist.sample(&mut rng)].0.clone();
-            let mut custodian_info: LinkedHashMap<CustodianOption, Option<CustodianInfo>> = LinkedHashMap::new();
+            
+            if let Some(entry) = account_state.lock().unwrap().claim_counter.get_mut(&winner) {
+                *entry += 1
+            } else {
+                account_state.lock().unwrap().claim_counter.insert(winner.clone(), 1);
+            }
+
+            info!(target: "claim_winner", "{:?}", winner);
+            let mut custodian_info: LinkedHashMap<CustodianOption, Option<CustodianInfo>> =
+                LinkedHashMap::new();
 
             custodian_info.insert(
                 CustodianOption::Homesteader,
@@ -155,16 +128,21 @@ pub fn allocate_claims(
         claims_awarded
     } else {
         let mut claims_awarded: LinkedHashMap<u128, Claim> = LinkedHashMap::new();
+        let miner_pubkey = miner.clone().lock().unwrap().pubkey.clone();
+        let mut claim_counter = account_state.lock().unwrap().claim_counter.clone();
 
         for claim in claim_vec {
-            let mut updated_claim = claim.clone();
-            let miner_pubkey = miner.clone().lock().unwrap().pubkey.clone();
+            let mut updated_claim = claim.clone();        
             let time = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
             let winner = miner_pubkey.clone();
-            let mut custodian_info: LinkedHashMap<CustodianOption, Option<CustodianInfo>> = LinkedHashMap::new();
+            if let Some(entry) = claim_counter.get_mut(&miner_pubkey.clone()) {
+                *entry += 1
+            };
+            let mut custodian_info: LinkedHashMap<CustodianOption, Option<CustodianInfo>> =
+                LinkedHashMap::new();
 
             custodian_info.insert(
                 CustodianOption::Homesteader,
@@ -228,6 +206,7 @@ pub fn allocate_claims(
             updated_claim.current_owner = Some(winner.clone());
             claims_awarded.insert(updated_claim.claim_number, updated_claim.to_owned());
         }
+        account_state.lock().unwrap().claim_counter = claim_counter;
         claims_awarded
     }
 }

@@ -11,6 +11,7 @@ use ritelinked::LinkedHashMap;
 pub struct AccountState {
     // Map of account address to public key
     pub accounts_pk: LinkedHashMap<String, String>, // K: address, V: pubkey
+    pub claim_counter: LinkedHashMap<String, u128>, // K: pubkey, V: number of claims currently owned.
     pub txn_pool: Pool<String, Txn>,
     pub claim_pool: Pool<u128, Claim>,
     pub last_block: Option<Block>,
@@ -26,6 +27,7 @@ impl AccountState {
     pub fn start(txn_pool: Pool<String, Txn>, claim_pool: Pool<u128, Claim>) -> AccountState {
         AccountState {
             accounts_pk: LinkedHashMap::new(),
+            claim_counter: LinkedHashMap::new(),
             txn_pool,
             claim_pool,
             last_block: None,
@@ -98,6 +100,7 @@ impl Clone for AccountState {
     fn clone(&self) -> Self {
         AccountState {
             accounts_pk: self.accounts_pk.clone(),
+            claim_counter: self.claim_counter.clone(),
             txn_pool: self.txn_pool.clone(),
             claim_pool: self.claim_pool.clone(),
             last_block: self.last_block.clone(),

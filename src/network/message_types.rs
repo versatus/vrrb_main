@@ -96,6 +96,7 @@ pub enum MessageType {
     },
     GetNetworkStateMessage {
         sender_id: String,
+        requested_from: String,
     },
     InvalidBlockMessage {
         block_height: u128,

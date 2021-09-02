@@ -349,9 +349,10 @@ pub fn update_reward_state(node: Arc<Mutex<Node>>, block: &Block) {
         .reward_state = reward_state.lock().unwrap().clone();
 }
 
-pub fn request_state(node: Arc<Mutex<Node>>) {
+pub fn request_state(node: Arc<Mutex<Node>>, block: Block) {
     let sender_id = node.lock().unwrap().id.clone().to_string();
-    let message = MessageType::GetNetworkStateMessage { sender_id };
+    let requested_from = block.claim.current_owner.clone().unwrap();
+    let message = MessageType::GetNetworkStateMessage { sender_id, requested_from };
     command_utils::handle_command(Arc::clone(&node), Command::GetState);
 
     let message = message::structure_message(message.as_bytes());

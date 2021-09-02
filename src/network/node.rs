@@ -385,7 +385,7 @@ impl Node {
                         if &block.block_height > &0 {
                             if let None = last_block {
                                 temp_blocks.insert(block.clone().last_block_hash, block.clone());
-                                message_utils::request_state(Arc::clone(&cloned_node));
+                                message_utils::request_state(Arc::clone(&cloned_node), block.clone());
                                 break 'block_processing;
                             } else {
                                 info!(

@@ -67,19 +67,16 @@ pub fn process_message(message: GossipsubMessage, node: Arc<Mutex<Node>>) {
             .join()
             .unwrap();
         }
-        MessageType::GetNetworkStateMessage { sender_id } => {
+        MessageType::GetNetworkStateMessage { sender_id, requested_from } => {
             let thread_node = Arc::clone(&node);
-            let last_block = thread_node.lock().unwrap().last_block.clone();
-            let miner_pubkey = thread_node.lock().unwrap().wallet.lock().unwrap().pubkey.clone();
-            if let Some(block) = last_block {
-                if block.claim.current_owner == Some(miner_pubkey) {
-                    thread::spawn(move || {
-                        message_utils::send_state(Arc::clone(&thread_node), sender_id);
-                    })
-                    .join()
-                    .unwrap();
+            let local_pubkey = thread_node.lock().unwrap().wallet.lock().unwrap().pubkey.clone();
+            if local_pubkey == requested_from {
+                thread::spawn(move || {
+                    message_utils::send_state(Arc::clone(&thread_node), sender_id);
+                })
+                .join()
+                .unwrap();
                 }
-            }
         }
         MessageType::NetworkStateMessage {
             data,
@@ -284,62 +281,58 @@ pub fn process_new_block_message(block: Block, node: Arc<Mutex<Node>>) {
     let cloned_node = Arc::clone(&node);
     info!(target: "block_message", "Received new block: block height {} -> block hash: {}", &block.block_height, &block.block_hash);
     if &block.block_height > &0 {
-        let last_block = cloned_node.lock().unwrap().last_block.clone();
-        if let None = last_block {
-            message_utils::request_state(Arc::clone(&cloned_node));
-        } else {
-            let n_peers = cloned_node
-                .lock()
-                .unwrap()
-                .swarm
-                .behaviour_mut()
-                .gossipsub
-                .all_peers()
-                .count()
-                .clone();
-            let last_block = cloned_node.lock().unwrap().last_block.clone().unwrap();
-            let network_state = cloned_node.lock().unwrap().network_state.lock().unwrap().clone();
-            let reward_state = cloned_node.lock().unwrap().reward_state.lock().unwrap().clone();
-            let id = cloned_node.lock().unwrap().id.clone().to_string();
-            let validator_options =
-                ValidatorOptions::NewBlock(last_block, reward_state, network_state);
-            let vote = block.is_valid(Some(validator_options));
-            match vote {
-                Some(true) => {
-                    if n_peers < 3 {
-                        let inner_node = Arc::clone(&cloned_node);
-                        process_confirmed_block(block.clone(), cloned_node);
-                        inner_node.lock()
-                            .unwrap()
-                            .account_state
-                            .lock()
-                            .unwrap()
-                            .txn_pool
-                            .confirmed
-                            .clear();
-                        info!(target:"block_message", "block {} with block hash {} is valid", &block.block_height, block.block_hash);
-                        info!(target:"block_message", "processed confirmed block");
-                    } // Otherwise wait for a confirmed block message.
-                    let message = MessageType::BlockVoteMessage {
-                        block,
-                        vote: true,
-                        sender_id: id,
-                    };
-                    let message = structure_message(message.as_bytes());
-                    publish_message(Arc::clone(&node), message, "test-net");
-                }
-                Some(false) => {
-                    info!(target:"block_message", "block {} with block hash {} is invalid", &block.block_height, block.block_hash);
-                    let message = MessageType::BlockVoteMessage {
-                        block,
-                        vote: false,
-                        sender_id: id,
-                    };
-                    let message = structure_message(message.as_bytes());
-                    publish_message(Arc::clone(&node), message, "test-net");
-                }
-                None => {}
+        let n_peers = cloned_node
+            .lock()
+            .unwrap()
+            .swarm
+            .behaviour_mut()
+            .gossipsub
+            .all_peers()
+            .count()
+            .clone();
+        let last_block = cloned_node.lock().unwrap().last_block.clone().unwrap();
+        let network_state = cloned_node.lock().unwrap().network_state.lock().unwrap().clone();
+        let reward_state = cloned_node.lock().unwrap().reward_state.lock().unwrap().clone();
+        let id = cloned_node.lock().unwrap().id.clone().to_string();
+        let validator_options =
+            ValidatorOptions::NewBlock(last_block, reward_state, network_state);
+        let vote = block.is_valid(Some(validator_options));
+        match vote {
+            Some(true) => {
+                if n_peers < 3 {
+                    let inner_node = Arc::clone(&cloned_node);
+                    process_confirmed_block(block.clone(), cloned_node);
+                    inner_node.lock()
+                        .unwrap()
+                        .account_state
+                        .lock()
+                        .unwrap()
+                        .txn_pool
+                        .confirmed
+                        .clear();
+                    info!(target:"block_message", "block {} with block hash {} is valid", &block.block_height, block.block_hash);
+                    info!(target:"block_message", "processed confirmed block");
+                } // Otherwise wait for a confirmed block message.
+                let message = MessageType::BlockVoteMessage {
+                    block,
+                    vote: true,
+                    sender_id: id,
+                };
+                let message = structure_message(message.as_bytes());
+                publish_message(Arc::clone(&node), message, "test-net");
             }
+            Some(false) => {
+                info!(target:"block_message", "block {} with block hash {} is invalid", &block.block_height, block.block_hash);
+                let message = MessageType::BlockVoteMessage {
+                    block,
+                    vote: false,
+                    sender_id: id,
+                };
+                let message = structure_message(message.as_bytes());
+                publish_message(Arc::clone(&node), message, "test-net");
+            }
+            None => {}
+        
         }
     } else {
         process_confirmed_block(block.clone(), Arc::clone(&node));

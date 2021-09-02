@@ -265,7 +265,6 @@ impl Node {
                                     .entry(chunk_number).or_insert(chunk);
 
                                 let state_chunks = cloned_node.lock().unwrap().state_chunks.clone();
-                                let mut chunk_vec = vec![];
                                 message_utils::set_network_state(Arc::clone(&cloned_node), state_chunks, total_chunks);
                                 command_utils::handle_command(
                                     Arc::clone(&cloned_node),

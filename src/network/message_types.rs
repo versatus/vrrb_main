@@ -1,8 +1,8 @@
 use crate::block::Block;
 use crate::claim::Claim;
 use crate::txn::Txn;
-use serde::{Deserialize, Serialize};
 use ritelinked::LinkedHashMap;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum MessageType {
@@ -56,6 +56,22 @@ pub enum MessageType {
     },
     ClaimMessage {
         claim: Claim,
+        sender_id: String,
+    },
+    ClaimStakeMessage {
+        claim: Claim,
+        sender_id: String,
+    },
+    ClaimUnstakeMessage {
+        claim: Claim,
+        sender_id: String,
+    },
+    ClaimForSaleMessage {
+        updated_claim: Claim,
+        sender_id: String,
+    },
+    ClaimSoldMessage {
+        updated_claim: Claim,
         sender_id: String,
     },
     ClaimValidator {

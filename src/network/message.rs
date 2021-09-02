@@ -37,15 +37,9 @@ pub fn process_message(message: GossipsubMessage, node: Arc<Mutex<Node>>) {
             .join()
             .unwrap();
         }
-        MessageType::ClaimMessage { claim, .. } => {
-            // TODO: Need to add a ClaimSale Message in Validator for when a claim holder
-            // places it for sale.
-            let thread_node = Arc::clone(&node);
-            thread::spawn(move || {
-                process_claim_message(claim, Arc::clone(&thread_node));
-            })
-            .join()
-            .unwrap();
+        MessageType::ClaimMessage { .. } => {
+            // Don't know if we still need this enum type.
+            
         }
         MessageType::BlockMessage { block, .. } => {
 
@@ -138,7 +132,7 @@ pub fn process_message(message: GossipsubMessage, node: Arc<Mutex<Node>>) {
             // Same as above, but for claim validators
             let thread_node = Arc::clone(&node);
             thread::spawn(move || {
-                process_claim_sale_validator_message(
+                process_claim_sold_validator_message(
                     claim_number,
                     vote,
                     validator_pubkey,
@@ -285,7 +279,6 @@ pub fn process_txn_message(txn: Txn, node: Arc<Mutex<Node>>) {
     }
 }
 
-pub fn process_claim_message(_claim: Claim, _node: Arc<Mutex<Node>>) {}
 
 pub fn process_new_block_message(block: Block, node: Arc<Mutex<Node>>) {
     let cloned_node = Arc::clone(&node);
@@ -395,12 +388,6 @@ pub fn process_get_block_message(peer_id: String, node: Arc<Mutex<Node>>) {
     let _message = structure_message(message.as_bytes());
 }
 
-pub fn process_missing_block_message(block: Block, node: Arc<Mutex<Node>>) {
-    process_confirmed_block(block, Arc::clone(&node));
-}
-
-pub fn process_get_all_blocks_message(_sender_id: String, _node: Arc<Mutex<Node>>) {}
-
 pub fn process_txn_validator_message(
     txn_id: String,
     vote: bool,
@@ -476,28 +463,61 @@ pub fn process_txn_validator_message(
     }
 }
 
-pub fn process_claim_sale_validator_message(
-    _claim_number: u128,
-    _vote: bool,
-    _validator_pubkey: String,
-    _node: Arc<Mutex<Node>>,
-) {
+pub fn process_claim_for_sale_message(_claim: Claim, _node: Arc<Mutex<Node>>) {
+    // validate the claim
+    // set validator in claim struct
+    // send validator message
 }
 
-pub fn process_claim_stake_message(
-    _claim_number: u128,
-    _vote: bool,
-    _validator_pubkey: String,
-    _node: Arc<Mutex<Node>>,
-) {
+pub fn process_claim_staked_message(_claim: Claim, _node: Arc<Mutex<Node>>) {
+    // validate the claim
+    // set validator in claim struct
+    // send validator message
 }
 
-pub fn process_claim_available_message(
+pub fn process_claim_sold_message(_claim: Claim, _node: Arc<Mutex<Node>>) {
+    // validate the claim
+    // set validator in claim struct
+    // send validator message
+}
+
+pub fn process_claim_sold_validator_message(
     _claim_number: u128,
     _vote: bool,
     _validator_pubkey: String,
     _node: Arc<Mutex<Node>>,
 ) {
+    // set validator in claim struct
+    // if validator pushes the valid or invalid validators over
+    // the threshold for validation/invalidation then confirm
+    // the updated claim and replace the claim in the confirmed claim
+    // pool, and remove the updated claim from the pending claim pool.
+}
+
+pub fn process_claim_stake_validator_message(
+    _claim_number: u128,
+    _vote: bool,
+    _validator_pubkey: String,
+    _node: Arc<Mutex<Node>>,
+) {
+    // set the validator in the claim struct
+    // if the validator pushes the valid or invalid validators over
+    // the threshold for validation/invalidation, confirm the updated
+    // claim and replace the claim in the confirmed claim pool, and remove
+    // the updated claim from the pending claim pool.
+}
+
+pub fn process_claim_for_sale_validator_message(
+    _claim_number: u128,
+    _vote: bool,
+    _validator_pubkey: String,
+    _node: Arc<Mutex<Node>>,
+) {
+    // set the validator in the claim struct
+    // if the validator pushes the valid or invalid validators over
+    // the threshold for validation/invalidation, confirm the updated
+    // claim and replace the claim in the confirmed claim pool, and remove
+    // the updated claim from the pending claim pool.
 }
 
 pub fn process_invalid_block_message(_node: Arc<Mutex<Node>>) {}

@@ -251,88 +251,90 @@ impl Node {
                         updating_state = false;
                     }
                     Command::StoreStateChunk(chunk, chunk_number, total_chunks) => {
-                        info!(target: "get_state", "received state chunk");
-                        info!(target: "get_state", "received chunk {} of {}", &chunk_number, &total_chunks);
-                        let state_chunks_length =
-                            cloned_node.lock().unwrap().state_chunks.clone().len();
-                        if chunk_number == total_chunks
-                            && state_chunks_length as u32 == total_chunks - 1
-                        {
-                            cloned_node
-                                .lock()
-                                .unwrap()
-                                .state_chunks
-                                .insert(chunk_number, chunk);
+                        if updating_state {
+                            info!(target: "get_state", "received state chunk");
+                            info!(target: "get_state", "received chunk {} of {}", &chunk_number, &total_chunks);
+                            let state_chunks_length =
+                                cloned_node.lock().unwrap().state_chunks.clone().len();
+                            if chunk_number == total_chunks
+                                && state_chunks_length as u32 == total_chunks - 1
+                            {
+                                cloned_node
+                                    .lock()
+                                    .unwrap()
+                                    .state_chunks
+                                    .entry(chunk_number).or_insert(chunk);
 
-                            let state_chunks = cloned_node.lock().unwrap().state_chunks.clone();
-                            let mut chunk_vec = vec![];
-                            (1..=total_chunks).map(|x| x).for_each(|x| {
-                                if let Some(chunk) = state_chunks.get(&x) {
-                                    chunk_vec.extend(chunk);
-                                }
-                                info!(target: "get_state", "extended chunk vec with chunk {}", &x);
-                            });
+                                let state_chunks = cloned_node.lock().unwrap().state_chunks.clone();
+                                let mut chunk_vec = vec![];
+                                (1..=total_chunks).map(|x| x).for_each(|x| {
+                                    if let Some(chunk) = state_chunks.get(&x) {
+                                        chunk_vec.extend(chunk);
+                                    }
+                                    info!(target: "get_state", "extended chunk vec with chunk {}", &x);
+                                });
 
-                            info!(target: "get_state", "chunk_vec length: {}", &chunk_vec.len());
-                            let network_state = NetworkState::from_bytes(&chunk_vec);
-                            cloned_node
-                                .lock()
-                                .unwrap()
-                                .network_state
-                                .lock()
-                                .unwrap()
-                                .credits = network_state.credits.clone();
-                            cloned_node
-                                .lock()
-                                .unwrap()
-                                .network_state
-                                .lock()
-                                .unwrap()
-                                .debits = network_state.debits.clone();
-                            cloned_node
-                                .lock()
-                                .unwrap()
-                                .network_state
-                                .lock()
-                                .unwrap()
-                                .reward_state = network_state.reward_state.clone();
-                            cloned_node
-                                .lock()
-                                .unwrap()
-                                .network_state
-                                .lock()
-                                .unwrap()
-                                .claims = network_state.claims.clone();
-                            cloned_node
-                                .lock()
-                                .unwrap()
-                                .network_state
-                                .lock()
-                                .unwrap()
-                                .block_archive = network_state.block_archive.clone();
-                            cloned_node
-                                .lock()
-                                .unwrap()
-                                .network_state
-                                .lock()
-                                .unwrap()
-                                .last_block = network_state.last_block.clone();
-                            cloned_node.lock().unwrap().reward_state =
-                                Arc::new(Mutex::new(network_state.reward_state.clone()));
-                            cloned_node.lock().unwrap().last_block =
-                                network_state.last_block.clone();
-                            command_utils::handle_command(
-                                Arc::clone(&cloned_node),
-                                Command::ProcessBacklog,
-                            );
-                            info!(target: "last_block", "last block: {}", cloned_node.lock().unwrap().last_block.clone().unwrap().block_height);
-                        } else {
-                            info!(target: "get_state", "stashed chunk: {} of {}", &chunk_number, &total_chunks);
-                            cloned_node
-                                .lock()
-                                .unwrap()
-                                .state_chunks
-                                .insert(chunk_number, chunk);
+                                info!(target: "get_state", "chunk_vec length: {}", &chunk_vec.len());
+                                let network_state = NetworkState::from_bytes(&chunk_vec);
+                                cloned_node
+                                    .lock()
+                                    .unwrap()
+                                    .network_state
+                                    .lock()
+                                    .unwrap()
+                                    .credits = network_state.credits.clone();
+                                cloned_node
+                                    .lock()
+                                    .unwrap()
+                                    .network_state
+                                    .lock()
+                                    .unwrap()
+                                    .debits = network_state.debits.clone();
+                                cloned_node
+                                    .lock()
+                                    .unwrap()
+                                    .network_state
+                                    .lock()
+                                    .unwrap()
+                                    .reward_state = network_state.reward_state.clone();
+                                cloned_node
+                                    .lock()
+                                    .unwrap()
+                                    .network_state
+                                    .lock()
+                                    .unwrap()
+                                    .claims = network_state.claims.clone();
+                                cloned_node
+                                    .lock()
+                                    .unwrap()
+                                    .network_state
+                                    .lock()
+                                    .unwrap()
+                                    .block_archive = network_state.block_archive.clone();
+                                cloned_node
+                                    .lock()
+                                    .unwrap()
+                                    .network_state
+                                    .lock()
+                                    .unwrap()
+                                    .last_block = network_state.last_block.clone();
+                                cloned_node.lock().unwrap().reward_state =
+                                    Arc::new(Mutex::new(network_state.reward_state.clone()));
+                                cloned_node.lock().unwrap().last_block =
+                                    network_state.last_block.clone();
+                                command_utils::handle_command(
+                                    Arc::clone(&cloned_node),
+                                    Command::ProcessBacklog,
+                                );
+                                info!(target: "last_block", "last block: {}", cloned_node.lock().unwrap().last_block.clone().unwrap().block_height);
+                            } else {
+                                info!(target: "get_state", "stashed chunk: {} of {}", &chunk_number, &total_chunks);
+                                cloned_node
+                                    .lock()
+                                    .unwrap()
+                                    .state_chunks
+                                    .insert(chunk_number, chunk);
+                            }
                         }
                     }
                     Command::ProcessBacklog => {

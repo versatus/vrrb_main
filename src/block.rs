@@ -358,7 +358,7 @@ impl Verifiable for Block {
                 match block_options {
                     ValidatorOptions::NewBlock(last_block, reward_state, network_state) => {
                         if self.claim.claim_number != last_block.claim.claim_number + 1 {
-                            println!("Invalid claim sequence");
+                            println!("Invalid claim sequence: {} != {} + 1", &self.claim.claim_number, &last_block.claim.claim_number);
                             return Some(false);
                         }
 

@@ -333,7 +333,7 @@ impl Node {
                                     .lock()
                                     .unwrap()
                                     .state_chunks
-                                    .insert(chunk_number, chunk);
+                                    .entry(chunk_number).or_insert(chunk);
                             }
                         }
                     }

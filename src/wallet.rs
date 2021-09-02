@@ -56,8 +56,11 @@ impl WalletAccount {
 
         // Print the private key string so that the user can save it.
         // TODO: require a confirmation the private key being saved by the user
-        println!("DO NOT SHARE OR LOSE YOUR PRIVATE KEY:");
-        println!("{:?}\n", &secret_key.to_string());
+        println!("DO NOT SHARE OR LOSE YOUR SECRET KEY:");
+        println!("SECRET KEY: {:?}\n", &secret_key.to_string());
+        println!("PUBLIC KEY: {:?}\n", &public_key.to_string());
+        println!("ADDRESS: {:?}\n", &address_prefix);
+        
         let mut addresses = LinkedHashMap::new();
         addresses.insert(1, address_prefix.clone());
 

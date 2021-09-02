@@ -3,14 +3,14 @@ use crate::account::AccountState;
 use crate::block::Block;
 use crate::network::command_utils;
 use crate::network::command_utils::Command;
+use crate::network::config_utils;
 use crate::network::message;
 use crate::network::message_utils;
-use crate::network::protocol::{VrrbNetworkBehavior};
+use crate::network::protocol::VrrbNetworkBehavior;
 use crate::network::voting::BallotBox;
 use crate::reward::RewardState;
 use crate::state::NetworkState;
 use crate::wallet::WalletAccount;
-use crate::network::config_utils;
 use async_std::{io, task};
 use futures::prelude::*;
 use libp2p::multiaddr::multiaddr;
@@ -18,7 +18,9 @@ use libp2p::swarm::Swarm;
 use libp2p::{identity, Multiaddr, PeerId};
 use log::info;
 use rand::Rng;
+use ritelinked::LinkedHashMap;
 use simplelog::{Config, LevelFilter, WriteLogger};
+use std::collections::{HashMap};
 use std::fs::File;
 use std::{
     error::Error,
@@ -26,7 +28,6 @@ use std::{
     task::{Context, Poll},
     thread,
 };
-use std::collections::{HashMap, VecDeque};
 
 pub const MAX_TRANSMIT_SIZE: usize = 2000000;
 
@@ -81,7 +82,8 @@ impl Node {
         let (mining_sender, mining_receiver) = channel();
         let (state_sender, state_receiver) = channel();
 
-        let swarm = config_utils::configure_swarm(message_sender.clone(), command_sender.clone()).await;
+        let swarm =
+            config_utils::configure_swarm(message_sender.clone(), command_sender.clone()).await;
 
         let account_state = Arc::clone(&account_state);
         let network_state = Arc::clone(&network_state);
@@ -103,7 +105,6 @@ impl Node {
             reward_state: Arc::clone(&reward_state),
             wallet: Arc::clone(&wallet),
             state_chunks: HashMap::new(),
-
         };
 
         let port = rand::thread_rng().gen_range(9292, 19292);
@@ -150,8 +151,23 @@ impl Node {
                 .insert(addr.to_string(), pubkey.clone());
         });
 
-        let n_claims_owned = atomic_node.lock().unwrap().wallet.lock().unwrap().claims.len().clone() as u128;
-        atomic_node.lock().unwrap().account_state.lock().unwrap().claim_counter.insert(pubkey, n_claims_owned);
+        let n_claims_owned = atomic_node
+            .lock()
+            .unwrap()
+            .wallet
+            .lock()
+            .unwrap()
+            .claims
+            .len()
+            .clone() as u128;
+        atomic_node
+            .lock()
+            .unwrap()
+            .account_state
+            .lock()
+            .unwrap()
+            .claim_counter
+            .insert(pubkey, n_claims_owned);
 
         atomic_node
             .lock()
@@ -198,7 +214,7 @@ impl Node {
             }
         });
 
-        let mut temp_blocks: VecDeque<Block> = VecDeque::new();
+        let mut temp_blocks: LinkedHashMap<String, Block> = LinkedHashMap::new();
         let mut mining = false;
         let mut updating_state = false;
         let task_node = Arc::clone(&atomic_node);
@@ -210,34 +226,43 @@ impl Node {
                     Command::MineBlock => {
                         mining = true;
                         info!(target: "starting_mining", "This node has started mining: {}", mining);
-                    },
+                    }
                     Command::StopMine => {
                         mining = false;
                         info!(target: "stopped_mining", "This node has stopped mining: {}", mining);
-                    },
-                    _ => { info!(target: "mining", "Invalid command.") }
+                    }
+                    _ => {
+                        info!(target: "mining", "Invalid command.")
+                    }
                 }
             }
 
             if let Some(command) = state_receiver.try_iter().next() {
                 // send message to state updating thread to start updating state
-                // when it is done updating the state send message back to this 
+                // when it is done updating the state send message back to this
                 // thread to stop updating state.
                 match command {
                     Command::GetState => {
                         info!(target: "get_state", "getting state");
                         updating_state = true;
-                    },
+                    }
                     Command::StateUpdateCompleted => {
                         info!(target: "get_state", "completed updating state");
                         updating_state = false;
-                    },
+                    }
                     Command::StoreStateChunk(chunk, chunk_number, total_chunks) => {
                         info!(target: "get_state", "received state chunk");
                         info!(target: "get_state", "received chunk {} of {}", &chunk_number, &total_chunks);
-                        let state_chunks_length = cloned_node.lock().unwrap().state_chunks.clone().len();
-                        if chunk_number == total_chunks && state_chunks_length as u32 == total_chunks - 1 {
-                            cloned_node.lock().unwrap().state_chunks.insert(chunk_number, chunk);
+                        let state_chunks_length =
+                            cloned_node.lock().unwrap().state_chunks.clone().len();
+                        if chunk_number == total_chunks
+                            && state_chunks_length as u32 == total_chunks - 1
+                        {
+                            cloned_node
+                                .lock()
+                                .unwrap()
+                                .state_chunks
+                                .insert(chunk_number, chunk);
 
                             let state_chunks = cloned_node.lock().unwrap().state_chunks.clone();
                             let mut chunk_vec = vec![];
@@ -250,45 +275,105 @@ impl Node {
 
                             info!(target: "get_state", "chunk_vec length: {}", &chunk_vec.len());
                             let network_state = NetworkState::from_bytes(&chunk_vec);
-                            cloned_node.lock().unwrap().network_state.lock().unwrap().credits = network_state.credits.clone();
-                            cloned_node.lock().unwrap().network_state.lock().unwrap().debits = network_state.debits.clone();
-                            cloned_node.lock().unwrap().network_state.lock().unwrap().reward_state = network_state.reward_state.clone();
-                            cloned_node.lock().unwrap().network_state.lock().unwrap().claims = network_state.claims.clone();
-                            cloned_node.lock().unwrap().network_state.lock().unwrap().block_archive = network_state.block_archive.clone();
-                            cloned_node.lock().unwrap().network_state.lock().unwrap().last_block = network_state.last_block.clone();
-                            cloned_node.lock().unwrap().reward_state = Arc::new(Mutex::new(network_state.reward_state.clone()));
-                            cloned_node.lock().unwrap().last_block = network_state.last_block.clone();
-                            command_utils::handle_command(Arc::clone(&cloned_node), Command::ProcessBacklog);
+                            cloned_node
+                                .lock()
+                                .unwrap()
+                                .network_state
+                                .lock()
+                                .unwrap()
+                                .credits = network_state.credits.clone();
+                            cloned_node
+                                .lock()
+                                .unwrap()
+                                .network_state
+                                .lock()
+                                .unwrap()
+                                .debits = network_state.debits.clone();
+                            cloned_node
+                                .lock()
+                                .unwrap()
+                                .network_state
+                                .lock()
+                                .unwrap()
+                                .reward_state = network_state.reward_state.clone();
+                            cloned_node
+                                .lock()
+                                .unwrap()
+                                .network_state
+                                .lock()
+                                .unwrap()
+                                .claims = network_state.claims.clone();
+                            cloned_node
+                                .lock()
+                                .unwrap()
+                                .network_state
+                                .lock()
+                                .unwrap()
+                                .block_archive = network_state.block_archive.clone();
+                            cloned_node
+                                .lock()
+                                .unwrap()
+                                .network_state
+                                .lock()
+                                .unwrap()
+                                .last_block = network_state.last_block.clone();
+                            cloned_node.lock().unwrap().reward_state =
+                                Arc::new(Mutex::new(network_state.reward_state.clone()));
+                            cloned_node.lock().unwrap().last_block =
+                                network_state.last_block.clone();
+                            command_utils::handle_command(
+                                Arc::clone(&cloned_node),
+                                Command::ProcessBacklog,
+                            );
                             info!(target: "last_block", "last block: {}", cloned_node.lock().unwrap().last_block.clone().unwrap().block_height);
-
                         } else {
                             info!(target: "get_state", "stashed chunk: {} of {}", &chunk_number, &total_chunks);
-                            cloned_node.lock().unwrap().state_chunks.insert(chunk_number, chunk);
+                            cloned_node
+                                .lock()
+                                .unwrap()
+                                .state_chunks
+                                .insert(chunk_number, chunk);
                         }
-                    },
+                    }
                     Command::ProcessBacklog => {
                         let task_node = Arc::clone(&cloned_node);
                         'backlog_processing: loop {
                             let inner_node = Arc::clone(&task_node);
                             let last_block = cloned_node.lock().unwrap().last_block.clone();
-                            temp_blocks.retain(|block| block.block_height > last_block.clone().unwrap().block_height);
-                            if let Some(block) = temp_blocks.pop_front() {
-                                info!(target: "state_update", "processing block {}", &block.block_height);
-                                message_utils::process_block(block, Arc::clone(&inner_node));
+                            if let Some((last_block_hash, block)) = temp_blocks.pop_front() {
+                                if last_block_hash != last_block.unwrap().block_hash {
+                                    temp_blocks.to_back(&last_block_hash);
+                                } else {                                
+                                    info!(target: "state_update", "processing block {}", &block.block_height);
+                                    message_utils::process_block(block, Arc::clone(&inner_node));
+                                }
                             } else {
-                                break 'backlog_processing
+                                break 'backlog_processing;
                             }
                         }
-                        info!("Finished processing backlog, last block: {}", cloned_node.lock().unwrap().last_block.clone().unwrap().block_height);
-                        command_utils::handle_command(Arc::clone(&cloned_node), Command::StateUpdateCompleted);
+                        info!(
+                            "Finished processing backlog, last block: {}",
+                            cloned_node
+                                .lock()
+                                .unwrap()
+                                .last_block
+                                .clone()
+                                .unwrap()
+                                .block_height
+                        );
+                        command_utils::handle_command(
+                            Arc::clone(&cloned_node),
+                            Command::StateUpdateCompleted,
+                        );
                     }
-                    ,
-                    _ => { info!(target: "get_state", "invalid command sent to state receiver"); }
+                    _ => {
+                        info!(target: "get_state", "invalid command sent to state receiver");
+                    }
                 }
             }
 
             if let Some(block) = block_receiver.try_iter().next() {
-                temp_blocks.push_back(block.clone());
+                temp_blocks.insert(block.clone().last_block_hash, block.clone());
                 info!(target: "stashed_block", "Stashed block: {}", block.block_height);
             }
 
@@ -296,26 +381,28 @@ impl Node {
                 'block_processing: loop {
                     let cloned_node = Arc::clone(&task_node);
                     let last_block = cloned_node.lock().unwrap().last_block.clone();
-                    if let Some(block) = temp_blocks.pop_front() {
+                    if let Some((_, block)) = temp_blocks.pop_front() {
                         if &block.block_height > &0 {
-                            if let None = last_block {                        
-                                temp_blocks.push_front(block);
+                            if let None = last_block {
+                                temp_blocks.insert(block.clone().last_block_hash, block.clone());
                                 message_utils::request_state(Arc::clone(&cloned_node));
-                                break 'block_processing
+                                break 'block_processing;
                             } else {
                                 info!(
-                                    target: "Block", "Block: {}, block_claim_current_owner: {:?}", 
+                                    target: "Block", "Block: {}, block_claim_current_owner: {:?}",
                                     &block.block_height, &block.claim.current_owner
                                 );
-                                message_utils::process_block(block.clone(), Arc::clone(&cloned_node));
+                                message_utils::process_block(
+                                    block.clone(),
+                                    Arc::clone(&cloned_node),
+                                );
                             }
                         } else {
                             message_utils::process_block(block.clone(), Arc::clone(&cloned_node));
                         }
                     } else {
-                            break 'block_processing
+                        break 'block_processing;
                     }
-                    
                 }
             }
 

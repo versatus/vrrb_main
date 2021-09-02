@@ -20,7 +20,6 @@ use log::info;
 use rand::Rng;
 use ritelinked::LinkedHashMap;
 use simplelog::{Config, LevelFilter, WriteLogger};
-use std::collections::{HashMap};
 use std::fs::File;
 use std::{
     error::Error,
@@ -52,7 +51,7 @@ pub struct Node {
     pub state_sender: Sender<Command>,
     pub ballot_box: Arc<Mutex<BallotBox>>,
     pub wallet: Arc<Mutex<WalletAccount>>,
-    pub state_chunks: HashMap<u32, Vec<u8>>,
+    pub state_chunks: LinkedHashMap<u32, Vec<u8>>,
 }
 
 impl Node {
@@ -104,7 +103,7 @@ impl Node {
             network_state: Arc::clone(&network_state),
             reward_state: Arc::clone(&reward_state),
             wallet: Arc::clone(&wallet),
-            state_chunks: HashMap::new(),
+            state_chunks: LinkedHashMap::new(),
         };
 
         let port = rand::thread_rng().gen_range(9292, 19292);
@@ -267,61 +266,7 @@ impl Node {
 
                                 let state_chunks = cloned_node.lock().unwrap().state_chunks.clone();
                                 let mut chunk_vec = vec![];
-                                (1..=total_chunks).map(|x| x).for_each(|x| {
-                                    if let Some(chunk) = state_chunks.get(&x) {
-                                        chunk_vec.extend(chunk);
-                                    }
-                                    info!(target: "get_state", "extended chunk vec with chunk {}", &x);
-                                });
-
-                                info!(target: "get_state", "chunk_vec length: {}", &chunk_vec.len());
-                                let network_state = NetworkState::from_bytes(&chunk_vec);
-                                cloned_node
-                                    .lock()
-                                    .unwrap()
-                                    .network_state
-                                    .lock()
-                                    .unwrap()
-                                    .credits = network_state.credits.clone();
-                                cloned_node
-                                    .lock()
-                                    .unwrap()
-                                    .network_state
-                                    .lock()
-                                    .unwrap()
-                                    .debits = network_state.debits.clone();
-                                cloned_node
-                                    .lock()
-                                    .unwrap()
-                                    .network_state
-                                    .lock()
-                                    .unwrap()
-                                    .reward_state = network_state.reward_state.clone();
-                                cloned_node
-                                    .lock()
-                                    .unwrap()
-                                    .network_state
-                                    .lock()
-                                    .unwrap()
-                                    .claims = network_state.claims.clone();
-                                cloned_node
-                                    .lock()
-                                    .unwrap()
-                                    .network_state
-                                    .lock()
-                                    .unwrap()
-                                    .block_archive = network_state.block_archive.clone();
-                                cloned_node
-                                    .lock()
-                                    .unwrap()
-                                    .network_state
-                                    .lock()
-                                    .unwrap()
-                                    .last_block = network_state.last_block.clone();
-                                cloned_node.lock().unwrap().reward_state =
-                                    Arc::new(Mutex::new(network_state.reward_state.clone()));
-                                cloned_node.lock().unwrap().last_block =
-                                    network_state.last_block.clone();
+                                message_utils::set_network_state(Arc::clone(&cloned_node), state_chunks, total_chunks);
                                 command_utils::handle_command(
                                     Arc::clone(&cloned_node),
                                     Command::ProcessBacklog,

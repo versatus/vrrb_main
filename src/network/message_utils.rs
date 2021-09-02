@@ -509,3 +509,63 @@ pub fn state_chunks(state: NetworkState) -> Option<Vec<Vec<u8>>> {
         None
     }
 }
+
+pub fn set_network_state(node: Arc<Mutex<Node>>, state_chunks: LinkedHashMap<u32, Vec<u8>>, total_chunks: u32) {
+    let cloned_node = Arc::clone(&node);
+    let mut chunk_vec = vec![];
+    (1..=total_chunks).map(|x| x).for_each(|x| {
+        if let Some(chunk) = state_chunks.get(&x) {
+            chunk_vec.extend(chunk);
+        }
+        info!(target: "get_state", "extended chunk vec with chunk {}", &x);
+    });
+
+    info!(target: "get_state", "chunk_vec length: {}", &chunk_vec.len());
+    let network_state = NetworkState::from_bytes(&chunk_vec);
+    cloned_node
+        .lock()
+        .unwrap()
+        .network_state
+        .lock()
+        .unwrap()
+        .credits = network_state.credits.clone();
+    cloned_node
+        .lock()
+        .unwrap()
+        .network_state
+        .lock()
+        .unwrap()
+        .debits = network_state.debits.clone();
+    cloned_node
+        .lock()
+        .unwrap()
+        .network_state
+        .lock()
+        .unwrap()
+        .reward_state = network_state.reward_state.clone();
+    cloned_node
+        .lock()
+        .unwrap()
+        .network_state
+        .lock()
+        .unwrap()
+        .claims = network_state.claims.clone();
+    cloned_node
+        .lock()
+        .unwrap()
+        .network_state
+        .lock()
+        .unwrap()
+        .block_archive = network_state.block_archive.clone();
+    cloned_node
+        .lock()
+        .unwrap()
+        .network_state
+        .lock()
+        .unwrap()
+        .last_block = network_state.last_block.clone();
+    cloned_node.lock().unwrap().reward_state =
+        Arc::new(Mutex::new(network_state.reward_state.clone()));
+    cloned_node.lock().unwrap().last_block =
+        network_state.last_block.clone();
+}

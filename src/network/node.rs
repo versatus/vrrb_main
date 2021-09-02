@@ -383,7 +383,7 @@ impl Node {
                 'block_processing: loop {
                     let cloned_node = Arc::clone(&task_node);
                     let last_block = cloned_node.lock().unwrap().last_block.clone();
-                    if let Some((_, block)) = temp_blocks.pop_front() {
+                    if let Some((last_block_hash, block)) = temp_blocks.pop_front() {
                         if &block.block_height > &0 {
                             if let None = last_block {
                                 temp_blocks.insert(block.clone().last_block_hash, block.clone());
@@ -394,10 +394,14 @@ impl Node {
                                     target: "Block", "Block: {}, block_claim_current_owner: {:?}",
                                     &block.block_height, &block.claim.current_owner
                                 );
-                                message_utils::process_block(
-                                    block.clone(),
-                                    Arc::clone(&cloned_node),
-                                );
+                                if last_block_hash != last_block.unwrap().block_hash {
+                                    temp_blocks.to_back(&last_block_hash);
+                                } else {
+                                    message_utils::process_block(
+                                        block.clone(),
+                                        Arc::clone(&cloned_node),
+                                    );
+                                }
                             }
                         } else {
                             message_utils::process_block(block.clone(), Arc::clone(&cloned_node));

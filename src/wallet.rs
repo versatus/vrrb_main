@@ -1,9 +1,9 @@
-use crate::account::AccountState;
 use crate::block::Block;
 use crate::claim::Claim;
 use crate::state::NetworkState;
 use crate::txn::Txn;
 use bytebuffer::ByteBuffer;
+use ritelinked::LinkedHashMap;
 use secp256k1::Error;
 use secp256k1::{
     key::{PublicKey, SecretKey},
@@ -12,7 +12,6 @@ use secp256k1::{
 use secp256k1::{Message, Secp256k1};
 use serde::{Deserialize, Serialize};
 use sha256::digest_bytes;
-use ritelinked::LinkedHashMap;
 use std::fmt;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -48,11 +47,13 @@ impl WalletAccount {
         // Generate a new secret/public key pair using the random seed.
         let (secret_key, public_key) = secp.generate_keypair(&mut rng);
         // Generate 100 addresses by hashing a universally unique IDs + secret_key + public_key
-        let uid_address = digest_bytes(Uuid::new_v4().to_string().as_bytes());
+        let mut address_bytes = public_key.to_string().as_bytes().to_vec();
+        address_bytes.push(1u8);
+        let address = digest_bytes(digest_bytes(&address_bytes).as_bytes());
         // add the testnet prefix to the wallet address (TODO: add handling of testnet/mainnet)
         let mut address_prefix: String = "0x192".to_string();
         // push the hashed uuid string to the end of the address prefix
-        address_prefix.push_str(&uid_address);
+        address_prefix.push_str(&address);
 
         // Print the private key string so that the user can save it.
         // TODO: require a confirmation the private key being saved by the user
@@ -60,7 +61,7 @@ impl WalletAccount {
         println!("SECRET KEY: {:?}\n", &secret_key.to_string());
         println!("PUBLIC KEY: {:?}\n", &public_key.to_string());
         println!("ADDRESS: {:?}\n", &address_prefix);
-        
+
         let mut addresses = LinkedHashMap::new();
         addresses.insert(1, address_prefix.clone());
 
@@ -81,17 +82,67 @@ impl WalletAccount {
 
         wallet
     }
-    // Return the wallet and account state
-    // TODO: Return a Result for error propagation and handling.
 
-    // method for restoring a wallet from the private key
-    // pub fn restore_from_private_key(
-    //     private_key: String,
-    //     account_state: AccountState,
-    // ) -> WalletAccount {
-    // }
+    pub fn restore_from_private_key(private_key: String) -> WalletAccount {
+        let secretkey = SecretKey::from_str(&private_key).unwrap();
+        let secp = Secp256k1::new();
+        let pubkey = PublicKey::from_secret_key(&secp, &secretkey);
 
-    /// Sign a message (transaction, claim, block, etc.)
+        let mut wallet = WalletAccount {
+            secretkey: secretkey.to_string(),
+            pubkey: pubkey.to_string(),
+            addresses: LinkedHashMap::new(),
+            total_balances: LinkedHashMap::new(),
+            available_balances: LinkedHashMap::new(),
+            claims: LinkedHashMap::new(),
+        };
+
+        wallet.get_addresses(1);
+
+        wallet
+    }
+
+    pub fn get_addresses(&mut self, number_of_addresses: u8) {
+        let mut counter = 1u8;
+        (counter..=number_of_addresses).for_each(|n| {
+            let mut address_bytes = self.pubkey.as_bytes().to_vec();
+            address_bytes.push(n);
+            let address = digest_bytes(digest_bytes(&address_bytes).as_bytes());
+            let mut address_prefix: String = "0x192".to_string();
+            address_prefix.push_str(&address);
+            self.addresses.insert(n as u32, address_prefix);
+            counter += 1
+        })
+    }
+
+    pub fn render_balances(&self) -> LinkedHashMap<String, LinkedHashMap<String, u128>> {
+        self.total_balances.clone()
+    }
+
+    pub fn update_balances(&mut self, network_state: NetworkState) {
+        let mut balance_map = LinkedHashMap::new();
+        self.get_balances(network_state)
+            .iter()
+            .for_each(|(address, balance)| {
+                let mut vrrb_map = LinkedHashMap::new();
+                vrrb_map.insert("VRRB".to_string(), *balance);
+                balance_map.insert(address.clone(), vrrb_map);
+            });
+
+        self.total_balances = balance_map;
+    }
+
+    pub fn get_balances(&self, network_state: NetworkState) -> LinkedHashMap<String, u128> {
+        let mut balance_map = LinkedHashMap::new();
+
+        self.addresses.iter().for_each(|(_, address)| {
+            let balance = network_state.get_balance(&address);
+            balance_map.insert(address.clone(), balance);
+        });
+
+        balance_map
+    }
+
     pub fn sign(&self, message: &str) -> Result<Signature, Error> {
         let message_bytes = message.as_bytes().to_owned();
         let mut buffer = ByteBuffer::new();
@@ -128,51 +179,6 @@ impl WalletAccount {
             Ok(()) => Ok(true),
             _ => Err(Error::IncorrectSignature),
         }
-    }
-
-    /// get the current available and total balance of the current WalletAccount
-    /// using the .get() method on the account state .total_coin_balances HashMap and
-    /// the .available_coin_balances HashMap. The key for both is the WalletAccount's public key.
-    /// TODO: Add signature verification to this method to ensure that the wallet requesting the
-    /// balance update is the correct wallet.
-    pub fn get_balances(&mut self, network_state: NetworkState, account_state: AccountState) {
-        self.addresses
-            .clone()
-            .iter()
-            .map(|x| x)
-            .for_each(|(_i, x)| {
-                let address_balance = if let Some(amount) = network_state.retrieve_balance(x.clone()) {
-                    amount
-                } else {
-                    0u128
-                };
-
-                let mut vrrb_balance_map = LinkedHashMap::new();
-                vrrb_balance_map.insert("VRRB".to_string(), address_balance);
-                self.total_balances.insert(x.clone(), vrrb_balance_map);
-
-                let (address_pending_credits, address_pending_debits) =
-                    if let Some((credits_amount, debits_amount)) = account_state.pending_balance(x.clone())
-                    {
-                        (credits_amount, debits_amount)
-                    } else {
-                        (0, 0)
-                    };
-
-                let mut pending_balance =
-                    if let Some(amount) = address_balance.checked_sub(address_pending_debits) {
-                        amount
-                    } else {
-                        panic!("Pending debits cannot exceed confirmed balance");
-                    };
-
-                pending_balance += address_pending_credits;
-                let mut pending_vrrb_balance_map = LinkedHashMap::new();
-                pending_vrrb_balance_map.insert("VRRB".to_string(), pending_balance);
-
-                self.available_balances
-                    .insert(x.clone(), pending_vrrb_balance_map);
-            });
     }
 
     pub fn remove_mined_claims(&mut self, block: &Block) {

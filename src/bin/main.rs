@@ -18,11 +18,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let txn_pool = Pool::new(PoolKind::Txn);
     let claim_pool = Pool::new(PoolKind::Claim);
     let account_state = Arc::new(Mutex::new(AccountState::start(txn_pool, claim_pool)));
-    let path = format!("./data/test_{}.db", file_suffix);
+    let path = if let Some(path) = std::env::args().nth(2) {
+        path
+    } else {
+        format!("test_{}.db", file_suffix)
+    };
     let network_state = Arc::new(Mutex::new(NetworkState::restore(&path)));
     let reward_state = Arc::new(Mutex::new(RewardState::start()));
     let node_type = NodeAuth::Full;
-    let wallet = Arc::new(Mutex::new(WalletAccount::new()));
+    let wallet = if let Some(secret_key) = std::env::args().nth(4) {
+        WalletAccount::restore_from_private_key(secret_key)
+    } else {
+        WalletAccount::new()
+    };
+    let wallet = Arc::new(Mutex::new(wallet));
     let ballot_box = Arc::new(Mutex::new(BallotBox::new(
         LinkedHashMap::new(),
         LinkedHashMap::new(),

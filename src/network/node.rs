@@ -65,7 +65,13 @@ impl Node {
     ) -> Result<(), Box<dyn Error>> {
         let mut rng = rand::thread_rng();
         let log_file_suffix = rng.gen::<u8>();
-        let log_file_path = format!("./data/vrrb_log_file_{}.log", log_file_suffix);
+
+        let log_file_path = if let Some(path) = std::env::args().nth(3) {
+            path
+        } else {
+            std::fs::create_dir_all("./data/vrrb")?;
+            format!("./data/vrrb/vrrb_log_file_{}.log", log_file_suffix)
+        };
         let _ = WriteLogger::init(
             LevelFilter::Info,
             Config::default(),
@@ -262,10 +268,15 @@ impl Node {
                                     .lock()
                                     .unwrap()
                                     .state_chunks
-                                    .entry(chunk_number).or_insert(chunk);
+                                    .entry(chunk_number)
+                                    .or_insert(chunk);
 
                                 let state_chunks = cloned_node.lock().unwrap().state_chunks.clone();
-                                message_utils::set_network_state(Arc::clone(&cloned_node), state_chunks, total_chunks);
+                                message_utils::set_network_state(
+                                    Arc::clone(&cloned_node),
+                                    state_chunks,
+                                    total_chunks,
+                                );
                                 command_utils::handle_command(
                                     Arc::clone(&cloned_node),
                                     Command::ProcessBacklog,
@@ -277,7 +288,8 @@ impl Node {
                                     .lock()
                                     .unwrap()
                                     .state_chunks
-                                    .entry(chunk_number).or_insert(chunk);
+                                    .entry(chunk_number)
+                                    .or_insert(chunk);
                             }
                         }
                     }
@@ -289,7 +301,7 @@ impl Node {
                             if let Some((last_block_hash, block)) = temp_blocks.pop_front() {
                                 if last_block_hash != last_block.unwrap().block_hash {
                                     temp_blocks.to_back(&last_block_hash);
-                                } else {                                
+                                } else {
                                     info!(target: "state_update", "processing block {}", &block.block_height);
                                     message_utils::process_block(block, Arc::clone(&inner_node));
                                 }
@@ -311,6 +323,12 @@ impl Node {
                             Arc::clone(&cloned_node),
                             Command::StateUpdateCompleted,
                         );
+
+                        let network_state = task_node.lock().unwrap().network_state.lock().unwrap().clone();
+                        let mut wallet = task_node.lock().unwrap().wallet.lock().unwrap().clone();
+                        wallet.update_balances(network_state);
+                        println!("Balances: {:?}", wallet.render_balances());
+
                     }
                     _ => {
                         info!(target: "get_state", "invalid command sent to state receiver");
@@ -331,7 +349,10 @@ impl Node {
                         if &block.block_height > &0 {
                             if let None = last_block {
                                 temp_blocks.insert(block.clone().last_block_hash, block.clone());
-                                message_utils::request_state(Arc::clone(&cloned_node), block.clone());
+                                message_utils::request_state(
+                                    Arc::clone(&cloned_node),
+                                    block.clone(),
+                                );
                                 break 'block_processing;
                             } else {
                                 info!(

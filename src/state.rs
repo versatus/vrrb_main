@@ -40,6 +40,26 @@ impl NetworkState {
         }
     }
 
+    pub fn get_balance(&self, address: &str) -> u128 {
+        let credits = if let Some(credit) = self.credits.get(address) {
+            *credit
+        } else {
+            0u128
+        };
+
+        let debits = if let Some(debit) = self.debits.get(address) {
+            *debit
+        } else {
+            0u128
+        };
+
+        if let Some(balance) = credits.checked_sub(debits) {
+            return balance
+        } else {
+            return 0u128
+        }
+    }
+
     pub fn hash(&mut self, block: Block, uts: &[u8; 16]) -> String {
         
         block.data.iter().for_each(|(_txn_id, txn)| {

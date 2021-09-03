@@ -1,7 +1,6 @@
 use crate::account::AccountState;
 use crate::claim::{Claim, CustodianInfo, CustodianOption};
 use crate::wallet::WalletAccount;
-use log::info;
 use rand::{
     distributions::{Distribution, WeightedIndex},
     thread_rng,
@@ -59,7 +58,6 @@ pub fn allocate_claims(
                 account_state.lock().unwrap().claim_counter.insert(winner.clone(), 1);
             }
 
-            info!(target: "claim_winner", "{:?}", winner);
             let mut custodian_info: LinkedHashMap<CustodianOption, Option<CustodianInfo>> =
                 LinkedHashMap::new();
 

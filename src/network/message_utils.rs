@@ -15,6 +15,7 @@ use libp2p::gossipsub::IdentTopic as Topic;
 use log::info;
 use ritelinked::LinkedHashMap;
 use std::sync::{Arc, Mutex};
+use std::thread;
 
 pub fn share_addresses(node: Arc<Mutex<Node>>) {
     let mut addr_pubkey = LinkedHashMap::new();
@@ -331,6 +332,36 @@ pub fn update_credits_and_debits(node: Arc<Mutex<Node>>, block: &Block) {
 
     node.lock().unwrap().network_state.lock().unwrap().credits = credits;
     node.lock().unwrap().network_state.lock().unwrap().debits = debits;
+
+    let pubkey = node.lock().unwrap().wallet.lock().unwrap().pubkey.clone();
+    let addresses = node.lock().unwrap().wallet.lock().unwrap().addresses.clone();
+    let my_txns = {
+        let mut some_txn = false;
+        addresses.iter().for_each(|(_, address)| {
+            let mut cloned_data = block.data.clone();
+            cloned_data.retain(|_, txn| {
+                txn.receiver_address == address.clone() || txn.sender_address == address.clone()
+            });
+
+            if !cloned_data.is_empty() {
+                some_txn = true;
+            }
+        });
+        some_txn
+    };
+
+
+    if let None = block.claim.current_owner {
+        let network_state = node.lock().unwrap().network_state.lock().unwrap().clone();
+        let mut wallet = node.lock().unwrap().wallet.lock().unwrap().clone();
+        wallet.update_balances(network_state);
+        println!("Balances: {:?}", wallet.render_balances());
+    } else if block.claim.current_owner.clone().unwrap() == pubkey || my_txns {
+        let network_state = node.lock().unwrap().network_state.lock().unwrap().clone();
+        let mut wallet = node.lock().unwrap().wallet.lock().unwrap().clone();
+        wallet.update_balances(network_state);
+        println!("Balances: {:?}", wallet.render_balances());
+    }
 }
 
 pub fn update_reward_state(node: Arc<Mutex<Node>>, block: &Block) {
@@ -386,32 +417,35 @@ pub fn send_state(node: Arc<Mutex<Node>>, requestor: String) {
         .lock()
         .unwrap()
         .clone();
-    let chunks = state_chunks(network_state.clone());
-    if let Some(chunks) = chunks {
-        chunks.iter().enumerate().for_each(|(index, chunk)| {
+    
+    thread::spawn(move || {
+        let chunks = state_chunks(network_state.clone());
+        if let Some(chunks) = chunks {
+            chunks.iter().enumerate().for_each(|(index, chunk)| {
+                let network_state_message = MessageType::NetworkStateMessage {
+                    data: chunk.clone(),
+                    chunk_number: index.clone() as u32 + 1u32,
+                    total_chunks: chunks.len() as u32,
+                    requestor: requestor.clone(),
+                    sender_id: node.lock().unwrap().id.clone().to_string(),
+                };
+                let network_state_bytes = network_state_message.as_bytes();
+                let message = message::structure_message(network_state_bytes);
+                message::publish_message(Arc::clone(&cloned_node), message, "test-net");
+            });
+        } else {
             let network_state_message = MessageType::NetworkStateMessage {
-                data: chunk.clone(),
-                chunk_number: index.clone() as u32 + 1u32,
-                total_chunks: chunks.len() as u32,
-                requestor: requestor.clone(),
+                data: network_state.as_bytes(),
+                chunk_number: 1,
+                total_chunks: 1,
+                requestor,
                 sender_id: node.lock().unwrap().id.clone().to_string(),
             };
             let network_state_bytes = network_state_message.as_bytes();
             let message = message::structure_message(network_state_bytes);
             message::publish_message(Arc::clone(&cloned_node), message, "test-net");
-        });
-    } else {
-        let network_state_message = MessageType::NetworkStateMessage {
-            data: network_state.as_bytes(),
-            chunk_number: 1,
-            total_chunks: 1,
-            requestor,
-            sender_id: node.lock().unwrap().id.clone().to_string(),
-        };
-        let network_state_bytes = network_state_message.as_bytes();
-        let message = message::structure_message(network_state_bytes);
-        message::publish_message(Arc::clone(&cloned_node), message, "test-net");
     }
+    }).join().unwrap();
 }
 
 pub fn process_block(block: Block, node: Arc<Mutex<Node>>) {

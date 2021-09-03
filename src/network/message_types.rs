@@ -98,6 +98,10 @@ pub enum MessageType {
         sender_id: String,
         requested_from: String,
     },
+    GetAccountStateMessage {
+        sender_id: String,
+        requested_from: String,
+    },
     InvalidBlockMessage {
         block_height: u128,
         miner_id: String,

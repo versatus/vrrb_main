@@ -1,0 +1,67 @@
+1. Create a folder to store the executable in. Ensure the folder is somewhere easy to find like in your Home folder on macOS or Desktop or the C:/ drive or desktop on windows.
+
+2. Unzip the attached folder and place the file in the folder.
+
+3. Navigate to your terminal:
+	
+	On windows click the start button and type in "cmd" and open the command prompt (alternatively you could type in "powershell" and use 	powershell.
+
+	On macOS do a spotlight search "terminal" and open the terminal:
+	
+4. Once you are in the command line terminal use enter the following command
+	
+	cd /path/to/folder
+
+	
+	then press enter
+
+	/path/to/folder is the directory in which you placed the executable. If you placed it in a folder called vrrb, in your C:/ drive, for example 	the command would be as follows:
+
+	cd c:/vrrb
+
+5. type the following command, and insure you are in the correct folder:
+
+	ls
+
+	then press enter
+
+	you should see a listing of a single file (the executable called vrrb_bin.exe on windows or vrrb_bin on macOs
+
+6. run the following command in your terminal
+
+	./vrrb_bin.exe /ip4/3.144.126.178/tcp/10516 
+	(for windows) 
+
+	OR 
+
+	./vrrb_bin /ip4/3.144.126.178/tcp/11386
+	(for macOs)
+
+7. You should see a Secret Key, a public key and an address... Send me your address via email or text.
+
+
+8. Type in the following command:
+
+	SENDADR
+
+9. Then type in the following command:
+
+	MINEBLK
+
+10. navigate to the folder in which the executable is, and you should see a new directory called "data" as well as a .db file called test_{random_number}.db
+
+11. open the data folder and you should see a log file, open the log file, make sure you are receiving the network state chunks and updating your network state (this may take a while).
+
+12. Go back to your terminal and watch the terminal, I will send you a transaction worth a nice amount of vrrb.
+
+13. Because the bootstrap node has been running for quite some time, it will be a while before the claims that you have been allocated through our proprietary allocation algorithm are available for mining, but once they are, you will very likely be the miner of a number of consecutive blocks, and from then on, you will be an equal participant in the network, in terms of mining.
+
+14. After you have received the transaction I sent you, your balance will be able to be sent to others. Please attempt to send some of the coins to the bootstrap node's wallet address by entering the following command:
+
+	SENDTXN 1 0x1924e0c60a83114603cd59139042a960fa5e27722fba310611e8c180c728567f558 amount
+
+	you can send whatever amount you want between 1 and your current balance. Currently amounts must be whole numbers, so no decimal points.
+
+
+
+						THANK YOU FOR HELPING US TEST THE VRRB NETWORK!

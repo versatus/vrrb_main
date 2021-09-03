@@ -213,8 +213,9 @@ pub async fn build_transport(
     
     let noise_config = noise::NoiseConfig::xx(noise_keys).into_authenticated();
     let yamux_config = YamuxConfig::default();
-    let mplex_config = MplexConfig::default();
-    
+    let mut mplex_config = MplexConfig::new();
+    mplex_config.set_max_num_streams(2000).set_max_buffer_size(200000000).set_split_send_size(1000000);
+
     let transport = {
     
         let tcp = TcpConfig::new().nodelay(true);
@@ -227,7 +228,7 @@ pub async fn build_transport(
         .upgrade(Version::V1)
         .authenticate(noise_config)
         .multiplex(SelectUpgrade::new(yamux_config, mplex_config))
-        .timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(30))
         .boxed()
     )
 }

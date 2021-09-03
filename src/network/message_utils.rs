@@ -1,6 +1,6 @@
 use crate::block::Block;
-use crate::claim::{Claim, CustodianOption};
 use crate::claim::CustodianInfo;
+use crate::claim::{Claim, CustodianOption};
 use crate::network::command_utils;
 use crate::network::command_utils::Command;
 use crate::network::message;
@@ -16,6 +16,7 @@ use log::info;
 use ritelinked::LinkedHashMap;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 pub fn share_addresses(node: Arc<Mutex<Node>>) {
     let mut addr_pubkey = LinkedHashMap::new();
@@ -260,16 +261,27 @@ pub fn update_claims(node: Arc<Mutex<Node>>, block: &Block) {
         .unwrap()
         .claims
         .remove(&block.claim.claim_number);
-    
     // increment the claim_counter for each claim allocated to an owner
     block.owned_claims.clone().iter().for_each(|(_, v)| {
-        let mut claim_counter = node.lock().unwrap().account_state.lock().unwrap().claim_counter.clone();
+        let mut claim_counter = node
+            .lock()
+            .unwrap()
+            .account_state
+            .lock()
+            .unwrap()
+            .claim_counter
+            .clone();
         if let Some(entry) = claim_counter.get_mut(&v.current_owner.clone().unwrap()) {
             *entry += 1;
         } else {
             claim_counter.insert(v.current_owner.clone().unwrap(), 1);
         }
-        node.lock().unwrap().account_state.lock().unwrap().claim_counter = claim_counter;
+        node.lock()
+            .unwrap()
+            .account_state
+            .lock()
+            .unwrap()
+            .claim_counter = claim_counter;
     })
 }
 
@@ -334,7 +346,14 @@ pub fn update_credits_and_debits(node: Arc<Mutex<Node>>, block: &Block) {
     node.lock().unwrap().network_state.lock().unwrap().debits = debits;
 
     let pubkey = node.lock().unwrap().wallet.lock().unwrap().pubkey.clone();
-    let addresses = node.lock().unwrap().wallet.lock().unwrap().addresses.clone();
+    let addresses = node
+        .lock()
+        .unwrap()
+        .wallet
+        .lock()
+        .unwrap()
+        .addresses
+        .clone();
     let my_txns = {
         let mut some_txn = false;
         addresses.iter().for_each(|(_, address)| {
@@ -349,7 +368,6 @@ pub fn update_credits_and_debits(node: Arc<Mutex<Node>>, block: &Block) {
         });
         some_txn
     };
-
 
     if let None = block.claim.current_owner {
         let network_state = node.lock().unwrap().network_state.lock().unwrap().clone();
@@ -383,7 +401,10 @@ pub fn update_reward_state(node: Arc<Mutex<Node>>, block: &Block) {
 pub fn request_state(node: Arc<Mutex<Node>>, block: Block) {
     let sender_id = node.lock().unwrap().id.clone().to_string();
     let requested_from = block.claim.current_owner.clone().unwrap();
-    let message = MessageType::GetNetworkStateMessage { sender_id, requested_from };
+    let message = MessageType::GetNetworkStateMessage {
+        sender_id,
+        requested_from,
+    };
     command_utils::handle_command(Arc::clone(&node), Command::GetState);
 
     let message = message::structure_message(message.as_bytes());
@@ -417,7 +438,6 @@ pub fn send_state(node: Arc<Mutex<Node>>, requestor: String) {
         .lock()
         .unwrap()
         .clone();
-    
     thread::spawn(move || {
         let chunks = state_chunks(network_state.clone());
         if let Some(chunks) = chunks {
@@ -432,6 +452,7 @@ pub fn send_state(node: Arc<Mutex<Node>>, requestor: String) {
                 let network_state_bytes = network_state_message.as_bytes();
                 let message = message::structure_message(network_state_bytes);
                 message::publish_message(Arc::clone(&cloned_node), message, "test-net");
+                thread::sleep(Duration::from_millis(500));
             });
         } else {
             let network_state_message = MessageType::NetworkStateMessage {
@@ -444,8 +465,10 @@ pub fn send_state(node: Arc<Mutex<Node>>, requestor: String) {
             let network_state_bytes = network_state_message.as_bytes();
             let message = message::structure_message(network_state_bytes);
             message::publish_message(Arc::clone(&cloned_node), message, "test-net");
-    }
-    }).join().unwrap();
+        }
+    })
+    .join()
+    .unwrap();
 }
 
 pub fn process_block(block: Block, node: Arc<Mutex<Node>>) {
@@ -544,7 +567,11 @@ pub fn state_chunks(state: NetworkState) -> Option<Vec<Vec<u8>>> {
     }
 }
 
-pub fn set_network_state(node: Arc<Mutex<Node>>, state_chunks: LinkedHashMap<u32, Vec<u8>>, total_chunks: u32) {
+pub fn set_network_state(
+    node: Arc<Mutex<Node>>,
+    state_chunks: LinkedHashMap<u32, Vec<u8>>,
+    total_chunks: u32,
+) {
     let cloned_node = Arc::clone(&node);
     let mut chunk_vec = vec![];
     (1..=total_chunks).map(|x| x).for_each(|x| {
@@ -600,6 +627,5 @@ pub fn set_network_state(node: Arc<Mutex<Node>>, state_chunks: LinkedHashMap<u32
         .last_block = network_state.last_block.clone();
     cloned_node.lock().unwrap().reward_state =
         Arc::new(Mutex::new(network_state.reward_state.clone()));
-    cloned_node.lock().unwrap().last_block =
-        network_state.last_block.clone();
+    cloned_node.lock().unwrap().last_block = network_state.last_block.clone();
 }

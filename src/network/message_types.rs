@@ -1,23 +1,25 @@
 use crate::block::Block;
 use crate::claim::Claim;
+use crate::network::node::NodeAuth;
 use crate::txn::Txn;
 use ritelinked::LinkedHashMap;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StateBlock(pub u128);
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum MessageType {
     AccountPubkeyMessage {
         addresses: LinkedHashMap<String, String>,
         sender_id: String,
     },
-    NetworkStateMessage {
+    NetworkStateDataBaseMessage {
+        object: StateBlock,
         data: Vec<u8>,
         chunk_number: u32,
         total_chunks: u32,
         requestor: String,
-        sender_id: String,
-    },
-    GetStateMessage {
         sender_id: String,
     },
     TxnMessage {
@@ -97,6 +99,7 @@ pub enum MessageType {
     GetNetworkStateMessage {
         sender_id: String,
         requested_from: String,
+        requestor_node_type: NodeAuth,
     },
     GetAccountStateMessage {
         sender_id: String,

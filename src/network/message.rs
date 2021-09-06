@@ -2,23 +2,22 @@ use crate::block::Block;
 use crate::claim::Claim;
 use crate::network::command_utils;
 use crate::network::command_utils::Command;
-use crate::network::message_types::MessageType;
+use crate::network::message_types::{MessageType, StateBlock};
 use crate::network::message_utils;
 use crate::network::message_utils::{
     update_block_archive, update_claims, update_credits_and_debits, update_last_confirmed_block,
     update_reward_state,
 };
 use crate::network::node::Node;
-use crate::state::NetworkState;
 use crate::txn::Txn;
 use crate::validator::{Message as ValidatorMessage, Validator, ValidatorOptions};
 use crate::verifiable::Verifiable;
 use libp2p::gossipsub::{GossipsubMessage, IdentTopic as Topic};
 use log::info;
 use ritelinked::LinkedHashMap;
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::collections::HashSet;
 
 pub const PROPOSAL_EXPIRATION_KEY: &str = "expires";
 pub const PROPOSAL_YES_VOTE_KEY: &str = "yes";
@@ -28,7 +27,8 @@ pub fn process_message(message: GossipsubMessage, node: Arc<Mutex<Node>>) {
     let message = MessageType::from_bytes(
         &hex::decode(&String::from_utf8_lossy(&message.data).into_owned()).unwrap(),
     );
-    match message {
+
+    match message.clone() {
         MessageType::TxnMessage { txn, .. } => {
             let thread_node = Arc::clone(&node);
             thread::spawn(move || {
@@ -39,10 +39,8 @@ pub fn process_message(message: GossipsubMessage, node: Arc<Mutex<Node>>) {
         }
         MessageType::ClaimMessage { .. } => {
             // Don't know if we still need this enum type.
-            
         }
         MessageType::BlockMessage { block, .. } => {
-
             let thread_node = Arc::clone(&node);
             thread::spawn(move || {
                 if let Err(e) = thread_node.lock().unwrap().block_sender.clone().send(block) {
@@ -67,18 +65,34 @@ pub fn process_message(message: GossipsubMessage, node: Arc<Mutex<Node>>) {
             .join()
             .unwrap();
         }
-        MessageType::GetNetworkStateMessage { sender_id, requested_from } => {
+        MessageType::GetNetworkStateMessage {
+            sender_id,
+            requested_from,
+            requestor_node_type,
+        } => {
             let thread_node = Arc::clone(&node);
-            let local_pubkey = thread_node.lock().unwrap().wallet.lock().unwrap().pubkey.clone();
+            let local_pubkey = thread_node
+                .lock()
+                .unwrap()
+                .wallet
+                .lock()
+                .unwrap()
+                .pubkey
+                .clone();
             if local_pubkey == requested_from {
                 thread::spawn(move || {
-                    message_utils::send_state(Arc::clone(&thread_node), sender_id);
+                    message_utils::send_state(
+                        Arc::clone(&thread_node),
+                        sender_id,
+                        requestor_node_type,
+                    );
                 })
                 .join()
                 .unwrap();
-                }
+            }
         }
-        MessageType::NetworkStateMessage {
+        MessageType::NetworkStateDataBaseMessage {
+            object,
             data,
             chunk_number,
             total_chunks,
@@ -86,9 +100,12 @@ pub fn process_message(message: GossipsubMessage, node: Arc<Mutex<Node>>) {
             ..
         } => {
             let thread_node = Arc::clone(&node);
+            let node_id = thread_node.lock().unwrap().id.to_string().clone();
             thread::spawn(move || {
-                if requestor == node.lock().unwrap().id.to_string().clone() {
-                    process_state_message(
+                if requestor == node_id {
+                    println!("Received state_db_message");
+                    process_state_db_message(
+                        object,
                         data,
                         chunk_number,
                         total_chunks,
@@ -181,7 +198,6 @@ pub fn process_message(message: GossipsubMessage, node: Arc<Mutex<Node>>) {
                     .unwrap()
                     .accounts_pk
                     .extend(addresses.clone());
-                
                 let mut pubkey = HashSet::new();
 
                 addresses.iter().for_each(|(_, v)| {
@@ -190,22 +206,42 @@ pub fn process_message(message: GossipsubMessage, node: Arc<Mutex<Node>>) {
 
                 let pubkey = pubkey.iter().next().unwrap().clone();
 
-                let mut claim_counter = thread_node.lock().unwrap().account_state.lock().unwrap().claim_counter.clone();
+                let mut claim_counter = thread_node
+                    .lock()
+                    .unwrap()
+                    .account_state
+                    .lock()
+                    .unwrap()
+                    .claim_counter
+                    .clone();
                 if let None = claim_counter.get_mut(&pubkey.clone()) {
                     claim_counter.insert(pubkey.clone(), 0);
                 }
 
-                let claims_owned: u128 = thread_node.lock().unwrap().account_state.lock().unwrap().claim_pool.confirmed.iter().filter(|(_, v)| {
-                    v.current_owner == Some(pubkey.clone())
-                }).count() as u128;
+                let claims_owned: u128 = thread_node
+                    .lock()
+                    .unwrap()
+                    .account_state
+                    .lock()
+                    .unwrap()
+                    .claim_pool
+                    .confirmed
+                    .iter()
+                    .filter(|(_, v)| v.current_owner == Some(pubkey.clone()))
+                    .count() as u128;
 
                 if let Some(entry) = claim_counter.get_mut(&pubkey.clone()) {
                     *entry += claims_owned;
                 }
 
                 println!("{:?}", claim_counter);
-                thread_node.lock().unwrap().account_state.lock().unwrap().claim_counter = claim_counter;
-
+                thread_node
+                    .lock()
+                    .unwrap()
+                    .account_state
+                    .lock()
+                    .unwrap()
+                    .claim_counter = claim_counter;
             })
             .join()
             .unwrap();
@@ -226,7 +262,8 @@ pub fn process_txn_message(txn: Txn, node: Arc<Mutex<Node>>) {
         // // stash blocks.
     } else {
         info!(target: "txn_message", "New transaction received: {:?}", &txn);
-        cloned_node.lock()
+        cloned_node
+            .lock()
             .unwrap()
             .account_state
             .lock()
@@ -256,7 +293,13 @@ pub fn process_txn_message(txn: Txn, node: Arc<Mutex<Node>>) {
         let sender_id = node.lock().unwrap().id.clone().to_string();
         let message = ValidatorMessage::Txn(txn_string, account_state_string, network_state_string);
         // validate message, update validator, and then update the txn_pool.pending or move it to confirmed if it is the confirming validator
-        let account_state = cloned_node.lock().unwrap().account_state.lock().unwrap().clone();
+        let account_state = cloned_node
+            .lock()
+            .unwrap()
+            .account_state
+            .lock()
+            .unwrap()
+            .clone();
         let validator_option = Validator::new(message, pubkey.clone(), account_state);
         if let Some(mut validator) = validator_option {
             validator.validate();
@@ -276,43 +319,31 @@ pub fn process_txn_message(txn: Txn, node: Arc<Mutex<Node>>) {
     }
 }
 
-
 pub fn process_new_block_message(block: Block, node: Arc<Mutex<Node>>) {
     let cloned_node = Arc::clone(&node);
     info!(target: "block_message", "Received new block: block height {} -> block hash: {}", &block.block_height, &block.block_hash);
     if &block.block_height > &0 {
-        let n_peers = cloned_node
-            .lock()
-            .unwrap()
-            .swarm
-            .behaviour_mut()
-            .gossipsub
-            .all_peers()
-            .count()
-            .clone();
-        let last_block = cloned_node.lock().unwrap().last_block.clone().unwrap();
-        let network_state = cloned_node.lock().unwrap().network_state.lock().unwrap().clone();
-        let reward_state = cloned_node.lock().unwrap().reward_state.lock().unwrap().clone();
+        let last_block = cloned_node.lock().unwrap().get_last_block().unwrap();
+        let network_state = cloned_node.lock().unwrap().get_network_state();
+        let reward_state = cloned_node.lock().unwrap().get_reward_state();
         let id = cloned_node.lock().unwrap().id.clone().to_string();
-        let validator_options =
-            ValidatorOptions::NewBlock(last_block, reward_state, network_state);
+        let validator_options = ValidatorOptions::NewBlock(last_block, reward_state, network_state);
         let vote = block.is_valid(Some(validator_options));
         match vote {
             Some(true) => {
-                if n_peers < 3 {
-                    let inner_node = Arc::clone(&cloned_node);
-                    process_confirmed_block(block.clone(), cloned_node);
-                    inner_node.lock()
-                        .unwrap()
-                        .account_state
-                        .lock()
-                        .unwrap()
-                        .txn_pool
-                        .confirmed
-                        .clear();
-                    info!(target:"block_message", "block {} with block hash {} is valid", &block.block_height, block.block_hash);
-                    info!(target:"block_message", "processed confirmed block");
-                } // Otherwise wait for a confirmed block message.
+                let inner_node = Arc::clone(&cloned_node);
+                process_confirmed_block(block.clone(), cloned_node);
+                inner_node
+                    .lock()
+                    .unwrap()
+                    .account_state
+                    .lock()
+                    .unwrap()
+                    .txn_pool
+                    .confirmed
+                    .clear();
+                info!(target:"block_message", "block {} with block hash {} is valid", &block.block_height, block.block_hash);
+                info!(target:"block_message", "processed confirmed block");
                 let message = MessageType::BlockVoteMessage {
                     block,
                     vote: true,
@@ -332,7 +363,6 @@ pub fn process_new_block_message(block: Block, node: Arc<Mutex<Node>>) {
                 publish_message(Arc::clone(&node), message, "test-net");
             }
             None => {}
-        
         }
     } else {
         process_confirmed_block(block.clone(), Arc::clone(&node));
@@ -345,10 +375,10 @@ pub fn process_confirmed_block(block: Block, node: Arc<Mutex<Node>>) {
     update_credits_and_debits(Arc::clone(&node), &block);
     update_last_confirmed_block(Arc::clone(&node), &block);
     update_reward_state(Arc::clone(&node), &block);
-    if block.block_height % 100u128 == 0 || block.block_height == 0 {
-        node.lock().unwrap().network_state.lock().unwrap().dump();
+    thread::spawn(move || {
+        node.lock().unwrap().network_state.lock().unwrap().dump(block);
         info!(target: "state_dump", "Dumped network state to {}", &node.lock().unwrap().network_state.lock().unwrap().path.clone());
-    }
+    }).join().unwrap();
 }
 
 pub fn process_vrrb_ip_message(
@@ -599,17 +629,58 @@ pub fn process_expired_claim_message(claim_number: u128, node: Arc<Mutex<Node>>)
     }
 }
 
-pub fn process_state_message(
+pub fn process_state_db_message(
+    object: StateBlock,
     data: Vec<u8>,
     chunk_number: u32,
     total_chunks: u32,
     node: Arc<Mutex<Node>>,
 ) {
+    let cloned_node = Arc::clone(&node);
     if total_chunks == 1 {
-        node.lock().unwrap().network_state = Arc::new(Mutex::new(NetworkState::from_bytes(&data)));
+        let block = Block::from_bytes(&data);
+        process_confirmed_block(block.clone(), Arc::clone(&cloned_node));
+        println!("processed block {}", &object.0);
+        let last_block = cloned_node.lock().unwrap().last_block.clone();
+        if let None = last_block {
+            println!("No last block, setting last block to node");
+            cloned_node.lock().unwrap().last_block = Some(block.clone());
+            println!(
+                "LASTBLOCK: {:?}",
+                cloned_node.lock().unwrap().last_block.clone()
+            );
+        } else {
+            println!("Some last block, checking if the block processed is higher than last block");
+            if object.0 > last_block.unwrap().block_height.clone() {
+                println!(
+                    "LASTBLOCK: {:?}",
+                    cloned_node.lock().unwrap().last_block.clone()
+                );
+                cloned_node.lock().unwrap().last_block = Some(block.clone());
+            }
+        }
+
+        let db_option = cloned_node
+            .lock()
+            .unwrap()
+            .get_network_state()
+            .get_block_archive_db();
+        if let Some(_db) = db_option {
+            command_utils::handle_command(
+                Arc::clone(&cloned_node),
+                Command::CheckStateUpdateStatus(object.0),
+            );
+        }
     } else {
-        command_utils::handle_command(Arc::clone(&node), Command::StoreStateChunk(data, chunk_number, total_chunks));
+        command_utils::handle_command(
+            Arc::clone(&node),
+            Command::StoreStateDbChunk(object, data, chunk_number, total_chunks),
+        );
     }
+}
+
+pub fn process_network_state_complete_message(node: Arc<Mutex<Node>>) {
+    command_utils::handle_command(Arc::clone(&node), Command::ProcessBacklog);
 }
 
 pub fn structure_message(message: Vec<u8>) -> String {

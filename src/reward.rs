@@ -30,6 +30,7 @@ pub const NUGGET_REWARD_RANGE: (u128, u128) = (64, 512);
 pub const VEIN_REWARD_RANGE: (u128, u128) = (512, 4096);
 pub const MOTHERLODE_REWARD_RANGE: (u128, u128) = (4096, 32769);
 pub const GENESIS_REWARD: u128 = 200_000_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumIter)]
 pub enum Category {
     Flake(Option<u128>),

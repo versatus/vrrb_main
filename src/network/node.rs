@@ -19,6 +19,7 @@ use libp2p::{identity, Multiaddr, PeerId};
 use log::info;
 use rand::Rng;
 use ritelinked::LinkedHashMap;
+use serde::{Deserialize, Serialize};
 use simplelog::{Config, LevelFilter, WriteLogger};
 use std::fs::File;
 use std::{
@@ -31,9 +32,19 @@ use std::{
 pub const MAX_TRANSMIT_SIZE: usize = 2000000;
 
 #[allow(dead_code)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum NodeAuth {
+    // Builds a full block archive all blocks and all claims
+    Archive,
+    // Builds a Block Header archive and stores all claims
     Full,
-    Validate,
+    // Builds a Block Header and Claim Header archive. Maintains claims owned by this node. Can mine blocks and validate transactions
+    // cannot validate claim exchanges.
+    Light,
+    // Stores last block header and all claim headers
+    UltraLight,
+    //TODO: Add a key field for the bootstrap node, sha256 hash of key in bootstrap node must == a bootstrap node key.
+    Bootstrap,
 }
 
 #[allow(dead_code)]
@@ -55,6 +66,60 @@ pub struct Node {
 }
 
 impl Node {
+    pub fn get_id(&self) -> PeerId {
+        self.id
+    }
+
+    pub fn get_node_type(&self) -> NodeAuth {
+        self.node_type.clone()
+    }
+
+    pub fn get_network_state(&self) -> NetworkState {
+        self.network_state.lock().unwrap().clone()
+    }
+
+    pub fn get_account_state(&self) -> AccountState {
+        self.account_state.lock().unwrap().clone()
+    }
+
+    pub fn get_reward_state(&self) -> RewardState {
+        self.reward_state.lock().unwrap().clone()
+    }
+
+    pub fn get_last_block(&self) -> Option<Block> {
+        self.last_block.clone()
+    }
+
+    pub fn get_ballot_box(&self) -> BallotBox {
+        self.ballot_box.lock().unwrap().clone()
+    }
+
+    pub fn get_wallet(&self) -> WalletAccount {
+        self.wallet.lock().unwrap().clone()
+    }
+
+    pub fn get_wallet_pubkey(&self) -> String {
+        self.get_wallet().pubkey.clone()
+    }
+
+    pub fn get_wallet_address(&self, address_number: u32) -> Option<String> {
+        if let Some(entry) = self.get_wallet().addresses.get(&address_number) {
+            Some(entry.to_owned())
+        } else {
+            None
+        }
+    }
+
+    pub fn get_wallet_balances(&self) -> LinkedHashMap<String, LinkedHashMap<String, u128>> {
+        self.get_wallet().update_balances(self.get_network_state());
+        self.get_wallet().render_balances()
+    }
+
+    pub fn get_wallet_address_balance(&self, address_number: u32) -> Option<u128> {
+        self.get_wallet()
+            .get_address_balance(self.get_network_state(), address_number)
+    }
+
     pub async fn start(
         ballot_box: Arc<Mutex<BallotBox>>,
         node_type: NodeAuth,
@@ -128,23 +193,10 @@ impl Node {
             .listen_on(addr.clone())
             .unwrap();
 
-        let pubkey = atomic_node
-            .lock()
-            .unwrap()
-            .wallet
-            .lock()
-            .unwrap()
-            .pubkey
-            .clone()
-            .to_string();
-        let addresses = atomic_node
-            .lock()
-            .unwrap()
-            .wallet
-            .lock()
-            .unwrap()
-            .addresses
-            .clone();
+        let pubkey = atomic_node.lock().unwrap().get_wallet().get_pubkey();
+
+        let addresses = atomic_node.lock().unwrap().get_wallet().get_wallet_addresses();
+
         addresses.iter().for_each(|(_, addr)| {
             atomic_node
                 .lock()
@@ -156,15 +208,7 @@ impl Node {
                 .insert(addr.to_string(), pubkey.clone());
         });
 
-        let n_claims_owned = atomic_node
-            .lock()
-            .unwrap()
-            .wallet
-            .lock()
-            .unwrap()
-            .claims
-            .len()
-            .clone() as u128;
+        let n_claims_owned = atomic_node.lock().unwrap().get_wallet().n_claims_owned();
         atomic_node
             .lock()
             .unwrap()
@@ -219,7 +263,10 @@ impl Node {
             }
         });
 
+        #[allow(unused_variables, unused_mut)]
         let mut temp_blocks: LinkedHashMap<String, Block> = LinkedHashMap::new();
+        let mut block_archive_chunks: LinkedHashMap<u128, LinkedHashMap<u32, Vec<u8>>> =
+            LinkedHashMap::new();
         let mut mining = false;
         let mut updating_state = false;
         let task_node = Arc::clone(&atomic_node);
@@ -251,46 +298,42 @@ impl Node {
                         info!(target: "get_state", "getting state");
                         updating_state = true;
                     }
+                    Command::CheckStateUpdateStatus(block_height) => {
+                        if let Some((_, block)) = temp_blocks.front() {
+                            if block_height == block.block_height {
+                                command_utils::handle_command(Arc::clone(&cloned_node), Command::ProcessBacklog);                            
+                            }
+                        }
+                    }
                     Command::StateUpdateCompleted => {
                         info!(target: "get_state", "completed updating state");
                         updating_state = false;
                     }
-                    Command::StoreStateChunk(chunk, chunk_number, total_chunks) => {
-                        if updating_state {
-                            info!(target: "get_state", "received state chunk");
-                            info!(target: "get_state", "received chunk {} of {}", &chunk_number, &total_chunks);
-                            let state_chunks_length =
-                                cloned_node.lock().unwrap().state_chunks.clone().len();
-                            if chunk_number == total_chunks
-                                && state_chunks_length as u32 == total_chunks - 1
+                    Command::StoreStateDbChunk(object, data, chunk_number, total_chunks) => {
+                        if let Some(entry) = block_archive_chunks.get_mut(&object.0) {
+                            entry.entry(chunk_number).or_insert(data);
+                            if chunk_number == total_chunks || entry.len() == total_chunks as usize
                             {
-                                cloned_node
-                                    .lock()
-                                    .unwrap()
-                                    .state_chunks
-                                    .entry(chunk_number)
-                                    .or_insert(chunk);
-
-                                let state_chunks = cloned_node.lock().unwrap().state_chunks.clone();
-                                message_utils::set_network_state(
-                                    Arc::clone(&cloned_node),
-                                    state_chunks,
-                                    total_chunks,
-                                );
-                                command_utils::handle_command(
-                                    Arc::clone(&cloned_node),
-                                    Command::ProcessBacklog,
-                                );
-                                info!(target: "last_block", "last block: {}", cloned_node.lock().unwrap().last_block.clone().unwrap().block_height);
-                            } else {
-                                info!(target: "get_state", "stashed chunk: {} of {}", &chunk_number, &total_chunks);
-                                cloned_node
-                                    .lock()
-                                    .unwrap()
-                                    .state_chunks
-                                    .entry(chunk_number)
-                                    .or_insert(chunk);
+                                // This is the final chunk of the block reassemble and process it.
+                                let mut block_bytes = vec![];
+                                entry.iter().for_each(|(_, v)| {
+                                    block_bytes.extend(v);
+                                });
+                                let block = Block::from_bytes(&block_bytes);
+                                message::process_confirmed_block(block.clone(), Arc::clone(&cloned_node));
+                                println!("processed block {}", &object.0);
+                                if let None = cloned_node.lock().unwrap().last_block.clone() {
+                                    cloned_node.lock().unwrap().last_block = Some(block.clone());
+                                } else {
+                                    if object.0 > cloned_node.lock().unwrap().last_block.clone().unwrap().block_height {
+                                        cloned_node.lock().unwrap().last_block = Some(block.clone());
+                                    }
+                                }
                             }
+                        } else {
+                            let mut new_block_map = LinkedHashMap::new();
+                            new_block_map.insert(chunk_number, data);
+                            block_archive_chunks.insert(object.clone().0, new_block_map);
                         }
                     }
                     Command::ProcessBacklog => {
@@ -299,13 +342,17 @@ impl Node {
                             let inner_node = Arc::clone(&task_node);
                             let last_block = cloned_node.lock().unwrap().last_block.clone();
                             if let Some((last_block_hash, block)) = temp_blocks.pop_front() {
-                                if last_block_hash != last_block.unwrap().block_hash {
+                                if block.block_height <= last_block.clone().unwrap().block_height {
+                                    temp_blocks.remove(&last_block_hash);
+                                }
+                                if last_block_hash != last_block.clone().unwrap().block_hash {
                                     temp_blocks.to_back(&last_block_hash);
                                 } else {
                                     info!(target: "state_update", "processing block {}", &block.block_height);
                                     message_utils::process_block(block, Arc::clone(&inner_node));
                                 }
                             } else {
+                                inner_node.lock().unwrap().state_chunks.clear();
                                 break 'backlog_processing;
                             }
                         }
@@ -324,11 +371,16 @@ impl Node {
                             Command::StateUpdateCompleted,
                         );
 
-                        let network_state = task_node.lock().unwrap().network_state.lock().unwrap().clone();
+                        let network_state = task_node
+                            .lock()
+                            .unwrap()
+                            .network_state
+                            .lock()
+                            .unwrap()
+                            .clone();
                         let mut wallet = task_node.lock().unwrap().wallet.lock().unwrap().clone();
                         wallet.update_balances(network_state);
-                        println!("Balances: {:?}", wallet.render_balances());
-
+                        println!("Processed Backlog Balances: {:?}", wallet.render_balances());
                     }
                     _ => {
                         info!(target: "get_state", "invalid command sent to state receiver");

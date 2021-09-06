@@ -12,7 +12,7 @@
 // local state before reproposing the block.
 use ritelinked::LinkedHashMap;
 use crate::txn::Txn;
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BallotBox {
     // A hashmap containing the proposal ID as the key and a hashmap
     // with yes/no as the keys and the vote count as the value.

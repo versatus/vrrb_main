@@ -97,12 +97,12 @@ impl WalletAccount {
             claims: LinkedHashMap::new(),
         };
 
-        wallet.get_addresses(1);
+        wallet.get_new_addresses(1);
 
         wallet
     }
 
-    pub fn get_addresses(&mut self, number_of_addresses: u8) {
+    pub fn get_new_addresses(&mut self, number_of_addresses: u8) {
         let mut counter = 1u8;
         (counter..=number_of_addresses).for_each(|n| {
             let mut address_bytes = self.pubkey.as_bytes().to_vec();
@@ -114,6 +114,10 @@ impl WalletAccount {
             counter += 1
         })
     }
+
+    pub fn get_wallet_addresses(&self) -> LinkedHashMap<u32, String> {
+        self.addresses.clone()
+    } 
 
     pub fn render_balances(&self) -> LinkedHashMap<String, LinkedHashMap<String, u128>> {
         self.total_balances.clone()
@@ -141,6 +145,31 @@ impl WalletAccount {
         });
 
         balance_map
+    }
+
+    pub fn get_address_balance(&mut self, network_state: NetworkState, address_number: u32) -> Option<u128> {
+        self.update_balances(network_state);
+        if let Some(address) = self.addresses.get(&address_number) {
+            if let Some(entry) = self.total_balances.get(&address.clone()) {
+                if let Some(amount) = entry.get("VRRB") {
+                    return Some(*amount)
+                } else {
+                    return None
+                }
+            } else {
+                return None
+            }
+        } else {
+            return None
+        }
+    }
+
+    pub fn n_claims_owned(&self) -> u128 {
+        self.claims.len() as u128
+    }
+
+    pub fn get_pubkey(&self) -> String {
+        self.pubkey.clone()
     }
 
     pub fn sign(&self, message: &str) -> Result<Signature, Error> {
@@ -183,6 +212,30 @@ impl WalletAccount {
 
     pub fn remove_mined_claims(&mut self, block: &Block) {
         self.claims.remove(&block.claim.claim_number);
+    }
+
+    pub fn txns_in_block(&mut self, block: &Block, network_state: NetworkState) {
+        
+        let my_txns = {
+            let mut some_txn = false;
+            self.addresses.iter().for_each(|(_, address)| {
+                let mut cloned_data = block.data.clone();
+                cloned_data.retain(|_, txn| {
+                    txn.receiver_address == address.clone() || txn.sender_address == address.clone()
+                });
+                if !cloned_data.is_empty() {
+                    some_txn = true;
+                }
+            });
+            some_txn
+            };
+        if let None = block.claim.current_owner {
+            self.update_balances(network_state);
+            println!("Balances: {:?}", self.render_balances());
+        } else if block.claim.current_owner.clone().unwrap() == self.pubkey || my_txns {
+            self.update_balances(network_state);
+            println!("Balances: {:?}", self.render_balances());
+        }
     }
 
     pub fn send_txn(

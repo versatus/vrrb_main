@@ -3,10 +3,10 @@ use crate::validator::ValidatorOptions;
 use crate::verifiable::Verifiable;
 use crate::wallet::WalletAccount;
 use bytebuffer::ByteBuffer;
+use ritelinked::LinkedHashMap;
 use secp256k1::{Error, Message, Secp256k1};
 use secp256k1::{PublicKey, Signature};
 use serde::{Deserialize, Serialize};
-use ritelinked::LinkedHashMap;
 use std::fmt;
 use std::hash::Hash;
 use std::str::FromStr;
@@ -32,7 +32,7 @@ pub enum CustodianOption {
     Price,
     OwnerNumber,
     SellerSignature,
-    BuyerSignature
+    BuyerSignature,
 }
 
 #[derive(Debug, Eq, Deserialize, PartialEq, Serialize)]
@@ -40,11 +40,13 @@ pub struct Claim {
     pub claim_number: u128,
     pub claim_hash: Option<String>,
     pub expiration_time: u128,
+    pub maturation_time: u128,
     pub price: u32,
     pub available: bool,
     pub staked: bool,
-    /// pubkey -> custodian_info 
-    pub chain_of_custody: LinkedHashMap<String, LinkedHashMap<CustodianOption, Option<CustodianInfo>>>,
+    /// pubkey -> custodian_info
+    pub chain_of_custody:
+        LinkedHashMap<String, LinkedHashMap<CustodianOption, Option<CustodianInfo>>>,
     pub current_owner: Option<String>,
     pub claim_payload: Option<String>,
     pub acquisition_time: Option<u128>,
@@ -52,11 +54,12 @@ pub struct Claim {
 }
 
 impl Claim {
-    pub fn new(time: u128, claim_number: u128) -> Claim {
+    pub fn new(expiration_time: u128, maturation_time: u128, claim_number: u128) -> Claim {
         Claim {
             claim_number,
             claim_hash: None,
-            expiration_time: time,
+            expiration_time,
+            maturation_time,
             price: 0,
             available: false,
             staked: false,
@@ -103,7 +106,10 @@ impl Claim {
         let current_owner_custody = self.chain_of_custody.get(&current_owner);
         match current_owner_custody {
             Some(_map) => {
-                let previous_owner = current_owner_custody.unwrap().get(&CustodianOption::Seller).unwrap();
+                let previous_owner = current_owner_custody
+                    .unwrap()
+                    .get(&CustodianOption::Seller)
+                    .unwrap();
 
                 if previous_owner.clone().unwrap() == CustodianInfo::AcquiredFrom(None) {
                     match self
@@ -229,12 +235,14 @@ impl Claim {
         wallet.claims = wallet_claims;
     }
 
-    pub fn hash(&self) {
-        
-    }
+    pub fn hash(&self) {}
 
     pub fn is_expired(&self) -> bool {
-        self.expiration_time < SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        self.expiration_time
+            < SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
     }
 
     pub fn to_message(&self) -> String {
@@ -309,6 +317,7 @@ impl Clone for Claim {
             claim_number: self.claim_number,
             claim_hash: self.claim_hash.clone(),
             expiration_time: self.expiration_time,
+            maturation_time: self.maturation_time,
             price: self.price,
             available: self.available,
             staked: self.staked,
@@ -365,18 +374,9 @@ impl Verifiable for Claim {
                     return Some(false);
                 };
 
-                let credits = if let Some(amount) = network_state.credits.get(&acquirer_address) {
-                    *amount
-                } else {
-                    println!("Acquirer has 0 credits, cannot purchase");
-                    return Some(false);
-                };
+                let credits = network_state.get_account_credits(&acquirer_address);
 
-                let debits = if let Some(amount) = network_state.debits.get(&acquirer_address) {
-                    *amount
-                } else {
-                    0u128
-                };
+                let debits = network_state.get_account_debits(&acquirer_address);
 
                 if let Some(amount) = credits.checked_sub(debits) {
                     if amount < self.price as u128 {

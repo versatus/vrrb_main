@@ -1,20 +1,23 @@
+#![allow(unused_imports)]
 use crate::block::Block;
 use crate::claim::CustodianInfo;
 use crate::claim::{Claim, CustodianOption};
+use crate::network::chunkable::Chunkable;
 use crate::network::command_utils;
 use crate::network::command_utils::Command;
 use crate::network::message;
-use crate::network::message_types::MessageType;
-use crate::network::node::Node;
+use crate::network::message_types::{MessageType, StateBlock};
 use crate::network::node::MAX_TRANSMIT_SIZE;
-use crate::state::NetworkState;
+use crate::network::node::{Node, NodeAuth};
+use crate::state::{BlockArchive, NetworkState};
+use crate::utils::restore_db;
 use crate::validator::ValidatorOptions;
 use crate::verifiable::Verifiable;
 use libp2p::gossipsub::error::PublishError;
 use libp2p::gossipsub::IdentTopic as Topic;
 use log::info;
 use ritelinked::LinkedHashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc::channel, mpsc::Sender, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -209,11 +212,13 @@ pub fn update_block_archive(node: Arc<Mutex<Node>>, block: &Block) {
         .lock()
         .unwrap()
         .block_archive
-        .insert(block.block_height, block.clone());
+        .update(block);
 }
 
 pub fn update_claims(node: Arc<Mutex<Node>>, block: &Block) {
-    // update the claim pool
+    // If there are fewer than 50 claims in the confirmed claim pool
+    // pull claims from the network state database and extend the vector until there
+    // are 100 claims, otherwise, don't extend it.
     node.lock()
         .unwrap()
         .account_state
@@ -228,7 +233,7 @@ pub fn update_claims(node: Arc<Mutex<Node>>, block: &Block) {
         .network_state
         .lock()
         .unwrap()
-        .claims
+        .get_claims()
         .extend(block.owned_claims.clone());
     // get the pubkey of the node
     let pubkey = node.lock().unwrap().wallet.lock().unwrap().pubkey.clone();
@@ -252,15 +257,8 @@ pub fn update_claims(node: Arc<Mutex<Node>>, block: &Block) {
         .unwrap()
         .claim_pool
         .confirmed
-        .retain(|&k, _| k != block.claim.claim_number);
-    // and from the network state.
-    node.lock()
-        .unwrap()
-        .network_state
-        .lock()
-        .unwrap()
-        .claims
         .remove(&block.claim.claim_number);
+    // and from the network state.
     // increment the claim_counter for each claim allocated to an owner
     block.owned_claims.clone().iter().for_each(|(_, v)| {
         let mut claim_counter = node
@@ -286,35 +284,13 @@ pub fn update_claims(node: Arc<Mutex<Node>>, block: &Block) {
 }
 
 pub fn update_credits_and_debits(node: Arc<Mutex<Node>>, block: &Block) {
-    let mut credits = node
-        .lock()
+    node.lock()
         .unwrap()
         .network_state
         .lock()
         .unwrap()
-        .credits
-        .clone();
-
-    let mut debits = node
-        .lock()
-        .unwrap()
-        .network_state
-        .lock()
-        .unwrap()
-        .debits
-        .clone();
-
-    block.data.iter().for_each(|(txn_id, txn)| {
-        if let Some(entry) = credits.get_mut(&txn.receiver_address) {
-            *entry += txn.txn_amount;
-        } else {
-            credits.insert(txn.receiver_address.clone(), txn.txn_amount.clone());
-        }
-        if let Some(entry) = debits.get_mut(&txn.sender_address) {
-            *entry += txn.txn_amount;
-        } else {
-            debits.insert(txn.sender_address.clone(), txn.txn_amount.clone());
-        }
+        .update_credits_and_debits(block);
+    block.data.iter().for_each(|(txn_id, _txn)| {
         node.lock()
             .unwrap()
             .account_state
@@ -332,54 +308,13 @@ pub fn update_credits_and_debits(node: Arc<Mutex<Node>>, block: &Block) {
             .pending
             .remove(&txn_id.clone());
     });
-
-    if let Some(entry) = credits.get_mut(&block.miner) {
-        *entry += block.block_reward.amount;
-    } else {
-        credits.insert(block.miner.clone(), block.block_reward.amount.clone());
-    }
-
-    info!(target: "credits", "{:?}", credits);
-    info!(target: "debits", "{:?}", debits);
-
-    node.lock().unwrap().network_state.lock().unwrap().credits = credits;
-    node.lock().unwrap().network_state.lock().unwrap().debits = debits;
-
-    let pubkey = node.lock().unwrap().wallet.lock().unwrap().pubkey.clone();
-    let addresses = node
-        .lock()
+    let network_state = node.lock().unwrap().network_state.lock().unwrap().clone();
+    node.lock()
         .unwrap()
         .wallet
         .lock()
         .unwrap()
-        .addresses
-        .clone();
-    let my_txns = {
-        let mut some_txn = false;
-        addresses.iter().for_each(|(_, address)| {
-            let mut cloned_data = block.data.clone();
-            cloned_data.retain(|_, txn| {
-                txn.receiver_address == address.clone() || txn.sender_address == address.clone()
-            });
-
-            if !cloned_data.is_empty() {
-                some_txn = true;
-            }
-        });
-        some_txn
-    };
-
-    if let None = block.claim.current_owner {
-        let network_state = node.lock().unwrap().network_state.lock().unwrap().clone();
-        let mut wallet = node.lock().unwrap().wallet.lock().unwrap().clone();
-        wallet.update_balances(network_state);
-        println!("Balances: {:?}", wallet.render_balances());
-    } else if block.claim.current_owner.clone().unwrap() == pubkey || my_txns {
-        let network_state = node.lock().unwrap().network_state.lock().unwrap().clone();
-        let mut wallet = node.lock().unwrap().wallet.lock().unwrap().clone();
-        wallet.update_balances(network_state);
-        println!("Balances: {:?}", wallet.render_balances());
-    }
+        .txns_in_block(&block, network_state.clone());
 }
 
 pub fn update_reward_state(node: Arc<Mutex<Node>>, block: &Block) {
@@ -401,9 +336,11 @@ pub fn update_reward_state(node: Arc<Mutex<Node>>, block: &Block) {
 pub fn request_state(node: Arc<Mutex<Node>>, block: Block) {
     let sender_id = node.lock().unwrap().id.clone().to_string();
     let requested_from = block.claim.current_owner.clone().unwrap();
+    let requestor_node_type = node.lock().unwrap().node_type.clone();
     let message = MessageType::GetNetworkStateMessage {
         sender_id,
         requested_from,
+        requestor_node_type,
     };
     command_utils::handle_command(Arc::clone(&node), Command::GetState);
 
@@ -429,46 +366,51 @@ pub fn request_state(node: Arc<Mutex<Node>>, block: Block) {
     };
 }
 
-pub fn send_state(node: Arc<Mutex<Node>>, requestor: String) {
+pub fn send_state(node: Arc<Mutex<Node>>, requestor: String, _requestor_node_type: NodeAuth) {
+    info!(target: "sending_state", "Sending state to {}", requestor);
     let cloned_node = Arc::clone(&node);
-    let network_state = cloned_node
-        .lock()
-        .unwrap()
-        .network_state
-        .lock()
-        .unwrap()
-        .clone();
-    thread::spawn(move || {
-        let chunks = state_chunks(network_state.clone());
-        if let Some(chunks) = chunks {
-            chunks.iter().enumerate().for_each(|(index, chunk)| {
-                let network_state_message = MessageType::NetworkStateMessage {
-                    data: chunk.clone(),
-                    chunk_number: index.clone() as u32 + 1u32,
-                    total_chunks: chunks.len() as u32,
+    let network_state = cloned_node.lock().unwrap().get_network_state();
+    let sender_id = cloned_node.lock().unwrap().get_id().to_string();
+    if let Some(db) = network_state.get_block_archive_db() {
+        let keys = db.get_all();
+        let mut keys_as_ints = vec![];
+        keys.iter().for_each(|k| keys_as_ints.push(k.parse::<u128>().unwrap()));
+        keys_as_ints.sort_unstable();
+        keys_as_ints.iter().for_each(|k| {
+            let block_height = k.clone();
+            let block = db.get::<Block>(&k.to_string()).unwrap();
+            if let Some(chunks) = block.chunk() {
+                let mut iter_counter = 1;
+                chunks.iter().for_each(|data| {
+                    let message = MessageType::NetworkStateDataBaseMessage {
+                        object: StateBlock(block_height.clone()),
+                        data: data.to_vec(),
+                        chunk_number: iter_counter as u32,
+                        total_chunks: chunks.clone().len() as u32,
+                        requestor: requestor.clone(),
+                        sender_id: sender_id.clone(),
+                    };
+                    let message = message::structure_message(message.as_bytes());
+                    message::publish_message(Arc::clone(&cloned_node), message, "test-net");
+                    iter_counter += 1;
+                });
+            } else {
+                let message = MessageType::NetworkStateDataBaseMessage {
+                    object: StateBlock(block_height.clone()),
+                    data: block.as_bytes(),
+                    chunk_number: 1u32,
+                    total_chunks: 1u32,
                     requestor: requestor.clone(),
-                    sender_id: node.lock().unwrap().id.clone().to_string(),
+                    sender_id: sender_id.clone(),
                 };
-                let network_state_bytes = network_state_message.as_bytes();
-                let message = message::structure_message(network_state_bytes);
+                let message = message::structure_message(message.as_bytes());
                 message::publish_message(Arc::clone(&cloned_node), message, "test-net");
-                thread::sleep(Duration::from_millis(500));
-            });
-        } else {
-            let network_state_message = MessageType::NetworkStateMessage {
-                data: network_state.as_bytes(),
-                chunk_number: 1,
-                total_chunks: 1,
-                requestor,
-                sender_id: node.lock().unwrap().id.clone().to_string(),
-            };
-            let network_state_bytes = network_state_message.as_bytes();
-            let message = message::structure_message(network_state_bytes);
-            message::publish_message(Arc::clone(&cloned_node), message, "test-net");
-        }
-    })
-    .join()
-    .unwrap();
+            }
+            thread::sleep(Duration::from_millis(250));
+        });
+    } else {
+        // Send CannotProvideStateMessage
+    }
 }
 
 pub fn process_block(block: Block, node: Arc<Mutex<Node>>) {
@@ -497,7 +439,6 @@ pub fn process_block(block: Block, node: Arc<Mutex<Node>>) {
             .claim_pool
             .confirmed
             .retain(|claim_number, _| claim_number != &block.claim.claim_number);
-
         let reward_state = cloned_node
             .lock()
             .unwrap()
@@ -512,10 +453,8 @@ pub fn process_block(block: Block, node: Arc<Mutex<Node>>) {
             .lock()
             .unwrap()
             .clone();
-
         let validator_options =
             ValidatorOptions::NewBlock(last_block.clone().unwrap(), reward_state, network_state);
-
         let pubkey = cloned_node
             .lock()
             .unwrap()
@@ -539,31 +478,6 @@ pub fn process_block(block: Block, node: Arc<Mutex<Node>>) {
                 );
             }
         }
-    }
-}
-
-pub fn state_chunks(state: NetworkState) -> Option<Vec<Vec<u8>>> {
-    if state.as_bytes().len() >= (MAX_TRANSMIT_SIZE / 10) {
-        let mut chunks: Vec<Vec<u8>> = vec![];
-        let mut n_chunks = state.as_bytes().len() / (MAX_TRANSMIT_SIZE / 10);
-        if state.as_bytes().len() % (MAX_TRANSMIT_SIZE / 10) != 0 {
-            n_chunks += 1;
-        }
-        let mut last_slice_end = 0;
-        (1..=n_chunks)
-            .map(|n| n * (MAX_TRANSMIT_SIZE / 10))
-            .enumerate()
-            .for_each(|(index, slice_end)| {
-                if index + 1 == n_chunks {
-                    chunks.push(state.clone().as_bytes()[last_slice_end..].to_vec());
-                } else {
-                    chunks.push(state.clone().as_bytes()[last_slice_end..slice_end].to_vec());
-                    last_slice_end = slice_end;
-                }
-            });
-        Some(chunks)
-    } else {
-        None
     }
 }
 

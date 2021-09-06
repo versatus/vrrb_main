@@ -10,6 +10,8 @@ use crate::{
     txn::Txn,
     wallet::WalletAccount,
 };
+use crate::network::node::MAX_TRANSMIT_SIZE;
+use crate::network::chunkable::Chunkable;
 use log::{info, warn};
 use secp256k1::key::PublicKey;
 use secp256k1::Signature;
@@ -21,7 +23,10 @@ use std::io::Error;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-const SECOND: u128 = 1000000000;
+const NANO: u128 = 1;
+const MICRO: u128 = NANO * 1000;
+const MILLI: u128 = MICRO * 1000;
+const SECOND: u128 = MILLI * 1000;
 const VALIDATOR_THRESHOLD: f64 = 0.60;
 
 pub enum InvalidBlockReason {
@@ -65,16 +70,29 @@ impl Block {
 
         // initialize a vector to push claims created by this block to.
         let mut visible_blocks: Vec<Claim> = Vec::with_capacity(20);
-
+        let n_peers = account_state.lock().unwrap().claim_counter.len().clone();
+        let n_claims = n_peers * 2;
         // initialize a variable to increment the maturity timstamp on claims.
-        let mut next_time = now.as_nanos();
+        let next_time = now.as_nanos();
         // set 20 new claims into the vector initialized earlier incrementing each one
         // by 5 nano seconds
         // TODO: Change this to 1 second, 5 nano seconds is just for testing.
-        for i in 0..20 {
-            next_time += 30 * SECOND;
-            let claim = Claim::new(next_time, i as u128 + 1);
-            visible_blocks.push(claim);
+        let mut expiration = next_time.clone();
+        let mut maturity = next_time.clone();
+        if n_peers < 10 {
+            for i in 0..=n_claims {
+                expiration += 30 * SECOND;
+                maturity += 100 * MILLI;
+                let claim = Claim::new(expiration, maturity, i as u128 + 1);
+                visible_blocks.push(claim);
+           }
+        } else {
+            for i in 0..20 {
+                expiration += 30 * SECOND;
+                maturity += 100 * MILLI;
+                let claim = Claim::new(next_time, maturity, i as u128 + 1);
+                visible_blocks.push(claim);
+            }
         }
 
         let mut owned_claims = allocate_claims(
@@ -92,7 +110,6 @@ impl Block {
             .collect::<LinkedHashMap<u128, Claim>>();
 
         let state_hash = digest_bytes("Genesis_State_Hash".to_string().as_bytes());
-        let miner_pubkey = miner.lock().unwrap().pubkey.clone();
         let miner_address = miner.lock().unwrap().addresses[&1].clone();
         // Initialize a new block.
         let genesis = Block {
@@ -106,12 +123,12 @@ impl Block {
             data: LinkedHashMap::new(),
 
             // set the value of the claim to a new claim with the maturity timestamp of now
-            claim: Claim::new(now.as_nanos() + 5 * SECOND, 0),
+            claim: Claim::new(now.as_nanos() + 30 * SECOND, now.as_nanos() + 1 * SECOND, 0),
 
             // set the value of the block reward to the result of a call to the genesis associated
             // method in the Reward struct. This will generate the Genesis reward and send it to
             // the wallet of the node that initializes the network.
-            block_reward: Reward::genesis(Some(miner_pubkey.clone())),
+            block_reward: Reward::genesis(Some(miner_address.clone())),
 
             // Set the value of the block signature to the string "Genesis_Signature"
             block_signature: "Genesis_Signature".to_string(),
@@ -196,18 +213,23 @@ impl Block {
         );
 
         // Ensure that the claim is mature
-        if claim.claim_number == last_block.claim.claim_number + 1 {
+        if claim.claim_number == last_block.claim.claim_number + 1 && claim.maturation_time <= now.clone().as_nanos() {
             // If the claim is mature, initialize a vector with the capacity to hold the new claims that will be created
             // by this new block being mined.
             let mut visible_blocks: Vec<Claim> = Vec::with_capacity(20);
 
             // Get the claim with the highest maturity timestamp that current exists.
-            let mut furthest_visible_block: u128 = if let Some((_, claim)) = account_state.lock().unwrap().clone().claim_pool.confirmed.back() {
+            let mut furthest_expiration: u128 = if let Some((_, claim)) = account_state.lock().unwrap().clone().claim_pool.confirmed.back() {
                 claim.expiration_time
             } else {
                 now.clone().as_nanos()
             };
-                
+            
+            let mut furthest_maturity: u128 = if let Some((_, claim)) = account_state.lock().unwrap().clone().claim_pool.confirmed.back() {
+                claim.maturation_time
+            } else {
+                now.clone().as_nanos()
+            };
 
             let mut highest_claim_number: u128 = if let Some((claim_number, _)) = last_block.owned_claims.back() {
                 *claim_number
@@ -217,11 +239,24 @@ impl Block {
             // Generate 20 new claims, increment each one's maturity timestamp by 5 nanoseconds
             // and push them to the visible_blocks vector.
             // TODO: Add capacity feature to max number of claims available to 1 million.
-            (0..20).for_each(|_| {
-                furthest_visible_block += 30 * SECOND;
-                highest_claim_number += 1;
-                visible_blocks.push(Claim::new(furthest_visible_block, highest_claim_number));
-            });
+            let n_peers = account_state.lock().unwrap().claim_counter.len().clone();
+            let n_claims = n_peers * 2;
+
+            if n_peers < 10 {
+                (0..n_claims).for_each(|_| {
+                    furthest_expiration += 30 * SECOND;
+                    furthest_maturity += 1 * SECOND;
+                    highest_claim_number += 1;
+                    visible_blocks.push(Claim::new(furthest_expiration, furthest_maturity, highest_claim_number));
+                });
+            } else {
+                (0..20).for_each(|_| {
+                    furthest_expiration += 30 * SECOND;
+                    furthest_maturity += 1 * SECOND;
+                    highest_claim_number += 1;
+                    visible_blocks.push(Claim::new(furthest_expiration, furthest_maturity, highest_claim_number));
+                });
+            }
 
             let owned_claims = allocate_claims(
                 visible_blocks,
@@ -488,6 +523,32 @@ impl Verifiable for Block {
                 }
             }
             None => Some(false),
+        }
+    }
+}
+
+
+impl Chunkable for Block {
+    fn chunk(&self) -> Option<Vec<Vec<u8>>> {
+        let bytes_len = self.as_bytes().len();
+        if bytes_len > MAX_TRANSMIT_SIZE {
+            let mut n_chunks = bytes_len / ( MAX_TRANSMIT_SIZE / 10 );
+            if bytes_len % MAX_TRANSMIT_SIZE != 0 {
+                n_chunks += 1;
+            }
+            let mut chunks_vec = vec![];
+            let mut last_slice_end = 0;
+            (1..=bytes_len).map(|n| n * (MAX_TRANSMIT_SIZE / 10)).enumerate().for_each(|(index, slice_end)| {
+                if index + 1 == n_chunks {
+                    chunks_vec.push(self.clone().as_bytes()[last_slice_end..].to_vec());
+                } else {
+                    chunks_vec.push(self.clone().as_bytes()[last_slice_end..slice_end].to_vec());
+                    last_slice_end = slice_end;
+                }
+            });
+            Some(chunks_vec)
+        } else {
+            None
         }
     }
 }

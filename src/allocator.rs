@@ -8,6 +8,7 @@ use rand::{
 use ritelinked::LinkedHashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+use log::info;
 
 pub fn allocate_claims(
     claim_vec: Vec<Claim>,
@@ -41,7 +42,7 @@ pub fn allocate_claims(
         let mut rng = thread_rng();
 
         let mut claims_awarded: LinkedHashMap<u128, Claim> = LinkedHashMap::new();
-
+        info!(target: "new_claims", "{} new claims created", &claim_vec.len());
         for claim in claim_vec {
             let mut updated_claim = claim.clone();
             let miner_pubkey = miner.clone().lock().unwrap().pubkey.clone();
@@ -128,7 +129,7 @@ pub fn allocate_claims(
         let mut claims_awarded: LinkedHashMap<u128, Claim> = LinkedHashMap::new();
         let miner_pubkey = miner.clone().lock().unwrap().pubkey.clone();
         let mut claim_counter = account_state.lock().unwrap().claim_counter.clone();
-
+        info!(target: "new_claims", "{} new claims created", &claim_vec.len());
         for claim in claim_vec {
             let mut updated_claim = claim.clone();        
             let time = SystemTime::now()

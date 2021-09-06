@@ -1,5 +1,6 @@
 use crate::network::message;
 use crate::network::message_types::MessageType;
+use crate::network::message_types::StateBlock;
 use crate::network::message_utils;
 use crate::network::node::Node;
 // use log::{info};
@@ -24,8 +25,9 @@ pub enum Command {
     MineBlock,
     StopMine,
     GetState,
+    CheckStateUpdateStatus(u128),
     StateUpdateCompleted,
-    StoreStateChunk(Vec<u8>, u32, u32),
+    StoreStateDbChunk(StateBlock, Vec<u8>, u32, u32),
     ProcessBacklog,
     SendAddress,
     SendState(String),
@@ -150,12 +152,17 @@ pub fn handle_command(node: Arc<Mutex<Node>>, command: Command) {
                 println!("Error sending command to state updator: {:?}", e);
             }
         }
-        Command::StoreStateChunk(chunk, chunk_number, total_chunks) => {
+        Command::StoreStateDbChunk(object, chunk, chunk_number, total_chunks) => {
             if let Err(e) = node
                 .lock()
                 .unwrap()
                 .state_sender
-                .send(Command::StoreStateChunk(chunk, chunk_number, total_chunks))
+                .send(Command::StoreStateDbChunk(
+                    object,
+                    chunk,
+                    chunk_number,
+                    total_chunks,
+                ))
             {
                 println!("Error sending command to state updator: {:?}", e);
             }
@@ -166,6 +173,16 @@ pub fn handle_command(node: Arc<Mutex<Node>>, command: Command) {
                 .unwrap()
                 .state_sender
                 .send(Command::ProcessBacklog)
+            {
+                println!("Error sending command to state updator: {:?}", e);
+            };
+        }
+        Command::CheckStateUpdateStatus(block_height) => {
+            if let Err(e) = node
+                .lock()
+                .unwrap()
+                .state_sender
+                .send(Command::CheckStateUpdateStatus(block_height))
             {
                 println!("Error sending command to state updator: {:?}", e);
             };

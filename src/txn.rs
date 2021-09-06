@@ -106,12 +106,7 @@ impl Verifiable for Txn {
                 (0, 0)
             };
 
-            let mut address_balance =
-                if let Some(amount) = network_state.retrieve_balance(self.sender_address.clone()) {
-                    amount
-                } else {
-                    0u128
-                };
+            let mut address_balance = network_state.get_balance(&self.sender_address);
 
             address_balance = if let Some(amount) = address_balance.checked_sub(pending_debits) {
                 amount

@@ -1,6 +1,7 @@
 #[allow(unused_imports)]
 use crate::account::AccountState;
 use crate::block::Block;
+use crate::claim::Claim;
 use crate::network::command_utils;
 use crate::network::command_utils::Command;
 use crate::network::config_utils;
@@ -108,6 +109,10 @@ impl Node {
         } else {
             None
         }
+    }
+
+    pub fn get_wallet_owned_claims(&self) -> LinkedHashMap<u128, Claim> {
+        self.get_wallet().get_claims()
     }
 
     pub fn get_wallet_balances(&self) -> LinkedHashMap<String, LinkedHashMap<String, u128>> {

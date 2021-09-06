@@ -168,6 +168,10 @@ impl WalletAccount {
         self.claims.len() as u128
     }
 
+    pub fn get_claims(&self) -> LinkedHashMap<u128, Claim> {
+        self.claims.clone()
+    }
+
     pub fn get_pubkey(&self) -> String {
         self.pubkey.clone()
     }

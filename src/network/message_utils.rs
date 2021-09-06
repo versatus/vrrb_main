@@ -81,26 +81,12 @@ pub fn mine_block(node: Arc<Mutex<Node>>) {
             info!(target: "genesis_block", "sent block to block thread");
         }
     } else {
-        let mut claims = cloned_node
-            .lock()
-            .unwrap()
-            .wallet
-            .lock()
-            .unwrap()
-            .claims
-            .clone();
-
-        let address = cloned_node
-            .lock()
-            .unwrap()
-            .wallet
-            .lock()
-            .unwrap()
-            .pubkey
-            .clone();
+        let claims = cloned_node.lock().unwrap().get_wallet_owned_claims();
+        let address = cloned_node.lock().unwrap().get_wallet_pubkey();
         let next_claim_number = last_block.clone().unwrap().claim.claim_number + 1;
 
-        if let Some(claim) = claims.get_mut(&next_claim_number) {
+        if let Some((_claim_number, claim)) = claims.front() {
+            let mut claim = claim.clone();
             let signature = node
                 .lock()
                 .unwrap()
@@ -364,6 +350,23 @@ pub fn request_state(node: Arc<Mutex<Node>>, block: Block) {
             println!("Error sending the command to the command receiver")
         };
     };
+}
+
+pub fn link_blocks(blocks: LinkedHashMap<String, Block>) -> LinkedHashMap<String, Block> {
+    let mut sorted_blocks = LinkedHashMap::new();
+
+    while sorted_blocks.len() < blocks.clone().len()
+    {
+        for (last_block_hash, block) in blocks.clone() {
+            if !blocks.clone().contains_key(&last_block_hash) && sorted_blocks.is_empty() {
+                sorted_blocks.insert(last_block_hash, block);
+            } else if !sorted_blocks.is_empty() && last_block_hash == sorted_blocks.back().unwrap().1.block_hash {
+                sorted_blocks.insert(last_block_hash, block);
+            }
+        } 
+    }
+
+    sorted_blocks
 }
 
 pub fn send_state(node: Arc<Mutex<Node>>, requestor: String, _requestor_node_type: NodeAuth) {

@@ -19,6 +19,7 @@ pub enum MessageType {
         data: Vec<u8>,
         chunk_number: u32,
         total_chunks: u32,
+        last_block: u128,
         requestor: String,
         sender_id: String,
     },

@@ -1,3 +1,4 @@
+use crate::block::Block;
 use crate::network::message;
 use crate::network::message_types::MessageType;
 use crate::network::message_types::StateBlock;
@@ -25,9 +26,9 @@ pub enum Command {
     MineBlock,
     StopMine,
     GetState,
-    CheckStateUpdateStatus(u128),
+    CheckStateUpdateStatus((u128, Block, u128)),
     StateUpdateCompleted,
-    StoreStateDbChunk(StateBlock, Vec<u8>, u32, u32),
+    StoreStateDbChunk(StateBlock, Vec<u8>, u32, u32, u128),
     ProcessBacklog,
     SendAddress,
     SendState(String),
@@ -152,7 +153,7 @@ pub fn handle_command(node: Arc<Mutex<Node>>, command: Command) {
                 println!("Error sending command to state updator: {:?}", e);
             }
         }
-        Command::StoreStateDbChunk(object, chunk, chunk_number, total_chunks) => {
+        Command::StoreStateDbChunk(object, chunk, chunk_number, total_chunks, last_block) => {
             if let Err(e) = node
                 .lock()
                 .unwrap()
@@ -162,6 +163,7 @@ pub fn handle_command(node: Arc<Mutex<Node>>, command: Command) {
                     chunk,
                     chunk_number,
                     total_chunks,
+                    last_block,
                 ))
             {
                 println!("Error sending command to state updator: {:?}", e);
@@ -177,12 +179,12 @@ pub fn handle_command(node: Arc<Mutex<Node>>, command: Command) {
                 println!("Error sending command to state updator: {:?}", e);
             };
         }
-        Command::CheckStateUpdateStatus(block_height) => {
+        Command::CheckStateUpdateStatus((block_height, block, last_block)) => {
             if let Err(e) = node
                 .lock()
                 .unwrap()
                 .state_sender
-                .send(Command::CheckStateUpdateStatus(block_height))
+                .send(Command::CheckStateUpdateStatus((block_height, block, last_block)))
             {
                 println!("Error sending command to state updator: {:?}", e);
             };

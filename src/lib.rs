@@ -14,6 +14,7 @@ pub mod validator;
 pub mod verifiable;
 pub mod vpu;
 pub mod wallet;
+pub mod tries;
 
 // #[cfg(test)]
 // mod tests {

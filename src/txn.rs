@@ -111,7 +111,8 @@ impl Verifiable for Txn {
             address_balance = if let Some(amount) = address_balance.checked_sub(pending_debits) {
                 amount
             } else {
-                panic!("Pending debits cannot exceed confirmed balance!")
+                println!("Invalid balance, not enough coins!");
+                return Some(false);
             };
             
             if address_balance < self.txn_amount {

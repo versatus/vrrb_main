@@ -40,145 +40,103 @@ pub fn share_addresses(node: Arc<Mutex<Node>>) {
 }
 
 pub fn mine_block(node: Arc<Mutex<Node>>) {
-    let cloned_node = Arc::clone(&node);
-    let last_block = cloned_node.lock().unwrap().last_block.clone();
-    let miner = Arc::clone(&cloned_node.lock().unwrap().wallet);
-    let network_state = Arc::clone(&cloned_node.lock().unwrap().network_state);
-    let reward_state = Arc::clone(&cloned_node.lock().unwrap().reward_state);
-    let account_state = Arc::clone(&cloned_node.lock().unwrap().account_state);
+    let thread_node = Arc::clone(&node);
+    thread::spawn(move || {
+        let cloned_node = Arc::clone(&thread_node);
+        let last_block = thread_node.lock().unwrap().last_block.clone();
+        let miner = Arc::clone(&thread_node.lock().unwrap().wallet);
+        let network_state = Arc::clone(&thread_node.lock().unwrap().network_state);
+        let reward_state = Arc::clone(&thread_node.lock().unwrap().reward_state);
+        let account_state = Arc::clone(&thread_node.lock().unwrap().account_state);
 
-    if let None = last_block {
-        let block = Block::genesis(
-            Arc::clone(&miner),
-            Arc::clone(&reward_state),
-            Arc::clone(&account_state),
-        );
-        info!(target: "genesis_block", "attempting to mine genesis block");
-
-        if let Ok(block) = block {
-            info!(target: "genesis_block", "mined genesis block");
-            let block_message = MessageType::BlockMessage {
-                block: block.clone(),
-                sender_id: cloned_node.lock().unwrap().id.clone().to_string(),
-            };
-            let message = message::structure_message(block_message.as_bytes());
-            if let Err(e) = cloned_node
-                .lock()
-                .unwrap()
-                .swarm
-                .behaviour_mut()
-                .gossipsub
-                .publish(Topic::new("test-net"), message.clone())
-            {
-                {
-                    info!(target: "protocol_error", "Error publishing message: {:?}", e)
-                };
-            }
-            info!(target: "genesis_block", "published genesis block to the network");
-            if let Err(e) = cloned_node.lock().unwrap().block_sender.send(block.clone()) {
-                println!("Error sending block to block processing thread: {:?}", e);
-            }
-            info!(target: "genesis_block", "sent block to block thread");
-        }
-    } else {
-        let claims = cloned_node.lock().unwrap().get_wallet_owned_claims();
-        let address = cloned_node.lock().unwrap().get_wallet_pubkey();
-        let next_claim_number = last_block.clone().unwrap().claim.claim_number + 1;
-
-        if let Some((_claim_number, claim)) = claims.front() {
-            let mut claim = claim.clone();
-            let signature = node
-                .lock()
-                .unwrap()
-                .wallet
-                .lock()
-                .unwrap()
-                .sign(&claim.claim_payload.clone().unwrap());
-
-            if let Some(map) = claim.chain_of_custody.get_mut(&address) {
-                if let Some(entry) = map.get_mut(&CustodianOption::BuyerSignature) {
-                    *entry = Some(CustodianInfo::BuyerSignature(Some(
-                        signature.unwrap().to_string(),
-                    )));
-                };
-            }
-
-            if let Some(Ok(block)) = Block::mine(
-                claim.clone(),
-                last_block.unwrap(),
-                Arc::clone(&account_state),
-                Arc::clone(&reward_state),
-                Arc::clone(&network_state),
+        if let None = last_block {
+            let block = Block::genesis(
                 Arc::clone(&miner),
-            ) {
+                Arc::clone(&reward_state),
+                Arc::clone(&account_state),
+            );
+            info!(target: "genesis_block", "attempting to mine genesis block");
+
+            if let Ok(block) = block {
+                info!(target: "genesis_block", "mined genesis block");
                 let block_message = MessageType::BlockMessage {
                     block: block.clone(),
-                    sender_id: node.lock().unwrap().id.clone().to_string(),
+                    sender_id: cloned_node.lock().unwrap().id.clone().to_string(),
                 };
                 let message = message::structure_message(block_message.as_bytes());
-                if let Err(e) = cloned_node
+                if let Err(e) = thread_node
                     .lock()
                     .unwrap()
                     .swarm
                     .behaviour_mut()
                     .gossipsub
-                    .publish(Topic::new("test-net"), message)
+                    .publish(Topic::new("test-net"), message.clone())
                 {
-                    info!(target: "prtocol_error", "Error sending message to network: {:?}", e);
+                    {
+                        info!(target: "protocol_error", "Error publishing message: {:?}", e)
+                    };
                 }
-                if let Err(e) = cloned_node.lock().unwrap().block_sender.send(block.clone()) {
+                info!(target: "genesis_block", "published genesis block to the network");
+                if let Err(e) = thread_node.lock().unwrap().block_sender.send(block.clone()) {
                     println!("Error sending block to block processing thread: {:?}", e);
                 }
+                info!(target: "genesis_block", "sent block to block thread");
             }
         } else {
-            let mut claims = cloned_node
-                .lock()
-                .unwrap()
-                .account_state
-                .lock()
-                .unwrap()
-                .claim_pool
-                .confirmed
-                .clone();
-            loop {
-                let loop_node = Arc::clone(&cloned_node);
-                let mut adjusted_claim_map: LinkedHashMap<u128, Claim> = LinkedHashMap::new();
-                if let Some(claim) = claims.clone().get(&next_claim_number) {
-                    if claim.is_expired() {
-                        claims.iter_mut().for_each(|(_, mut v)| {
-                            v.claim_number -= 1;
-                            adjusted_claim_map.insert(v.clone().claim_number, v.clone());
-                        });
-                        // send expired claim message
-                        let sender_id = cloned_node.lock().unwrap().id.clone().to_string();
-                        let expired_claim_message = MessageType::ExpiredClaimMessage {
-                            claim_number: next_claim_number,
-                            sender_id,
-                        };
-                        let message = message::structure_message(expired_claim_message.as_bytes());
-                        info!(target: "expired_claim", "claim {} has expired, adjusted all claims in the claim map", &next_claim_number);
-                        message::publish_message(Arc::clone(&loop_node), message, "claim");
-                        loop_node
-                            .lock()
-                            .unwrap()
-                            .account_state
-                            .lock()
-                            .unwrap()
-                            .claim_pool
-                            .confirmed = adjusted_claim_map.clone();
-                        let mut nodes_claims = adjusted_claim_map.clone();
-                        nodes_claims
-                            .retain(|_, v| v.current_owner.clone().unwrap() == address.clone());
-                        loop_node.lock().unwrap().wallet.lock().unwrap().claims = nodes_claims;
-                    } else {
-                        break;
+            let mut claims = thread_node.lock().unwrap().get_wallet_owned_claims();
+            let address = thread_node.lock().unwrap().get_wallet_pubkey();
+            if let Some((_claim_number, claim)) = claims.pop_front() {
+                let mut claim = claim.clone();
+                let signature = node
+                    .lock()
+                    .unwrap()
+                    .wallet
+                    .lock()
+                    .unwrap()
+                    .sign(&claim.claim_payload.clone().unwrap());
+
+                if let Some(map) = claim.chain_of_custody.get_mut(&address) {
+                    if let Some(entry) = map.get_mut(&CustodianOption::BuyerSignature) {
+                        *entry = Some(CustodianInfo::BuyerSignature(Some(
+                            signature.unwrap().to_string(),
+                        )));
+                    };
+                }
+
+                if let Some(Ok(block)) = Block::mine(
+                    claim.clone(),
+                    last_block.unwrap(),
+                    Arc::clone(&account_state),
+                    Arc::clone(&reward_state),
+                    Arc::clone(&network_state),
+                    Arc::clone(&miner),
+                ) {
+                    info!(target: "mined_block", "mined block: {}", block.block_hash);
+                    let block_message = MessageType::BlockMessage {
+                        block: block.clone(),
+                        sender_id: node.lock().unwrap().id.clone().to_string(),
+                    };
+                    cloned_node.lock().unwrap().wallet.lock().unwrap().claims.remove(&claim.claim_number);
+                    let message = message::structure_message(block_message.as_bytes());
+                    if let Err(e) = cloned_node
+                        .lock()
+                        .unwrap()
+                        .swarm
+                        .behaviour_mut()
+                        .gossipsub
+                        .publish(Topic::new("test-net"), message)
+                    {
+                        info!(target: "prtocol_error", "Error sending message to network: {:?}", e);
                     }
-                } else {
-                    break;
+                    if let Err(e) = cloned_node.lock().unwrap().block_sender.send(block.clone()) {
+                        println!("Error sending block to block processing thread: {:?}", e);
+                    }
                 }
             }
         }
-    }
+    })
+    .join()
+    .unwrap();
 }
 
 pub fn update_last_confirmed_block(node: Arc<Mutex<Node>>, block: &Block) {
@@ -319,6 +277,14 @@ pub fn update_reward_state(node: Arc<Mutex<Node>>, block: &Block) {
         .reward_state = reward_state.lock().unwrap().clone();
 }
 
+pub fn update_state_hash(node: Arc<Mutex<Node>>, block: &Block) {
+    node.lock().unwrap().network_state.lock().unwrap().update_state_hash(block);
+}
+
+pub fn update_last_state(node: Arc<Mutex<Node>>) {
+    node.lock().unwrap().network_state.lock().unwrap().update_last_state();
+}
+
 pub fn request_state(node: Arc<Mutex<Node>>, block: Block) {
     let sender_id = node.lock().unwrap().id.clone().to_string();
     let requested_from = block.claim.current_owner.clone().unwrap();
@@ -355,15 +321,16 @@ pub fn request_state(node: Arc<Mutex<Node>>, block: Block) {
 pub fn link_blocks(blocks: LinkedHashMap<String, Block>) -> LinkedHashMap<String, Block> {
     let mut sorted_blocks = LinkedHashMap::new();
 
-    while sorted_blocks.len() < blocks.clone().len()
-    {
+    while sorted_blocks.len() < blocks.clone().len() {
         for (last_block_hash, block) in blocks.clone() {
             if !blocks.clone().contains_key(&last_block_hash) && sorted_blocks.is_empty() {
                 sorted_blocks.insert(last_block_hash, block);
-            } else if !sorted_blocks.is_empty() && last_block_hash == sorted_blocks.back().unwrap().1.block_hash {
+            } else if !sorted_blocks.is_empty()
+                && last_block_hash == sorted_blocks.back().unwrap().1.block_hash
+            {
                 sorted_blocks.insert(last_block_hash, block);
             }
-        } 
+        }
     }
 
     sorted_blocks
@@ -377,8 +344,10 @@ pub fn send_state(node: Arc<Mutex<Node>>, requestor: String, _requestor_node_typ
     if let Some(db) = network_state.get_block_archive_db() {
         let keys = db.get_all();
         let mut keys_as_ints = vec![];
-        keys.iter().for_each(|k| keys_as_ints.push(k.parse::<u128>().unwrap()));
+        keys.iter()
+            .for_each(|k| keys_as_ints.push(k.parse::<u128>().unwrap()));
         keys_as_ints.sort_unstable();
+        let last_block = keys_as_ints[keys_as_ints.len() - 1];
         keys_as_ints.iter().for_each(|k| {
             let block_height = k.clone();
             let block = db.get::<Block>(&k.to_string()).unwrap();
@@ -390,6 +359,7 @@ pub fn send_state(node: Arc<Mutex<Node>>, requestor: String, _requestor_node_typ
                         data: data.to_vec(),
                         chunk_number: iter_counter as u32,
                         total_chunks: chunks.clone().len() as u32,
+                        last_block,
                         requestor: requestor.clone(),
                         sender_id: sender_id.clone(),
                     };
@@ -403,13 +373,14 @@ pub fn send_state(node: Arc<Mutex<Node>>, requestor: String, _requestor_node_typ
                     data: block.as_bytes(),
                     chunk_number: 1u32,
                     total_chunks: 1u32,
+                    last_block,
                     requestor: requestor.clone(),
                     sender_id: sender_id.clone(),
                 };
                 let message = message::structure_message(message.as_bytes());
                 message::publish_message(Arc::clone(&cloned_node), message, "test-net");
             }
-            thread::sleep(Duration::from_millis(250));
+            thread::sleep(Duration::from_millis(500));
         });
     } else {
         // Send CannotProvideStateMessage
@@ -442,44 +413,19 @@ pub fn process_block(block: Block, node: Arc<Mutex<Node>>) {
             .claim_pool
             .confirmed
             .retain(|claim_number, _| claim_number != &block.claim.claim_number);
-        let reward_state = cloned_node
-            .lock()
-            .unwrap()
-            .reward_state
-            .lock()
-            .unwrap()
-            .clone();
-        let network_state = cloned_node
-            .lock()
-            .unwrap()
-            .network_state
-            .lock()
-            .unwrap()
-            .clone();
+
+        let reward_state = cloned_node.lock().unwrap().get_reward_state();
+        let network_state = cloned_node.lock().unwrap().get_network_state();
         let validator_options =
             ValidatorOptions::NewBlock(last_block.clone().unwrap(), reward_state, network_state);
-        let pubkey = cloned_node
-            .lock()
-            .unwrap()
-            .wallet
-            .lock()
-            .unwrap()
-            .pubkey
-            .clone();
-
-        if block.miner == pubkey {
-            // This node mined this block, cannot confirm it, await for confirmation message.
+        if let Some(true) = block.is_valid(Some(validator_options)) {
             message::process_confirmed_block(block.clone(), Arc::clone(&cloned_node));
-        } else {
-            if let Some(true) = block.is_valid(Some(validator_options)) {
-                message::process_confirmed_block(block.clone(), Arc::clone(&cloned_node));
-                cloned_node.lock().unwrap().last_block = Some(block.clone());
-                info!(
-                    target: "confirmed_block",
-                    "Set block with block_height {} and block hash {} to network state -> claim maturation time: {}, claim_number: {}",
-                    &block.block_height, &block.block_hash, &block.claim.expiration_time, &block.claim.claim_number
-                );
-            }
+            cloned_node.lock().unwrap().last_block = Some(block.clone());
+            info!(
+                target: "confirmed_block",
+                "Set block with block_height {} and block hash {} to network state -> claim maturation time: {}, claim_number: {}",
+                &block.block_height, &block.block_hash, &block.claim.expiration_time, &block.claim.claim_number
+            );
         }
     }
 }

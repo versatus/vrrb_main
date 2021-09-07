@@ -16,11 +16,11 @@ pub fn allocate_claims(
     block_number: u128,
     account_state: Arc<Mutex<AccountState>>,
 ) -> LinkedHashMap<u128, Claim> {
-    if block_number > 1 {
+    if block_number > 0 {
         // get all the claims owned
         let owner_map = account_state.lock().unwrap().claim_counter.clone();
         let total_claims: u128 = account_state.lock().unwrap().claim_pool.confirmed.clone().len() as u128;
-        
+
         //ISSUE: O(n) operation
         let claims_owned: Vec<_> = owner_map.iter().collect();
 
@@ -38,7 +38,7 @@ pub fn allocate_claims(
             })
             .collect();
 
-        let dist = WeightedIndex::new(claim_allocation_choices.iter().map(|item| item.1)).unwrap();
+        let mut dist = WeightedIndex::new(claim_allocation_choices.iter().map(|item| item.1)).unwrap();
         let mut rng = thread_rng();
 
         let mut claims_awarded: LinkedHashMap<u128, Claim> = LinkedHashMap::new();
@@ -118,9 +118,10 @@ pub fn allocate_claims(
             updated_claim.current_owner = Some(winner.clone());
 
             claims_awarded.insert(updated_claim.claim_number, updated_claim.to_owned());
-
-            if claim_allocation_choices.len() > 20 {
-                claim_allocation_choices.retain(|(account, _weight)| *account != winner);
+            claim_allocation_choices.retain(|(account, _weight)| *account != winner);
+            
+            if !claim_allocation_choices.is_empty() { 
+                dist = WeightedIndex::new(claim_allocation_choices.iter().map(|item| item.1)).unwrap(); 
             }
         }
 

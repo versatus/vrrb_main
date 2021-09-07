@@ -25,6 +25,9 @@ pub enum BlockArchive {
     UltraLight,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LastState(Option<String>);
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NetworkState {
     // Path to database
@@ -35,7 +38,7 @@ pub struct NetworkState {
     pub credits: Option<String>,
     // hash of the state of debits in the network
     pub debits: Option<String>,
-    // hash of the reward state of the network
+    //reward state of the network
     pub reward_state: RewardState,
     // BlockArchive Object
     pub block_archive: BlockArchive,
@@ -43,6 +46,8 @@ pub struct NetworkState {
     pub last_block: Option<Block>,
     // the last state hash -> sha256 hash of claims, credits, debits & reward state.
     pub state_hash: Option<String>,
+    // the state of the network prior to the last block
+    pub last_state: LastState,
 }
 
 impl BlockArchive {
@@ -51,15 +56,23 @@ impl BlockArchive {
             ARCHIVE => {
                 let mut rng = rand::thread_rng();
                 let file_suffix: u32 = rng.gen();
-                return BlockArchive::Archive(format!("{}_{}.db", BLOCK_ARCHIVE_PATH.to_string(), file_suffix));
+                return BlockArchive::Archive(format!(
+                    "{}_{}.db",
+                    BLOCK_ARCHIVE_PATH.to_string(),
+                    file_suffix
+                ));
             }
             FULL => {
                 let mut rng = rand::thread_rng();
                 let file_suffix: u32 = rng.gen();
-                return BlockArchive::Full(format!("{}_{}.db", BLOCK_ARCHIVE_PATH.to_string(), file_suffix))
-            },
-            LIGHT => { return BlockArchive::Light((None, None)) },
-            ULTRALIGHT => { return BlockArchive::UltraLight },
+                return BlockArchive::Full(format!(
+                    "{}_{}.db",
+                    BLOCK_ARCHIVE_PATH.to_string(),
+                    file_suffix
+                ));
+            }
+            LIGHT => return BlockArchive::Light((None, None)),
+            ULTRALIGHT => return BlockArchive::UltraLight,
             _ => {
                 panic!("Must provide a type for block archive")
             }
@@ -68,21 +81,9 @@ impl BlockArchive {
 
     pub fn update(&mut self, block: &Block) {
         match self.clone() {
-            Self::Archive(path) => {
+            Self::Archive(path) | Self::Full(path) => {
                 let mut db = restore_db(&path);
                 if let Err(_) = db.set(&block.clone().block_height.to_string(), &block.clone()) {
-                    println!("Error setting block to block archive db");
-                };
-                if let Err(_) = db.dump() {
-                    println!("Error dumping block archive db");
-                };
-            }
-            Self::Full(path) => {
-                let mut db = restore_db(&path);
-                if let Err(_) = db.set(
-                    &block.clone().block_height.to_string(),
-                    &block.clone(),
-                ) {
                     println!("Error setting block to block archive db");
                 };
                 if let Err(_) = db.dump() {
@@ -100,18 +101,89 @@ impl BlockArchive {
     }
 
     pub fn get_archive_db_snapshot(&self) -> Option<PickleDb> {
-
         if let Self::Archive(path) | Self::Full(path) = self.clone() {
-            let db = if let Ok(nst) = PickleDb::load_read_only(path.clone(), SerializationMethod::Bin) {
-                nst
+            let db =
+                if let Ok(nst) = PickleDb::load_read_only(path.clone(), SerializationMethod::Bin) {
+                    nst
+                } else {
+                    PickleDb::new(
+                        path.clone(),
+                        PickleDbDumpPolicy::NeverDump,
+                        SerializationMethod::Bin,
+                    )
+                };
+            return Some(db);
+        } else {
+            None
+        }
+    }
+
+    pub fn revert_db(&self, block: &Block) {
+        match self.clone() {
+            Self::Archive(path) | Self::Full(path) => {
+                let mut db = restore_db(&path);
+                if let Err(_) = db.rem(&block.clone().block_height.to_string()) {
+                    println!("Error setting block to block archive db");
+                };
+                if let Err(_) = db.dump() {
+                    println!("Error dumping block archive db");
+                };
+            }
+            Self::Light((mut hash_option, mut height_option)) => {
+                hash_option = Some(block.clone().block_hash);
+                height_option = Some(block.clone().block_height);
+
+                Self::Light((hash_option, height_option));
+            }
+            _ => {}
+        }
+    }
+}
+
+impl LastState {
+    pub fn new(state_hash: Option<String>) -> LastState {
+        LastState(state_hash)
+    }
+
+    pub fn update(self, state_hash: Option<String>) -> LastState {
+        Self(state_hash)
+    }
+
+    pub fn get_state_hash(&self) -> Option<String> {
+        self.0.clone()
+    }
+
+    // Return the previous last state from the network state ledger db
+    // last state in network state ledger db is a LinkedHashMap<String, LastState>
+    // wherein the key is the State hash of the current last_state.state_hash
+    pub fn revert_one(&self, network_state: NetworkState) -> Option<NetworkState> {
+        if let Some(state_hash) = self.get_state_hash() {
+            let db = network_state.get_ledger_db();
+            if let Some(map) = db.get::<LinkedHashMap<String, NetworkState>>("laststate") {
+                if let Some(state) = map.get(&state_hash) {
+                    Some(NetworkState { ..state.clone() })
+                } else {
+                    None
+                }
             } else {
-                PickleDb::new(
-                    path.clone(),
-                    PickleDbDumpPolicy::NeverDump,
-                    SerializationMethod::Bin,
-                )
-            };
-            return Some(db)
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn get_last_block(&self, network_state: NetworkState) -> Option<Block> {
+        if let Some(state) = self.revert_one(network_state) {
+            state.get_last_block()
+        } else {
+            None
+        }
+    }
+
+    pub fn get_last_reward_state(&self, network_state: NetworkState) -> Option<RewardState> {
+        if let Some(state) = self.revert_one(network_state) {
+            Some(state.get_reward_state())
         } else {
             None
         }
@@ -129,12 +201,20 @@ impl NetworkState {
             ),
         };
 
-        let (credits_map, debits_map, claims_map, block_archive, reward_state, last_block) =
-            NetworkState::restore_state_objects(&db);
+        let (
+            credits_map,
+            debits_map,
+            claims_map,
+            block_archive,
+            reward_state,
+            last_block,
+            last_state,
+        ) = NetworkState::restore_state_objects(&db);
 
         let credits = digest_bytes(format!("{:?}", &credits_map).as_bytes());
         let debits = digest_bytes(format!("{:?}", &credits_map).as_bytes());
         let claims = digest_bytes(format!("{:?}", &credits_map).as_bytes());
+
         NetworkState {
             path: path.to_string(),
             credits: {
@@ -162,11 +242,34 @@ impl NetworkState {
             block_archive,
             last_block,
             state_hash: None,
+            last_state,
         }
     }
 
     pub fn get_block_archive_db(&self) -> Option<PickleDb> {
         self.block_archive.get_archive_db_snapshot()
+    }
+
+    pub fn revert_state(&mut self, block: &Block) {
+        let db = self.get_ledger_db();
+        let last_state = self.get_last_state().0;
+        if let Some(hash) = last_state {
+            if let Some(map) = db.get::<LinkedHashMap<String, NetworkState>>("laststate") {
+                if let Some(state) = map.get(&hash) {
+                    Self { ..state.clone() };
+                }
+            }
+        }
+        self.revert_db_credits(block);
+        self.revert_db_debits(block);
+        self.revert_db_claims(block);
+        self.revert_db_reward_state();
+        self.revert_db_last_block();
+        self.revert_db_last_state();
+    }
+
+    pub fn get_last_state(&self) -> LastState {
+        self.last_state.clone()
     }
 
     pub fn get_balance(&self, address: &str) -> u128 {
@@ -243,13 +346,12 @@ impl NetworkState {
         let claim_hash = self.clone().claim_hash(&block);
         let reward_state_hash =
             digest_bytes(format!("{:?},{:?}", self.reward_state, reward_state).as_bytes());
-
         let payload = format!(
             "{:?},{:?},{:?},{:?},{:?},{:?}",
             self.state_hash, credit_hash, debit_hash, claim_hash, reward_state_hash, uts
         );
-
-        digest_bytes(payload.as_bytes())
+        let new_state_hash = digest_bytes(payload.as_bytes());
+        new_state_hash
     }
 
     pub fn restore_state_objects(
@@ -261,6 +363,7 @@ impl NetworkState {
         BlockArchive,
         RewardState,
         Option<Block>,
+        LastState,
     ) {
         let credits: LinkedHashMap<String, u128> = if let Some(map) = db.get("credits") {
             map
@@ -297,6 +400,25 @@ impl NetworkState {
             None
         };
 
+        let last_state_map: LinkedHashMap<Option<String>, NetworkState> =
+            if let Some(state) = db.get("laststate") {
+                state
+            } else {
+                LinkedHashMap::new()
+            };
+
+        let last_state = {
+            if !last_state_map.is_empty() {
+                if let Some((_, state)) = last_state_map.back() {
+                    LastState(state.state_hash.clone())
+                } else {
+                    LastState(None)
+                }
+            } else {
+                LastState(None)
+            }
+        };
+
         (
             credits,
             debits,
@@ -304,22 +426,39 @@ impl NetworkState {
             block_archive,
             reward_state,
             last_block,
+            last_state,
         )
     }
 
-    pub fn dump(&self, block: Block) {
-        let mut db =
-            match PickleDb::load_bin(self.path.clone(), PickleDbDumpPolicy::DumpUponRequest) {
-                Ok(nst) => nst,
-                Err(_) => PickleDb::new(
-                    self.path.clone(),
-                    PickleDbDumpPolicy::DumpUponRequest,
-                    SerializationMethod::Bin,
-                ),
-            };
+    pub fn dump_last_state(&self) {
+        let mut db = self.get_ledger_db();
+        if let Some(mut map) = db.get::<LinkedHashMap<Option<String>, NetworkState>>("laststate") {
+            map.insert(self.last_state.clone().0, self.clone());
+            if let Err(_) = db.set("laststate", &map) {
+                println!("Error setting last state to db");
+            }
+        } else {
+            let mut map: LinkedHashMap<Option<String>, NetworkState> = LinkedHashMap::new();
+            map.insert(self.last_state.clone().0, self.clone());
+            if let Err(_) = db.set("laststate", &map) {
+                println!("Error setting last state to db");
+            }
+        }
+    }
 
-        let (mut credits, mut debits, mut claims, mut block_archive, mut reward_state, _last_block) =
-            NetworkState::restore_state_objects(&db);
+    pub fn dump(&mut self, block: Block) {
+        let mut db = self.get_ledger_db();
+
+        let (
+            mut credits,
+            mut debits,
+            mut claims,
+            mut block_archive,
+            mut reward_state,
+            _last_block,
+            _last_state,
+        ) = NetworkState::restore_state_objects(&db);
+        
 
         block.data.iter().for_each(|(_txn_id, txn)| {
             if let Some(entry) = credits.get_mut(&txn.receiver_address) {
@@ -373,7 +512,20 @@ impl NetworkState {
             println!("Error setting last block to state")
         };
         if let Err(_) = db.dump() {
-            println!("Error dumping db to file")
+            println!("Error dumping state to file")
+        }
+    }
+
+    pub fn get_ledger_db(&self) -> PickleDb {
+        match PickleDb::load_bin(self.path.clone(), PickleDbDumpPolicy::DumpUponRequest) {
+            Ok(nst) => return nst,
+            Err(_) => {
+                return PickleDb::new(
+                    self.path.clone(),
+                    PickleDbDumpPolicy::DumpUponRequest,
+                    SerializationMethod::Bin,
+                )
+            }
         };
     }
 
@@ -401,45 +553,39 @@ impl NetworkState {
         self.block_archive.update(block)
     }
 
+    pub fn update_state_hash(&mut self, block: &Block) {
+        self.state_hash = Some(block.state_hash.clone());
+        info!(target: "updating_state_hash", "new_state_hash: {:?}", self.state_hash)
+    }
+
+    pub fn update_last_state(&mut self) {
+        self.last_state = self.last_state.clone().update(self.state_hash.clone());
+    }
+
     pub fn get_credits(&self) -> LinkedHashMap<String, u128> {
-        let db = match PickleDb::load_bin(self.path.clone(), PickleDbDumpPolicy::DumpUponRequest) {
-            Ok(nst) => nst,
-            Err(_) => PickleDb::new(
-                self.path.clone(),
-                PickleDbDumpPolicy::DumpUponRequest,
-                SerializationMethod::Bin,
-            ),
+        let db = self.get_ledger_db();
+        let credits: LinkedHashMap<String, u128> = if let Some(map) = db.get("credits") {
+            map
+        } else {
+            LinkedHashMap::new()
         };
 
-        let (credits, _, _, _, _, _) = NetworkState::restore_state_objects(&db);
-
-        return credits;
+        credits
     }
 
     pub fn get_debits(&self) -> LinkedHashMap<String, u128> {
-        let db = match PickleDb::load_bin(self.path.clone(), PickleDbDumpPolicy::DumpUponRequest) {
-            Ok(nst) => nst,
-            Err(_) => PickleDb::new(
-                self.path.clone(),
-                PickleDbDumpPolicy::DumpUponRequest,
-                SerializationMethod::Bin,
-            ),
+        let db = self.get_ledger_db();
+        let debits: LinkedHashMap<String, u128> = if let Some(map) = db.get("debits") {
+            map
+        } else {
+            LinkedHashMap::new()
         };
-
-        let (_, debits, _, _, _, _) = NetworkState::restore_state_objects(&db);
 
         debits
     }
 
     pub fn get_claims(&self) -> LinkedHashMap<u128, Claim> {
-        let db = match PickleDb::load_bin(self.path.clone(), PickleDbDumpPolicy::DumpUponRequest) {
-            Ok(nst) => nst,
-            Err(_) => PickleDb::new(
-                self.path.clone(),
-                PickleDbDumpPolicy::DumpUponRequest,
-                SerializationMethod::Bin,
-            ),
-        };
+        let db = self.get_ledger_db();
         let claims: LinkedHashMap<u128, Claim> = if let Some(map) = db.get("claims") {
             map
         } else {
@@ -450,15 +596,7 @@ impl NetworkState {
     }
 
     pub fn get_reward_state(&self) -> RewardState {
-        let db = match PickleDb::load_bin(self.path.clone(), PickleDbDumpPolicy::DumpUponRequest) {
-            Ok(nst) => nst,
-            Err(_) => PickleDb::new(
-                self.path.clone(),
-                PickleDbDumpPolicy::DumpUponRequest,
-                SerializationMethod::Bin,
-            ),
-        };
-
+        let db = self.get_ledger_db();
         if let Some(reward_state) = db.get("rewardstate") {
             return reward_state;
         } else {
@@ -467,14 +605,7 @@ impl NetworkState {
     }
 
     pub fn get_last_block(&self) -> Option<Block> {
-        let db = match PickleDb::load_bin(self.path.clone(), PickleDbDumpPolicy::DumpUponRequest) {
-            Ok(nst) => nst,
-            Err(_) => PickleDb::new(
-                self.path.clone(),
-                PickleDbDumpPolicy::DumpUponRequest,
-                SerializationMethod::Bin,
-            ),
-        };
+        let db = self.get_ledger_db();
         if let Some(last_block) = db.get("lastblock") {
             return last_block;
         } else {
@@ -483,14 +614,7 @@ impl NetworkState {
     }
 
     pub fn get_block_archive(&self) -> LinkedHashMap<u128, Block> {
-        let db = match PickleDb::load_bin(self.path.clone(), PickleDbDumpPolicy::DumpUponRequest) {
-            Ok(nst) => nst,
-            Err(_) => PickleDb::new(
-                self.path.clone(),
-                PickleDbDumpPolicy::DumpUponRequest,
-                SerializationMethod::Bin,
-            ),
-        };
+        let db = self.get_ledger_db();
         if let Some(block_archive) = db.get("blockarchive") {
             return block_archive;
         } else {
@@ -500,7 +624,6 @@ impl NetworkState {
 
     pub fn get_account_credits(&self, address: &str) -> u128 {
         let credits = self.get_credits();
-
         if let Some(amount) = credits.get(address) {
             return *amount;
         } else {
@@ -522,6 +645,95 @@ impl NetworkState {
         claims.retain(|_, claim| claim.current_owner.clone().unwrap() == pubkey.to_string());
 
         claims
+    }
+
+    pub fn revert_db_credits(&self, block: &Block) {
+        let mut credits = self.get_credits();
+        block.data.iter().for_each(|(_, txn)| {
+            if let Some(entry) = credits.get_mut(&txn.receiver_address) {
+                *entry -= txn.txn_amount;
+            }
+        });
+
+        if let Some(entry) = credits.get_mut(&block.block_reward.miner.clone().unwrap()) {
+            *entry -= block.block_reward.amount;
+        }
+
+        let mut db = self.get_ledger_db();
+        if let Err(_) = db.set("credits", &credits) {
+            println!("Error reverting credits");
+        }
+        if let Err(_) = db.dump() {
+            println!("Error dumping state after reversion");
+        };
+    }
+
+    pub fn revert_db_debits(&self, block: &Block) {
+        let mut debits = self.get_debits();
+        block.data.iter().for_each(|(_, txn)| {
+            if let Some(entry) = debits.get_mut(&txn.sender_address) {
+                *entry -= txn.txn_amount;
+            }
+        });
+
+        let mut db = self.get_ledger_db();
+        if let Err(_) = db.set("debits", &debits) {
+            println!("Error reverting debits");
+        };
+        if let Err(_) = db.dump() {
+            println!("Error dumping state after reversion");
+        };
+    }
+
+    pub fn revert_db_claims(&self, block: &Block) {
+        let mut claims = self.get_claims();
+        claims.retain(|k, _| !block.owned_claims.contains_key(&k));
+
+        let mut db = self.get_ledger_db();
+        if let Err(_) = db.set("claims", &claims) {
+            println!("Error reverting claims");
+        };
+        if let Err(_) = db.dump() {
+            println!("Error dumping state");
+        };
+    }
+    pub fn revert_db_reward_state(&self) {
+        let mut db = self.get_ledger_db();
+        let last_state = self.get_last_state();
+        let reward_state = last_state.get_last_reward_state(self.clone());
+        if let Err(_) = db.set("rewardstate", &reward_state) {
+            println!("Error setting last block");
+        };
+        if let Err(_) = db.dump() {
+            println!("Error dumping last block to file");
+        }
+    }
+
+    pub fn revert_db_last_block(&self) {
+        let mut db = self.get_ledger_db();
+        let last_state = self.get_last_state();
+        let last_block = last_state.get_last_block(self.clone());
+        if let Err(_) = db.set("lastblock", &last_block) {
+            println!("Error setting last block");
+        };
+        if let Err(_) = db.dump() {
+            println!("Error dumping last block to file");
+        }
+    }
+
+    pub fn revert_db_last_state(&self) {
+        let mut db = self.get_ledger_db();
+        if let Some(mut map) = db.get::<LinkedHashMap<String, LastState>>("laststate") {
+            map.pop_back();
+
+            if let Err(_) = db.set("laststate", &map) {
+                println!("error reverting db last state");
+            };
+
+            if let Err(_) = db.dump() {
+                println!("Error dumping reverted db last state");
+            }
+        }
     }
 
     pub fn credits_as_bytes(credits: &LinkedHashMap<String, u128>) -> Vec<u8> {
@@ -600,6 +812,7 @@ impl Clone for NetworkState {
             reward_state: self.reward_state.clone(),
             last_block: self.last_block.clone(),
             state_hash: self.state_hash.clone(),
+            last_state: self.last_state.clone(),
         }
     }
 }

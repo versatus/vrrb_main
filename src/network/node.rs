@@ -125,6 +125,12 @@ impl Node {
             .get_address_balance(self.get_network_state(), address_number)
     }
 
+    pub fn remove_mined_claim_from_wallet(&mut self, block: &Block) {
+        let mut wallet = self.get_wallet();
+        wallet.remove_mined_claims(block);
+        self.wallet = Arc::new(Mutex::new(wallet));
+    }
+
     pub async fn start(
         ballot_box: Arc<Mutex<BallotBox>>,
         node_type: NodeAuth,
@@ -200,7 +206,11 @@ impl Node {
 
         let pubkey = atomic_node.lock().unwrap().get_wallet().get_pubkey();
 
-        let addresses = atomic_node.lock().unwrap().get_wallet().get_wallet_addresses();
+        let addresses = atomic_node
+            .lock()
+            .unwrap()
+            .get_wallet()
+            .get_wallet_addresses();
 
         addresses.iter().for_each(|(_, addr)| {
             atomic_node
@@ -274,6 +284,7 @@ impl Node {
             LinkedHashMap::new();
         let mut mining = false;
         let mut updating_state = false;
+        let mut processed_backlog = false;
         let task_node = Arc::clone(&atomic_node);
         thread::spawn(move || loop {
             let cloned_node = Arc::clone(&task_node);
@@ -303,18 +314,55 @@ impl Node {
                         info!(target: "get_state", "getting state");
                         updating_state = true;
                     }
-                    Command::CheckStateUpdateStatus(block_height) => {
-                        if let Some((_, block)) = temp_blocks.front() {
-                            if block_height == block.block_height {
-                                command_utils::handle_command(Arc::clone(&cloned_node), Command::ProcessBacklog);                            
-                            }
+                    Command::CheckStateUpdateStatus((block_height, block, last_block)) => {
+                        info!(target: "checking_state_update_status", "Checking state update status -> block height: {}", &block_height);
+                        if !processed_backlog {
+                            if let Some((_, last_stashed_block)) = temp_blocks.front() {
+
+                                println!("last_block block height: {}", &last_stashed_block.block_height);
+                                println!("last block sent in state update: {}", last_block);
+                                if last_block < last_stashed_block.block_height - 1 {
+                                    println!("You are not receiving enough blocks, request the difference");
+                                }
+                                if block_height == last_stashed_block.block_height - 1 {
+                                    message::process_confirmed_block(
+                                        block.clone(),
+                                        Arc::clone(&cloned_node),
+                                    );
+                                    println!("State chunks completed, process backlog");
+                                    command_utils::handle_command(
+                                        Arc::clone(&cloned_node),
+                                        Command::ProcessBacklog,
+                                    );
+                                    processed_backlog = true;
+                                } else if block_height > last_stashed_block.block_height - 1 {
+                                    println!("State chunks completed, process backlog");
+                                    command_utils::handle_command(
+                                        Arc::clone(&cloned_node),
+                                        Command::ProcessBacklog,
+                                    );
+                                    processed_backlog = true;
+                                } else {
+                                    message::process_confirmed_block(
+                                        block.clone(),
+                                        Arc::clone(&cloned_node),
+                                    );
+                                    println!("processed block {}", &block_height);
+                                }
+                            } else {
+                                message::process_confirmed_block(
+                                    block.clone(),
+                                    Arc::clone(&cloned_node)
+                                );
+                                println!("processed block {}", &block_height);
+                            } 
                         }
                     }
                     Command::StateUpdateCompleted => {
                         info!(target: "get_state", "completed updating state");
                         updating_state = false;
                     }
-                    Command::StoreStateDbChunk(object, data, chunk_number, total_chunks) => {
+                    Command::StoreStateDbChunk(object, data, chunk_number, total_chunks, _last_block) => {
                         if let Some(entry) = block_archive_chunks.get_mut(&object.0) {
                             entry.entry(chunk_number).or_insert(data);
                             if chunk_number == total_chunks || entry.len() == total_chunks as usize
@@ -325,13 +373,25 @@ impl Node {
                                     block_bytes.extend(v);
                                 });
                                 let block = Block::from_bytes(&block_bytes);
-                                message::process_confirmed_block(block.clone(), Arc::clone(&cloned_node));
+                                message::process_confirmed_block(
+                                    block.clone(),
+                                    Arc::clone(&cloned_node),
+                                );
                                 println!("processed block {}", &object.0);
                                 if let None = cloned_node.lock().unwrap().last_block.clone() {
                                     cloned_node.lock().unwrap().last_block = Some(block.clone());
                                 } else {
-                                    if object.0 > cloned_node.lock().unwrap().last_block.clone().unwrap().block_height {
-                                        cloned_node.lock().unwrap().last_block = Some(block.clone());
+                                    if object.0
+                                        > cloned_node
+                                            .lock()
+                                            .unwrap()
+                                            .last_block
+                                            .clone()
+                                            .unwrap()
+                                            .block_height
+                                    {
+                                        cloned_node.lock().unwrap().last_block =
+                                            Some(block.clone());
                                     }
                                 }
                             }
@@ -346,18 +406,11 @@ impl Node {
                         'backlog_processing: loop {
                             let inner_node = Arc::clone(&task_node);
                             let last_block = cloned_node.lock().unwrap().last_block.clone();
-                            if let Some((last_block_hash, block)) = temp_blocks.pop_front() {
-                                if block.block_height <= last_block.clone().unwrap().block_height {
-                                    temp_blocks.remove(&last_block_hash);
-                                }
-                                if last_block_hash != last_block.clone().unwrap().block_hash {
-                                    temp_blocks.to_back(&last_block_hash);
-                                } else {
-                                    info!(target: "state_update", "processing block {}", &block.block_height);
-                                    message_utils::process_block(block, Arc::clone(&inner_node));
-                                }
+                            if let Some(block) = temp_blocks.get(&last_block.clone().unwrap().block_hash) {
+                                info!(target: "state_update", "processing block {}", &block.block_height);
+                                message_utils::process_block(block.clone(), Arc::clone(&inner_node));                                
                             } else {
-                                inner_node.lock().unwrap().state_chunks.clear();
+                                info!(target: "state_update", "cannot find next block");
                                 break 'backlog_processing;
                             }
                         }
@@ -386,7 +439,7 @@ impl Node {
                         let mut wallet = task_node.lock().unwrap().wallet.lock().unwrap().clone();
                         wallet.update_balances(network_state);
                         println!("Processed Backlog Balances: {:?}", wallet.render_balances());
-                    }
+                        }
                     _ => {
                         info!(target: "get_state", "invalid command sent to state receiver");
                     }
@@ -394,42 +447,55 @@ impl Node {
             }
 
             if let Some(block) = block_receiver.try_iter().next() {
-                temp_blocks.insert(block.clone().last_block_hash, block.clone());
-                info!(target: "stashed_block", "Stashed block: {}", block.block_height);
+                let local_last_block = cloned_node.lock().unwrap().last_block.clone();
+                if let Some(last_block) = local_last_block {
+                    if temp_blocks.is_empty() && block.last_block_hash == last_block.block_hash {
+                        updating_state = false;
+                        processed_backlog = true;
+                    }
+                }
+                if let Some(entry) = temp_blocks.get_mut(&block.last_block_hash) {
+                    if entry.claim.claim_number > block.claim.claim_number {
+                        *entry = block.clone();
+                    }
+                } else {
+                    temp_blocks.insert(block.clone().last_block_hash, block.clone());
+                }
+                info!(target: "stashed_block", "Stashed block: {}", block.block_hash);
             }
 
             if !updating_state {
                 'block_processing: loop {
                     let cloned_node = Arc::clone(&task_node);
-                    let last_block = cloned_node.lock().unwrap().last_block.clone();
-                    if let Some((last_block_hash, block)) = temp_blocks.pop_front() {
-                        if &block.block_height > &0 {
-                            if let None = last_block {
-                                temp_blocks.insert(block.clone().last_block_hash, block.clone());
+                    let local_last_block = cloned_node.lock().unwrap().last_block.clone();
+                    if let None = local_last_block {
+                        if let Some((_, block)) = temp_blocks.pop_front() {
+                            if &block.block_height > &0 {
                                 message_utils::request_state(
                                     Arc::clone(&cloned_node),
                                     block.clone(),
                                 );
+                                mining = false;
                                 break 'block_processing;
                             } else {
-                                info!(
-                                    target: "Block", "Block: {}, block_claim_current_owner: {:?}",
-                                    &block.block_height, &block.claim.current_owner
+                                message_utils::process_block(
+                                    block.clone(),
+                                    Arc::clone(&cloned_node),
                                 );
-                                if last_block_hash != last_block.unwrap().block_hash {
-                                    temp_blocks.to_back(&last_block_hash);
-                                } else {
-                                    message_utils::process_block(
-                                        block.clone(),
-                                        Arc::clone(&cloned_node),
-                                    );
-                                }
                             }
                         } else {
-                            message_utils::process_block(block.clone(), Arc::clone(&cloned_node));
+                            break 'block_processing;
                         }
                     } else {
-                        break 'block_processing;
+                        if let Some(block) = temp_blocks.get(&local_last_block.clone().unwrap().block_hash) {
+                            message_utils::process_block(
+                                block.clone(),
+                                Arc::clone(&cloned_node),
+                            );
+                            temp_blocks.remove(&local_last_block.unwrap().clone().block_hash);
+                        } else {
+                            break 'block_processing;
+                        }
                     }
                 }
             }

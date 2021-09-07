@@ -6,12 +6,11 @@ use crate::network::message_types::{MessageType, StateBlock};
 use crate::network::message_utils;
 use crate::network::message_utils::{
     update_block_archive, update_claims, update_credits_and_debits, update_last_confirmed_block,
-    update_reward_state,
+    update_last_state, update_reward_state, update_state_hash,
 };
 use crate::network::node::Node;
 use crate::txn::Txn;
-use crate::validator::{Message as ValidatorMessage, Validator, ValidatorOptions};
-use crate::verifiable::Verifiable;
+use crate::validator::{Message as ValidatorMessage, Validator};
 use libp2p::gossipsub::{GossipsubMessage, IdentTopic as Topic};
 use log::info;
 use ritelinked::LinkedHashMap;
@@ -96,6 +95,7 @@ pub fn process_message(message: GossipsubMessage, node: Arc<Mutex<Node>>) {
             data,
             chunk_number,
             total_chunks,
+            last_block,
             requestor,
             ..
         } => {
@@ -109,6 +109,7 @@ pub fn process_message(message: GossipsubMessage, node: Arc<Mutex<Node>>) {
                         data,
                         chunk_number,
                         total_chunks,
+                        last_block,
                         Arc::clone(&thread_node),
                     );
                 }
@@ -319,62 +320,20 @@ pub fn process_txn_message(txn: Txn, node: Arc<Mutex<Node>>) {
     }
 }
 
-pub fn process_new_block_message(block: Block, node: Arc<Mutex<Node>>) {
-    let cloned_node = Arc::clone(&node);
-    info!(target: "block_message", "Received new block: block height {} -> block hash: {}", &block.block_height, &block.block_hash);
-    if &block.block_height > &0 {
-        let last_block = cloned_node.lock().unwrap().get_last_block().unwrap();
-        let network_state = cloned_node.lock().unwrap().get_network_state();
-        let reward_state = cloned_node.lock().unwrap().get_reward_state();
-        let id = cloned_node.lock().unwrap().id.clone().to_string();
-        let validator_options = ValidatorOptions::NewBlock(last_block, reward_state, network_state);
-        let vote = block.is_valid(Some(validator_options));
-        match vote {
-            Some(true) => {
-                let inner_node = Arc::clone(&cloned_node);
-                process_confirmed_block(block.clone(), cloned_node);
-                inner_node
-                    .lock()
-                    .unwrap()
-                    .account_state
-                    .lock()
-                    .unwrap()
-                    .txn_pool
-                    .confirmed
-                    .clear();
-                info!(target:"block_message", "block {} with block hash {} is valid", &block.block_height, block.block_hash);
-                info!(target:"block_message", "processed confirmed block");
-                let message = MessageType::BlockVoteMessage {
-                    block,
-                    vote: true,
-                    sender_id: id,
-                };
-                let message = structure_message(message.as_bytes());
-                publish_message(Arc::clone(&node), message, "test-net");
-            }
-            Some(false) => {
-                info!(target:"block_message", "block {} with block hash {} is invalid", &block.block_height, block.block_hash);
-                let message = MessageType::BlockVoteMessage {
-                    block,
-                    vote: false,
-                    sender_id: id,
-                };
-                let message = structure_message(message.as_bytes());
-                publish_message(Arc::clone(&node), message, "test-net");
-            }
-            None => {}
-        }
-    } else {
-        process_confirmed_block(block.clone(), Arc::clone(&node));
-    }
-}
-
 pub fn process_confirmed_block(block: Block, node: Arc<Mutex<Node>>) {
+    update_last_state(Arc::clone(&node));
+    node.lock()
+        .unwrap()
+        .network_state
+        .lock()
+        .unwrap()
+        .dump_last_state();
     update_block_archive(Arc::clone(&node), &block);
     update_claims(Arc::clone(&node), &block);
     update_credits_and_debits(Arc::clone(&node), &block);
     update_last_confirmed_block(Arc::clone(&node), &block);
     update_reward_state(Arc::clone(&node), &block);
+    update_state_hash(Arc::clone(&node), &block);
     thread::spawn(move || {
         node.lock().unwrap().network_state.lock().unwrap().dump(block);
         info!(target: "state_dump", "Dumped network state to {}", &node.lock().unwrap().network_state.lock().unwrap().path.clone());
@@ -634,32 +593,12 @@ pub fn process_state_db_message(
     data: Vec<u8>,
     chunk_number: u32,
     total_chunks: u32,
+    last_block: u128,
     node: Arc<Mutex<Node>>,
 ) {
     let cloned_node = Arc::clone(&node);
     if total_chunks == 1 {
         let block = Block::from_bytes(&data);
-        process_confirmed_block(block.clone(), Arc::clone(&cloned_node));
-        println!("processed block {}", &object.0);
-        let last_block = cloned_node.lock().unwrap().last_block.clone();
-        if let None = last_block {
-            println!("No last block, setting last block to node");
-            cloned_node.lock().unwrap().last_block = Some(block.clone());
-            println!(
-                "LASTBLOCK: {:?}",
-                cloned_node.lock().unwrap().last_block.clone()
-            );
-        } else {
-            println!("Some last block, checking if the block processed is higher than last block");
-            if object.0 > last_block.unwrap().block_height.clone() {
-                println!(
-                    "LASTBLOCK: {:?}",
-                    cloned_node.lock().unwrap().last_block.clone()
-                );
-                cloned_node.lock().unwrap().last_block = Some(block.clone());
-            }
-        }
-
         let db_option = cloned_node
             .lock()
             .unwrap()
@@ -668,13 +607,13 @@ pub fn process_state_db_message(
         if let Some(_db) = db_option {
             command_utils::handle_command(
                 Arc::clone(&cloned_node),
-                Command::CheckStateUpdateStatus(object.0),
+                Command::CheckStateUpdateStatus((object.0, block, last_block)),
             );
         }
     } else {
         command_utils::handle_command(
             Arc::clone(&node),
-            Command::StoreStateDbChunk(object, data, chunk_number, total_chunks),
+            Command::StoreStateDbChunk(object, data, chunk_number, total_chunks, last_block),
         );
     }
 }

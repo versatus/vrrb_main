@@ -71,7 +71,7 @@ impl Block {
         // initialize a vector to push claims created by this block to.
         let mut visible_blocks: Vec<Claim> = Vec::with_capacity(20);
         let n_peers = account_state.lock().unwrap().claim_counter.len().clone();
-        let n_claims = n_peers * 2;
+        let n_claims = n_peers;
         // initialize a variable to increment the maturity timstamp on claims.
         let next_time = now.as_nanos();
         // set 20 new claims into the vector initialized earlier incrementing each one
@@ -79,8 +79,8 @@ impl Block {
         // TODO: Change this to 1 second, 5 nano seconds is just for testing.
         let mut expiration = next_time.clone();
         let mut maturity = next_time.clone();
-        if n_peers < 10 {
-            for i in 0..=n_claims {
+        if n_peers < 20 {
+            for i in 0..n_claims {
                 expiration += 30 * SECOND;
                 maturity += 100 * MILLI;
                 let claim = Claim::new(expiration, maturity, i as u128 + 1);
@@ -98,7 +98,7 @@ impl Block {
         let mut owned_claims = allocate_claims(
             visible_blocks,
             Arc::clone(&miner),
-            1u128,
+            0u128,
             Arc::clone(&account_state),
         );
         owned_claims = owned_claims
@@ -213,7 +213,7 @@ impl Block {
         );
 
         // Ensure that the claim is mature
-        if claim.claim_number == last_block.claim.claim_number + 1 && claim.maturation_time <= now.clone().as_nanos() {
+        if claim.maturation_time <= now.clone().as_nanos() {
             // If the claim is mature, initialize a vector with the capacity to hold the new claims that will be created
             // by this new block being mined.
             let mut visible_blocks: Vec<Claim> = Vec::with_capacity(20);
@@ -240,19 +240,19 @@ impl Block {
             // and push them to the visible_blocks vector.
             // TODO: Add capacity feature to max number of claims available to 1 million.
             let n_peers = account_state.lock().unwrap().claim_counter.len().clone();
-            let n_claims = n_peers * 2;
+            let n_claims = n_peers;
 
-            if n_peers < 10 {
+            if n_peers < 20 {
                 (0..n_claims).for_each(|_| {
                     furthest_expiration += 30 * SECOND;
-                    furthest_maturity += 1 * SECOND;
+                    furthest_maturity += 2500 * MILLI;
                     highest_claim_number += 1;
                     visible_blocks.push(Claim::new(furthest_expiration, furthest_maturity, highest_claim_number));
                 });
             } else {
                 (0..20).for_each(|_| {
                     furthest_expiration += 30 * SECOND;
-                    furthest_maturity += 1 * SECOND;
+                    furthest_maturity += 2500 * MILLI;
                     highest_claim_number += 1;
                     visible_blocks.push(Claim::new(furthest_expiration, furthest_maturity, highest_claim_number));
                 });
@@ -392,11 +392,7 @@ impl Verifiable for Block {
             Some(block_options) => {
                 match block_options {
                     ValidatorOptions::NewBlock(last_block, reward_state, network_state) => {
-                        if self.claim.claim_number != last_block.claim.claim_number + 1 {
-                            println!("Invalid claim sequence: {} != {} + 1", &self.claim.claim_number, &last_block.claim.claim_number);
-                            return Some(false);
-                        }
-
+                        
                         let valid_signature = match self
                             .clone()
                             .claim

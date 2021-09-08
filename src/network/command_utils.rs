@@ -7,6 +7,7 @@ use crate::network::node::Node;
 // use log::{info};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
+use std::collections::HashSet;
 
 pub const NEWTXN: &str = "NEW_TXN";
 pub const SENDTXN: &str = "SENDTXN";
@@ -18,6 +19,7 @@ pub const ACQUIRECLAIM: &str = "ACQRCLM";
 pub const SELLCLAIM: &str = "SELLCLM";
 pub const SENDADDRESS: &str = "SENDADR";
 pub const TXNTOPIC: &str = "txn";
+pub const QUIT: &str = "QUIT";
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, Serialize)]
@@ -29,11 +31,15 @@ pub enum Command {
     CheckStateUpdateStatus((u128, Block, u128)),
     StateUpdateCompleted,
     StoreStateDbChunk(StateBlock, Vec<u8>, u32, u32, u128),
+    PruneMiners(HashSet<String>),
     ProcessBacklog,
     SendAddress,
     SendState(String),
     AcquireClaim(u128, u128, u128), // Maximum Price, Maximum Maturity, Maximum Number of claims to acquire that fit the price/maturity requirements, address to purchase from.
     SellClaim(u128, u128),          // Claim Number, Price.
+    RemovePeer(String),
+    NewPeer(String, String),
+    Quit,
 }
 
 impl Command {
@@ -87,6 +93,7 @@ impl Command {
                 MINEBLOCK => return Some(Command::MineBlock),
                 STOPMINE => return Some(Command::StopMine),
                 SENDADDRESS => return Some(Command::SendAddress),
+                QUIT => return Some(Command::Quit),
                 _ => {
                     println!("Invalid command string");
                     None
@@ -184,11 +191,42 @@ pub fn handle_command(node: Arc<Mutex<Node>>, command: Command) {
                 .lock()
                 .unwrap()
                 .state_sender
-                .send(Command::CheckStateUpdateStatus((block_height, block, last_block)))
+                .send(Command::CheckStateUpdateStatus((
+                    block_height,
+                    block,
+                    last_block,
+                )))
             {
                 println!("Error sending command to state updator: {:?}", e);
             };
         }
+        Command::NewPeer(peer_id, pubkey) => {
+            command_node
+                .lock()
+                .unwrap()
+                .account_state
+                .lock()
+                .unwrap()
+                .add_miner_to_peer_tracker(peer_id, pubkey);
+        }
+        Command::RemovePeer(peer_id) => {
+            command_node
+                .lock()
+                .unwrap()
+                .account_state
+                .lock()
+                .unwrap()
+                .remove_miner_from_claim_counter(peer_id.clone());
+            println!(
+                "Removing {} from claim counter, they have gone offline",
+                peer_id
+            );
+        }
+        Command::PruneMiners(connected_peers) => {
+            let local_pubkey = command_node.lock().unwrap().get_wallet_pubkey();
+            command_node.lock().unwrap().account_state.lock().unwrap().prune_miners(connected_peers, &local_pubkey);
+        }
+        Command::Quit => {}
         Command::AcquireClaim(_max_price, _max_maturity, _max_number) => {}
         Command::SellClaim(_claim_number, _price) => {}
         Command::SendState(_peer_id) => {}

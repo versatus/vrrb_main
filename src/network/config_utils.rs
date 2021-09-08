@@ -2,6 +2,7 @@
 use crate::account::AccountState;
 use crate::network::command_utils::Command;
 use crate::network::protocol::{build_transport, VrrbNetworkBehavior};
+use core::num::NonZeroU32;
 use libp2p::gossipsub::MessageId;
 use libp2p::gossipsub::{
     Gossipsub, GossipsubConfigBuilder, GossipsubMessage, IdentTopic as Topic, MessageAuthenticity,
@@ -11,7 +12,7 @@ use libp2p::identify::{Identify, IdentifyConfig};
 use libp2p::kad::{record::store::MemoryStore, Kademlia};
 use libp2p::ping::{Ping, PingConfig};
 use libp2p::swarm::Swarm;
-use libp2p::{identity, PeerId};
+use libp2p::{identity::Keypair, PeerId};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::mpsc::Sender;
@@ -22,9 +23,9 @@ pub const MAX_TRANSMIT_SIZE: usize = 2000000;
 pub async fn configure_swarm(
     message_sender: Sender<GossipsubMessage>,
     command_sender: Sender<Command>,
+    local_peer_id: PeerId,
+    local_key: Keypair
 ) -> Swarm<VrrbNetworkBehavior> {
-    let local_key = identity::Keypair::generate_ed25519();
-    let local_peer_id = PeerId::from(local_key.public());
 
     let message_id_fn = |message: &GossipsubMessage| {
         let mut s = DefaultHasher::new();
@@ -74,6 +75,12 @@ pub async fn configure_swarm(
         IdentifyConfig::new("vrrb/test-net/1.0.0".to_string(), local_key.public());
 
     let identify = Identify::new(identify_config);
+    let ping_config = PingConfig::new();
+    ping_config
+        .with_interval(Duration::from_secs(20))
+        .with_max_failures(NonZeroU32::new(1).unwrap())
+        .with_timeout(Duration::from_secs(20));
+
     let ping = Ping::new(PingConfig::new());
 
     let behaviour = VrrbNetworkBehavior {

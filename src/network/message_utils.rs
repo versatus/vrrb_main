@@ -252,13 +252,7 @@ pub fn update_credits_and_debits(node: Arc<Mutex<Node>>, block: &Block) {
             .pending
             .remove(&txn_id.clone());
     });
-    let network_state = node.lock().unwrap().network_state.lock().unwrap().clone();
-    node.lock()
-        .unwrap()
-        .wallet
-        .lock()
-        .unwrap()
-        .txns_in_block(&block, network_state.clone());
+    
 }
 
 pub fn update_reward_state(node: Arc<Mutex<Node>>, block: &Block) {

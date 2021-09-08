@@ -188,7 +188,10 @@ pub fn process_message(message: GossipsubMessage, node: Arc<Mutex<Node>>) {
             .join()
             .unwrap();
         }
-        MessageType::AccountPubkeyMessage { addresses, .. } => {
+        MessageType::AccountPubkeyMessage {
+            addresses,
+            sender_id,
+        } => {
             let thread_node = Arc::clone(&node);
             thread::spawn(move || {
                 thread_node
@@ -207,17 +210,21 @@ pub fn process_message(message: GossipsubMessage, node: Arc<Mutex<Node>>) {
 
                 let pubkey = pubkey.iter().next().unwrap().clone();
 
-                let mut claim_counter = thread_node
+                thread_node
                     .lock()
                     .unwrap()
                     .account_state
                     .lock()
                     .unwrap()
-                    .claim_counter
-                    .clone();
-                if let None = claim_counter.get_mut(&pubkey.clone()) {
-                    claim_counter.insert(pubkey.clone(), 0);
-                }
+                    .add_miner_to_claim_counter(pubkey.clone());
+
+                thread_node
+                    .lock()
+                    .unwrap()
+                    .account_state
+                    .lock()
+                    .unwrap()
+                    .add_miner_to_peer_tracker(sender_id.clone(), pubkey.clone());
 
                 let claims_owned: u128 = thread_node
                     .lock()
@@ -231,18 +238,11 @@ pub fn process_message(message: GossipsubMessage, node: Arc<Mutex<Node>>) {
                     .filter(|(_, v)| v.current_owner == Some(pubkey.clone()))
                     .count() as u128;
 
-                if let Some(entry) = claim_counter.get_mut(&pubkey.clone()) {
-                    *entry += claims_owned;
-                }
-
-                println!("{:?}", claim_counter);
-                thread_node
-                    .lock()
+                thread_node.lock()
                     .unwrap()
-                    .account_state
-                    .lock()
+                    .account_state.lock()
                     .unwrap()
-                    .claim_counter = claim_counter;
+                    .update_claims_owned(pubkey, claims_owned);
             })
             .join()
             .unwrap();
@@ -335,8 +335,15 @@ pub fn process_confirmed_block(block: Block, node: Arc<Mutex<Node>>) {
     update_reward_state(Arc::clone(&node), &block);
     update_state_hash(Arc::clone(&node), &block);
     thread::spawn(move || {
-        node.lock().unwrap().network_state.lock().unwrap().dump(block);
+        node.lock().unwrap().network_state.lock().unwrap().dump(block.clone());
         info!(target: "state_dump", "Dumped network state to {}", &node.lock().unwrap().network_state.lock().unwrap().path.clone());
+        let network_state = node.lock().unwrap().network_state.lock().unwrap().clone();
+        node.lock()
+            .unwrap()
+            .wallet
+            .lock()
+            .unwrap()
+            .txns_in_block(&block, network_state.clone());
     }).join().unwrap();
 }
 

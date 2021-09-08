@@ -139,6 +139,7 @@ impl Node {
         network_state: Arc<Mutex<NetworkState>>,
         reward_state: Arc<Mutex<RewardState>>,
     ) -> Result<(), Box<dyn Error>> {
+
         let mut rng = rand::thread_rng();
         let log_file_suffix = rng.gen::<u8>();
 
@@ -156,15 +157,15 @@ impl Node {
 
         let local_key = identity::Keypair::generate_ed25519();
         let local_peer_id = PeerId::from(local_key.public());
-
         let (message_sender, message_receiver) = channel();
         let (command_sender, command_receiver) = channel();
         let (block_sender, block_receiver) = channel();
         let (mining_sender, mining_receiver) = channel();
         let (state_sender, state_receiver) = channel();
 
+
         let swarm =
-            config_utils::configure_swarm(message_sender.clone(), command_sender.clone()).await;
+            config_utils::configure_swarm(message_sender.clone(), command_sender.clone(), local_peer_id, local_key).await;
 
         let account_state = Arc::clone(&account_state);
         let network_state = Arc::clone(&network_state);
@@ -265,7 +266,6 @@ impl Node {
                 .unwrap();
             }
         });
-
         let task_node = Arc::clone(&atomic_node);
         thread::spawn(move || loop {
             while let Some(command) = command_receiver.iter().next() {
@@ -285,10 +285,10 @@ impl Node {
         let mut mining = false;
         let mut updating_state = false;
         let mut processed_backlog = false;
+
         let task_node = Arc::clone(&atomic_node);
         thread::spawn(move || loop {
             let cloned_node = Arc::clone(&task_node);
-
             if let Some(command) = mining_receiver.try_iter().next() {
                 match command {
                     Command::MineBlock => {
@@ -318,8 +318,10 @@ impl Node {
                         info!(target: "checking_state_update_status", "Checking state update status -> block height: {}", &block_height);
                         if !processed_backlog {
                             if let Some((_, last_stashed_block)) = temp_blocks.front() {
-
-                                println!("last_block block height: {}", &last_stashed_block.block_height);
+                                println!(
+                                    "last_block block height: {}",
+                                    &last_stashed_block.block_height
+                                );
                                 println!("last block sent in state update: {}", last_block);
                                 if last_block < last_stashed_block.block_height - 1 {
                                     println!("You are not receiving enough blocks, request the difference");
@@ -352,17 +354,23 @@ impl Node {
                             } else {
                                 message::process_confirmed_block(
                                     block.clone(),
-                                    Arc::clone(&cloned_node)
+                                    Arc::clone(&cloned_node),
                                 );
                                 println!("processed block {}", &block_height);
-                            } 
+                            }
                         }
                     }
                     Command::StateUpdateCompleted => {
                         info!(target: "get_state", "completed updating state");
                         updating_state = false;
                     }
-                    Command::StoreStateDbChunk(object, data, chunk_number, total_chunks, _last_block) => {
+                    Command::StoreStateDbChunk(
+                        object,
+                        data,
+                        chunk_number,
+                        total_chunks,
+                        _last_block,
+                    ) => {
                         if let Some(entry) = block_archive_chunks.get_mut(&object.0) {
                             entry.entry(chunk_number).or_insert(data);
                             if chunk_number == total_chunks || entry.len() == total_chunks as usize
@@ -406,9 +414,14 @@ impl Node {
                         'backlog_processing: loop {
                             let inner_node = Arc::clone(&task_node);
                             let last_block = cloned_node.lock().unwrap().last_block.clone();
-                            if let Some(block) = temp_blocks.get(&last_block.clone().unwrap().block_hash) {
+                            if let Some(block) =
+                                temp_blocks.get(&last_block.clone().unwrap().block_hash)
+                            {
                                 info!(target: "state_update", "processing block {}", &block.block_height);
-                                message_utils::process_block(block.clone(), Arc::clone(&inner_node));                                
+                                message_utils::process_block(
+                                    block.clone(),
+                                    Arc::clone(&inner_node),
+                                );
                             } else {
                                 info!(target: "state_update", "cannot find next block");
                                 break 'backlog_processing;
@@ -439,7 +452,7 @@ impl Node {
                         let mut wallet = task_node.lock().unwrap().wallet.lock().unwrap().clone();
                         wallet.update_balances(network_state);
                         println!("Processed Backlog Balances: {:?}", wallet.render_balances());
-                        }
+                    }
                     _ => {
                         info!(target: "get_state", "invalid command sent to state receiver");
                     }
@@ -487,13 +500,15 @@ impl Node {
                             break 'block_processing;
                         }
                     } else {
-                        if let Some(block) = temp_blocks.get(&local_last_block.clone().unwrap().block_hash) {
-                            message_utils::process_block(
-                                block.clone(),
-                                Arc::clone(&cloned_node),
-                            );
-                            temp_blocks.remove(&local_last_block.unwrap().clone().block_hash);
+                        if let Some(block) =
+                            temp_blocks.get(&local_last_block.clone().unwrap().block_hash)
+                        {
+                            message_utils::process_block(block.clone(), Arc::clone(&cloned_node));
+                            temp_blocks.remove(&local_last_block.clone().unwrap().block_hash);
                         } else {
+                            temp_blocks.retain(|_, block| {
+                                block.block_height > local_last_block.clone().unwrap().block_height
+                            });
                             break 'block_processing;
                         }
                     }
@@ -507,22 +522,18 @@ impl Node {
         });
 
         let mut stdin = io::BufReader::new(io::stdin()).lines();
-
-        task::block_on(future::poll_fn(move |cx: &mut Context<'_>| {
+        let poll_fn = future::poll_fn(move |cx: &mut Context<'_>| {
             let task_node = Arc::clone(&atomic_node);
-
-            // Finish bootstrapping by getting last block from network state, setting node last block
-            // to network state last block. Request blocks you are missing.
-
             loop {
                 let cloned_node = Arc::clone(&task_node);
                 match stdin.try_poll_next_unpin(cx)? {
                     Poll::Ready(Some(line)) => command_utils::handle_input_line(cloned_node, line),
-                    Poll::Ready(None) => panic!("Stdin closed"),
+                    Poll::Ready(None) => {
+                        panic!("User exit")
+                    }
                     Poll::Pending => break,
                 }
             }
-
             let task_node = Arc::clone(&atomic_node);
             loop {
                 match task_node.lock().unwrap().swarm.poll_next_unpin(cx) {
@@ -532,8 +543,10 @@ impl Node {
                     Poll::Ready(None) | Poll::Pending => break,
                 }
             }
-
             Poll::Pending
-        }))
+        });
+
+        let forever_loop = task::block_on(poll_fn);
+        forever_loop
     }
 }

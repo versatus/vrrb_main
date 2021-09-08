@@ -13,6 +13,7 @@ use vrrb_lib::wallet::WalletAccount;
 
 #[async_std::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    
     let mut rng = rand::thread_rng();
     let file_suffix: u32 = rng.gen();
     let txn_pool = Pool::new(PoolKind::Txn);
@@ -47,6 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         network_state,
         reward_state,
     );
+
     node.await.unwrap();
 
     Ok(())

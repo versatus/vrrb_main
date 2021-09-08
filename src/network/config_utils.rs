@@ -34,21 +34,21 @@ pub async fn configure_swarm(
     };
 
     let gossipsub_config = GossipsubConfigBuilder::default()
-        .heartbeat_interval(Duration::from_millis(500))
-        .history_length(3)
-        .history_gossip(3)
+        .heartbeat_interval(Duration::from_secs(2))
+        .history_length(5)
+        .history_gossip(5)
         .mesh_n(12)
         .mesh_n_low(4)
         .mesh_n_high(18)
         .gossip_lazy(12)
         .gossip_factor(0.5)
         .fanout_ttl(Duration::from_secs(120))
-        .check_explicit_peers_ticks(500)
+        .check_explicit_peers_ticks(300)
         .do_px()
         .published_message_ids_cache_time(Duration::from_secs(5))
         .validation_mode(ValidationMode::Strict)
         .message_id_fn(message_id_fn)
-        .flood_publish(false)
+        .flood_publish(true)
         .max_transmit_size(MAX_TRANSMIT_SIZE)
         .build()
         .expect("Valid config");
@@ -78,7 +78,7 @@ pub async fn configure_swarm(
     let ping_config = PingConfig::new();
     ping_config
         .with_interval(Duration::from_secs(20))
-        .with_max_failures(NonZeroU32::new(1).unwrap())
+        .with_max_failures(NonZeroU32::new(3).unwrap())
         .with_timeout(Duration::from_secs(20));
 
     let ping = Ping::new(PingConfig::new());

@@ -1,7 +1,8 @@
-use crate::validator::ValidatorOptions;
+use crate::state::NetworkState;
 use crate::verifiable::Verifiable;
 use crate::wallet::WalletAccount;
-use secp256k1::{PublicKey, Signature};
+use secp256k1::{PublicKey, Signature, Message, Secp256k1};
+use bytebuffer::ByteBuffer;
 use serde::{Deserialize, Serialize};
 use sha256::digest_bytes;
 use std::fmt;
@@ -10,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 use std::collections::HashMap;
+use crate::account::AccountState;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Txn {
@@ -86,49 +88,86 @@ impl Txn {
 }
 
 impl Verifiable for Txn {
-    fn is_valid(&self, options: Option<ValidatorOptions>) -> Option<bool> {
+
+    fn verifiable(&self) -> bool {
+        true
+    }
+
+    fn valid_txn(&self, network_state: &NetworkState, account_state: &AccountState) -> bool {
+        if !self.valid_txn_signature() {
+            return false
+        }
+
+        if !self.valid_amount(network_state, account_state) {
+            return false 
+        }
+
+        if !self.check_double_spend(account_state) {
+            return false
+        }
+
+        true
+    }
+
+    fn valid_txn_signature(&self) -> bool {
         let message = self.txn_payload.clone();
-        let signature = Signature::from_str(&self.txn_signature).unwrap();
-        let pk = PublicKey::from_str(&self.sender_public_key).unwrap();
+        let message_bytes = message.as_bytes().to_owned();
 
-        if let Ok(false) | Err(_) = WalletAccount::verify(message, signature, pk) {
-            println!("Invalid signature");
-            return Some(false);
+        let mut buffer = ByteBuffer::new();
+        buffer.write_bytes(&message_bytes);
+        while buffer.len() < 32 {
+            buffer.write_u8(0);
         }
+        let new_message = buffer.to_bytes();
+        let message_hash = blake3::hash(&new_message);
+        let message_hash = Message::from_slice(message_hash.as_bytes()).unwrap();
+        let secp = Secp256k1::new();
+        let valid = secp.verify(
+            &message_hash, 
+            &Signature::from_str(&self.txn_signature).unwrap(), 
+            &PublicKey::from_str(&self.sender_public_key).unwrap()
+        );
 
+        match valid {
+            Ok(()) => return true,
+            _ => return false,
+        }
+    }
+
+    fn valid_amount(&self, network_state: &NetworkState, account_state: &AccountState) -> bool {
+
+        let (_, pending_debits) = if let Some((credit_amount, debit_amount)) = account_state.pending_balance(self.sender_address.clone()) {
+            (credit_amount, debit_amount)
+        } else {
+            (0,0)
+        };
+
+        let mut address_balance = network_state.get_balance(&self.sender_address);
+
+        address_balance = if let Some(amount) = address_balance.checked_sub(pending_debits) {
+            amount
+        } else {
+            println!("Invalid balance, not enough coins!");
+            return false
+        };
+
+        if address_balance < self.txn_amount {
+            println!("Invalid balance, not enough coins");
+            return false
+        }
         
-        if let Some(ValidatorOptions::Transaction(account_state, network_state)) = options {
-            let (_, pending_debits) = if let Some((credit_amount, debit_amount)) =
-                account_state.pending_balance(self.sender_address.clone())
-            {
-                (credit_amount, debit_amount)
-            } else {
-                (0, 0)
-            };
+        true
+    }
 
-            let mut address_balance = network_state.get_balance(&self.sender_address);
-
-            address_balance = if let Some(amount) = address_balance.checked_sub(pending_debits) {
-                amount
-            } else {
-                println!("Invalid balance, not enough coins!");
-                return Some(false);
-            };
-            
-            if address_balance < self.txn_amount {
-                println!("Invalid balance, not enough coins!");
-                return Some(false);
+    fn check_double_spend(&self, account_state: &AccountState) -> bool {
+        if let Some(txn) = account_state.txn_pool.pending.get(&self.txn_id) {
+            if txn.txn_id == self.txn_id && (txn.txn_amount != self.txn_amount || txn.receiver_address != self.receiver_address) {
+                println!("Attempted double spend");
+                return false
             }
+        };
 
-            if let Some(txn) = account_state.txn_pool.pending.get(&self.txn_id) {
-                if txn.txn_id == self.txn_id && (txn.txn_amount != self.txn_amount || txn.receiver_address != self.receiver_address) {
-                    println!("Attempted double spend");
-                    return Some(false);
-                }
-            };
-        }
-
-        Some(true)
+        true
     }
 }
 

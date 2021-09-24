@@ -1,13 +1,10 @@
 use crate::block::Block;
-use crate::network::message;
-use crate::network::message_types::MessageType;
 use crate::network::message_types::StateBlock;
-use crate::network::message_utils;
 use crate::network::node::Node;
 // use log::{info};
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex};
 use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 
 pub const NEWTXN: &str = "NEW_TXN";
 pub const SENDTXN: &str = "SENDTXN";
@@ -20,14 +17,19 @@ pub const SELLCLAIM: &str = "SELLCLM";
 pub const SENDADDRESS: &str = "SENDADR";
 pub const TXNTOPIC: &str = "txn";
 pub const QUIT: &str = "QUIT";
+pub const TEST: &str = "TEST";
 
 #[allow(dead_code)]
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub enum Command {
     SendTxn(u32, String, u128), // address number, receiver address, amount
     MineBlock,
+    MineGenesis,
     StopMine,
     GetState,
+    ConfirmedBlock(Block),
+    PendingBlock(Block),
+    InvalidBlock(Block),
     CheckStateUpdateStatus((u128, Block, u128)),
     StateUpdateCompleted,
     StoreStateDbChunk(StateBlock, Vec<u8>, u32, u32, u128),
@@ -39,7 +41,10 @@ pub enum Command {
     SellClaim(u128, u128),          // Claim Number, Price.
     RemovePeer(String),
     NewPeer(String, String),
+    SendMessage(Vec<u8>),
+    ForwardCommand(String),
     Quit,
+    Test,
 }
 
 impl Command {
@@ -94,6 +99,7 @@ impl Command {
                 STOPMINE => return Some(Command::StopMine),
                 SENDADDRESS => return Some(Command::SendAddress),
                 QUIT => return Some(Command::Quit),
+                TEST => return Some(Command::Test),
                 _ => {
                     println!("Invalid command string");
                     None
@@ -103,152 +109,46 @@ impl Command {
     }
 }
 
-pub fn handle_command(node: Arc<Mutex<Node>>, command: Command) {
-    let command_node = Arc::clone(&node);
+pub fn handle_command(_node: Node, command: Command) {
     match command {
-        Command::SendTxn(sender_address_number, receiver_address, amount) => {
-            let wallet = command_node.lock().unwrap().wallet.lock().unwrap().clone();
-            if let Ok(txn) = wallet.send_txn(sender_address_number, receiver_address, amount) {
-                let txn_message = MessageType::TxnMessage {
-                    txn: txn.clone(),
-                    sender_id: command_node.lock().unwrap().id.clone().to_string(),
-                };
-                command_node
-                    .lock()
-                    .unwrap()
-                    .account_state
-                    .lock()
-                    .unwrap()
-                    .txn_pool
-                    .pending
-                    .insert(txn.txn_id.clone(), txn.clone());
-                let message = message::structure_message(txn_message.as_bytes());
-                message::publish_message(Arc::clone(&command_node), message, TXNTOPIC);
-            };
-        }
-        Command::MineBlock => {
-            if let Err(e) = node.lock().unwrap().mining_sender.send(Command::MineBlock) {
-                println!("Error sending command to block mining: {:?}", e);
-            };
-        }
-        Command::SendAddress => {
-            let thread_node = Arc::clone(&command_node);
-            std::thread::spawn(move || {
-                let cloned_node = Arc::clone(&thread_node);
-                message_utils::share_addresses(Arc::clone(&cloned_node))
-            })
-            .join()
-            .unwrap();
-        }
-        Command::StopMine => {
-            if let Err(e) = node.lock().unwrap().mining_sender.send(Command::StopMine) {
-                println!("Error sending command to block mining: {:?}", e);
-            };
-        }
-        Command::GetState => {
-            if let Err(e) = node.lock().unwrap().state_sender.send(Command::GetState) {
-                println!("Error sending command to state updator: {:?}", e);
-            }
-        }
-        Command::StateUpdateCompleted => {
-            if let Err(e) = node
-                .lock()
-                .unwrap()
-                .state_sender
-                .send(Command::StateUpdateCompleted)
-            {
-                println!("Error sending command to state updator: {:?}", e);
-            }
-        }
-        Command::StoreStateDbChunk(object, chunk, chunk_number, total_chunks, last_block) => {
-            if let Err(e) = node
-                .lock()
-                .unwrap()
-                .state_sender
-                .send(Command::StoreStateDbChunk(
-                    object,
-                    chunk,
-                    chunk_number,
-                    total_chunks,
-                    last_block,
-                ))
-            {
-                println!("Error sending command to state updator: {:?}", e);
-            }
-        }
-        Command::ProcessBacklog => {
-            if let Err(e) = node
-                .lock()
-                .unwrap()
-                .state_sender
-                .send(Command::ProcessBacklog)
-            {
-                println!("Error sending command to state updator: {:?}", e);
-            };
-        }
-        Command::CheckStateUpdateStatus((block_height, block, last_block)) => {
-            if let Err(e) = node
-                .lock()
-                .unwrap()
-                .state_sender
-                .send(Command::CheckStateUpdateStatus((
-                    block_height,
-                    block,
-                    last_block,
-                )))
-            {
-                println!("Error sending command to state updator: {:?}", e);
-            };
-        }
-        Command::NewPeer(peer_id, pubkey) => {
-            command_node
-                .lock()
-                .unwrap()
-                .account_state
-                .lock()
-                .unwrap()
-                .add_miner_to_peer_tracker(peer_id, pubkey);
-        }
-        Command::RemovePeer(peer_id) => {
-            command_node
-                .lock()
-                .unwrap()
-                .account_state
-                .lock()
-                .unwrap()
-                .remove_miner_from_claim_counter(peer_id.clone());
-            println!(
-                "Removing {} from claim counter, they have gone offline",
-                peer_id
-            );
-        }
-        Command::PruneMiners(connected_peers) => {
-            let local_pubkey = command_node.lock().unwrap().get_wallet_pubkey();
-            command_node.lock().unwrap().account_state.lock().unwrap().prune_miners(connected_peers, &local_pubkey);
-        }
+        Command::SendTxn(_sender_address_number, _receiver_address, _amount) => {}
+        Command::MineBlock => {}
+        Command::SendAddress => {}
+        Command::StopMine => {}
+        Command::GetState => {}
+        Command::StateUpdateCompleted => {}
+        Command::StoreStateDbChunk(_object, _chunk, _chunk_number, _total_chunks, _last_block) => {}
+        Command::ProcessBacklog => {}
+        Command::CheckStateUpdateStatus((_block_height, _block, _last_block)) => {}
+        Command::NewPeer(_peer_id, _pubkey) => {}
+        Command::RemovePeer(_peer_id) => {}
+        Command::PruneMiners(_connected_peers) => {}
         Command::Quit => {}
+        Command::SendMessage(_message) => {}
         Command::AcquireClaim(_max_price, _max_maturity, _max_number) => {}
         Command::SellClaim(_claim_number, _price) => {}
         Command::SendState(_peer_id) => {}
+        Command::ForwardCommand(_command_string) => {}
+        Command::Test => {}
+        Command::ConfirmedBlock(_block) => {}
+        Command::PendingBlock(_block) => {}
+        Command::InvalidBlock(_block) => {}
+        Command::MineGenesis => {}
     }
 }
 
 pub fn handle_input_line(node: Arc<Mutex<Node>>, line: String) {
     let _args: Vec<&str> = line.split(' ').collect();
     let _task_node = Arc::clone(&node);
-    if let Some(command) = Command::from_str(&line) {
-        if let Err(e) = node
-            .lock()
-            .unwrap()
-            .swarm
-            .behaviour()
-            .command_sender
-            .send(command)
-        {
-            println!(
-                "Encountered Error sending message to command thread: {:?}",
-                e
-            );
-        };
-    }
+    if let Err(e) = node
+        .lock()
+        .unwrap()
+        .swarm_sender
+        .send(Command::ForwardCommand(line))
+    {
+        println!(
+            "Encountered Error sending message to command thread: {:?}",
+            e
+        );
+    };
 }

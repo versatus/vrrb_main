@@ -15,18 +15,17 @@ use libp2p::swarm::Swarm;
 use libp2p::{identity::Keypair, PeerId};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::sync::mpsc::Sender;
 use std::time::Duration;
+use tokio::sync::broadcast;
 
 pub const MAX_TRANSMIT_SIZE: usize = 2000000;
 
 pub async fn configure_swarm(
-    message_sender: Sender<GossipsubMessage>,
-    command_sender: Sender<Command>,
+    message_sender: broadcast::Sender<GossipsubMessage>,
+    command_sender: broadcast::Sender<Command>,
     local_peer_id: PeerId,
-    local_key: Keypair
+    local_key: Keypair,
 ) -> Swarm<VrrbNetworkBehavior> {
-
     let message_id_fn = |message: &GossipsubMessage| {
         let mut s = DefaultHasher::new();
         message.data.hash(&mut s);

@@ -21,9 +21,8 @@ use libp2p::{
 };
 use log::info;
 use std::io::Error;
-use std::sync::mpsc::Sender;
 use std::time::Duration;
-use std::collections::HashSet;
+use tokio::sync::broadcast;
 
 #[derive(NetworkBehaviour)]
 pub struct VrrbNetworkBehavior {
@@ -32,9 +31,9 @@ pub struct VrrbNetworkBehavior {
     pub kademlia: Kademlia<MemoryStore>,
     pub ping: Ping,
     #[behaviour(ignore)]
-    pub command_sender: Sender<Command>,
+    pub command_sender: broadcast::Sender<Command>,
     #[behaviour(ignore)]
-    pub message_sender: Sender<GossipsubMessage>,
+    pub message_sender: broadcast::Sender<GossipsubMessage>,
 }
 
 impl NetworkBehaviourEventProcess<IdentifyEvent> for VrrbNetworkBehavior {
@@ -79,14 +78,7 @@ impl NetworkBehaviourEventProcess<PingEvent> for VrrbNetworkBehavior {
         match event {
             PingEvent { result, peer } => {
                 match result {
-                    Ok(_) => {
-                        let connected_peers = self.gossipsub.all_peers().map(|(id, _)| {
-                            return id.to_string()
-                        }).collect::<HashSet<String>>();
-                        if let Err(_) = self.command_sender.send(Command::PruneMiners(connected_peers)) {
-                            println!("Error sending prune miners command to command receiver");
-                        }
-                    }
+                    Ok(_) => {}
                     Err(failure) => {
                         match failure {
                             PingFailure::Timeout => {

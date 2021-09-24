@@ -16,51 +16,40 @@ pub enum InvalidMessageError {
 
 #[derive(Serialize, Deserialize)]
 pub enum ValidatorOptions {
-    ClaimAcquire(NetworkState, AccountState, String, String),
-    NewBlock(
-        Block,
-        RewardState,
-        NetworkState,
-    ),
+    NewBlock(Block, RewardState, NetworkState),
     Transaction(AccountState, NetworkState),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Message {
-    ClaimAcquired(String, String, String, String, String), // Claim as string, NetworkState as string, Account State as String, Seller Pubkey, Buyer pubkey
-    NewBlock(
-        Block,
-        Block,
-        RewardState,
-        NetworkState,
-    ),
+    NewBlock(Block, Block, RewardState, NetworkState),
     Txn(String, String, String),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Validator {
     pub node_wallet: String,
-    pub staked_claims: HashMap<u128, Claim>,
+    pub staked_claims: HashMap<String, Claim>,
     pub message: Message,
     pub valid: bool,
 }
 
 impl Validator {
     pub fn new(message: Message, pubkey: String, account_state: AccountState) -> Option<Validator> {
-        let mut check_staked_claims: HashMap<u128, Claim> = HashMap::new();
+        let mut check_staked_claims: HashMap<String, Claim> = HashMap::new();
         account_state
             .claim_pool
             .confirmed
             .iter()
-            .filter(|(_claim_number, claim)| claim.current_owner.clone().unwrap() == pubkey)
-            .for_each(|(claim_number, claim)| {
-                match account_state.claim_pool.confirmed.get(claim_number) {
+            .filter(|(pk, _)| pk.to_string() == pubkey)
+            .for_each(
+                |(pk, claim)| match account_state.claim_pool.confirmed.get(pk) {
                     Some(_) => {
-                        check_staked_claims.insert(*claim_number, claim.clone());
+                        check_staked_claims.insert(pk.clone(), claim.clone());
                     }
                     None => {}
-                }
-            });
+                },
+            );
         // If there's no staked claims for the node wallet attempting to launch a validator
         // a validator cannot be launched. Claims must be staked to validate messages
         Some(check_staked_claims).map(|map| Validator {

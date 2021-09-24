@@ -117,7 +117,7 @@ impl WalletAccount {
 
     pub fn get_wallet_addresses(&self) -> LinkedHashMap<u32, String> {
         self.addresses.clone()
-    } 
+    }
 
     pub fn render_balances(&self) -> LinkedHashMap<String, LinkedHashMap<String, u128>> {
         self.total_balances.clone()
@@ -147,20 +147,24 @@ impl WalletAccount {
         balance_map
     }
 
-    pub fn get_address_balance(&mut self, network_state: NetworkState, address_number: u32) -> Option<u128> {
+    pub fn get_address_balance(
+        &mut self,
+        network_state: NetworkState,
+        address_number: u32,
+    ) -> Option<u128> {
         self.update_balances(network_state);
         if let Some(address) = self.addresses.get(&address_number) {
             if let Some(entry) = self.total_balances.get(&address.clone()) {
                 if let Some(amount) = entry.get("VRRB") {
-                    return Some(*amount)
+                    return Some(*amount);
                 } else {
-                    return None
+                    return None;
                 }
             } else {
-                return None
+                return None;
             }
         } else {
-            return None
+            return None;
         }
     }
 
@@ -214,16 +218,11 @@ impl WalletAccount {
         }
     }
 
-    pub fn remove_mined_claims(&mut self, block: &Block) {
-        self.claims.remove(&block.claim.claim_number);
-    }
-
-    pub fn txns_in_block(&mut self, block: &Block, network_state: NetworkState) {
-        
-        let my_txns = {
+    pub fn txns_in_block(&mut self, block: &Block) {
+        let _my_txns = {
             let mut some_txn = false;
             self.addresses.iter().for_each(|(_, address)| {
-                let mut cloned_data = block.data.clone();
+                let mut cloned_data = block.txns.clone();
                 cloned_data.retain(|_, txn| {
                     txn.receiver_address == address.clone() || txn.sender_address == address.clone()
                 });
@@ -232,14 +231,7 @@ impl WalletAccount {
                 }
             });
             some_txn
-            };
-        if let None = block.claim.current_owner {
-            self.update_balances(network_state);
-            println!("Balances: {:?}", self.render_balances());
-        } else if block.claim.current_owner.clone().unwrap() == self.pubkey || my_txns {
-            self.update_balances(network_state);
-            println!("Balances: {:?}", self.render_balances());
-        }
+        };
     }
 
     pub fn send_txn(
@@ -257,16 +249,14 @@ impl WalletAccount {
         Ok(txn)
     }
 
-    pub fn sell_claim(&mut self, claim_number: u128, price: u128) -> Option<Claim> {
-        let claim_to_sell = self.claims.get_mut(&claim_number);
-
-        match claim_to_sell {
-            Some(mut claim) => {
-                claim.available = true;
-                claim.price = price as u32; // FIX CLAIM PRICE to be u128
-                Some(claim.to_owned())
+    pub fn get_address(&mut self, address_number: u32) -> String {
+        if let Some(address) = self.addresses.get(&address_number) {
+            return address.to_string()
+        } else {
+            while self.addresses.len() < address_number as usize {
+                self.generate_new_address()
             }
-            None => None,
+            self.get_address(address_number)
         }
     }
 

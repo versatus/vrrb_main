@@ -1,8 +1,10 @@
 pub mod account;
-pub mod allocator;
-pub mod arbiter;
 pub mod block;
+pub mod blockchain;
 pub mod claim;
+pub mod handler;
+pub mod header;
+pub mod miner;
 pub mod mpu;
 pub mod network;
 pub mod pool;
@@ -12,9 +14,7 @@ pub mod txn;
 pub mod utils;
 pub mod validator;
 pub mod verifiable;
-pub mod vpu;
 pub mod wallet;
-pub mod tries;
 
 // #[cfg(test)]
 // mod tests {

@@ -43,8 +43,8 @@ pub enum MessageType {
         total_chunks: u128,
         data: Vec<u8>,
     },
-    NeedBlockMessage {
-        last_block: u128,
+    NeedBlocksMessage {
+        blocks_needed: Vec<u128>,
         sender_id: String,
     },
     MissingBlock {
@@ -111,6 +111,17 @@ pub enum MessageType {
         miner_id: String,
         sender_id: String,
     },
+    DisconnectMessage {
+        sender_id: String,
+        pubkey: String,
+    },
+    StateHashVoteMessage {
+        state_hash: String,
+        sender_id: String,
+    },
+    Test {
+        test_string: String,
+    }
 }
 
 impl MessageType {
@@ -118,7 +129,11 @@ impl MessageType {
         serde_json::to_string(&self).unwrap().as_bytes().to_vec()
     }
 
-    pub fn from_bytes(data: &[u8]) -> MessageType {
-        serde_json::from_slice::<MessageType>(data).unwrap()
+    pub fn from_bytes(data: &[u8]) -> Option<MessageType> {
+        if let Ok(message) = serde_json::from_slice::<MessageType>(data) {
+            Some(message)
+        } else {
+            None
+        }
     }
 }

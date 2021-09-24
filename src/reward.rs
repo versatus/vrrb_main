@@ -4,7 +4,6 @@ use rand::{
     thread_rng, Rng,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex};
 use strum_macros::EnumIter;
 
 // UNITS
@@ -179,11 +178,121 @@ impl RewardState {
     pub fn to_string(&self) -> String {
         serde_json::to_string(self).unwrap()
     }
+
+    pub fn valid_reward(&self, category: Category) -> Option<bool> {
+        match category {
+            Category::Flake(amount) => match amount {
+                Some(amt) => {
+                    if amt < FLAKE_REWARD_RANGE.0 || amt > FLAKE_REWARD_RANGE.1 {
+                        return Some(false);
+                    }
+                    if self.n_flakes_current_epoch == 0 {
+                        return Some(false);
+                    }
+                }
+                None => return Some(false),
+            },
+            Category::Grain(amount) => match amount {
+                Some(amt) => {
+                    if amt < GRAIN_REWARD_RANGE.0 || amt > GRAIN_REWARD_RANGE.1 {
+                        return Some(false);
+                    }
+
+                    if self.n_grains_current_epoch == 0 {
+                        return Some(false);
+                    }
+                }
+                None => return Some(false),
+            },
+            Category::Nugget(amount) => match amount {
+                Some(amt) => {
+                    if amt < NUGGET_REWARD_RANGE.0 || amt > NUGGET_REWARD_RANGE.1 {
+                        return Some(false);
+                    }
+
+                    if self.n_nuggets_current_epoch == 0 {
+                        return Some(false);
+                    }
+
+                    if self.n_nuggets_remaining == 0 {
+                        return Some(false);
+                    }
+
+                    if self.epoch > NUGGET_FINAL_EPOCH {
+                        return Some(false);
+                    }
+
+                    if self.epoch == NUGGET_FINAL_EPOCH && self.n_nuggets_remaining > 1
+                    {
+                        return Some(false);
+                    }
+                }
+                None => return Some(false),
+            },
+            Category::Vein(amount) => match amount {
+                Some(amt) => {
+                    if amt < VEIN_REWARD_RANGE.0 || amt > VEIN_REWARD_RANGE.1 {
+                        return Some(false);
+                    }
+                    if self.n_veins_current_epoch == 0 {
+                        return Some(false);
+                    }
+
+                    if self.n_veins_remaining == 0 {
+                        return Some(false);
+                    }
+
+                    if self.epoch > VEIN_FINAL_EPOCH {
+                        return Some(false);
+                    }
+
+                    if self.epoch == VEIN_FINAL_EPOCH && self.n_veins_remaining > 1 {
+                        return Some(false);
+                    }
+                }
+                None => return Some(false),
+            },
+            Category::Motherlode(amount) => match amount {
+                Some(amt) => {
+                    if amt < MOTHERLODE_REWARD_RANGE.0 || amt > MOTHERLODE_REWARD_RANGE.1 {
+                        return Some(false);
+                    }
+                    if self.n_motherlodes_current_epoch == 0 {
+                        return Some(false);
+                    }
+
+                    if self.n_motherlodes_remaining == 0 {
+                        return Some(false);
+                    }
+
+                    if self.epoch > MOTHERLODE_FINAL_EPOCH {
+                        return Some(false);
+                    }
+
+                    if self.epoch == MOTHERLODE_FINAL_EPOCH
+                        && self.n_motherlodes_remaining > 1
+                    {
+                        return Some(false);
+                    }
+                }
+                None => return Some(false),
+            },
+            Category::Genesis(amount) => match amount {
+                Some(amt) => {
+                    if amt != GENESIS_REWARD {
+                        return Some(false);
+                    }
+                }
+                None => return Some(false),
+            },
+        }
+        Some(true)
+    }
 }
 
 impl Reward {
-    pub fn new(miner: Option<String>, reward_state: Arc<Mutex<RewardState>>) -> Reward {
-        let category: Category = Category::new(Arc::clone(&reward_state));
+    pub fn new(miner: Option<String>, reward_state: &RewardState) -> Reward {
+        let category: Category = Category::new(&reward_state);
         Reward {
             miner,
             category,
@@ -226,39 +335,29 @@ impl Reward {
 }
 
 impl Category {
-    pub fn new(reward_state: Arc<Mutex<RewardState>>) -> Category {
+    pub fn new(reward_state: &RewardState) -> Category {
         Category::generate_category(reward_state).amount()
     }
 
-    pub fn generate_category(reward_state: Arc<Mutex<RewardState>>) -> Category {
+    pub fn generate_category(reward_state: &RewardState) -> Category {
         let n_flakes_current_epoch = reward_state
             .clone()
-            .lock()
-            .unwrap()
             .n_flakes_current_epoch
             .clone();
         let n_grains_current_epoch = reward_state
             .clone()
-            .lock()
-            .unwrap()
             .n_grains_current_epoch
             .clone();
         let n_nuggets_current_epoch = reward_state
             .clone()
-            .lock()
-            .unwrap()
             .n_grains_current_epoch
             .clone();
         let n_veins_current_epoch = reward_state
             .clone()
-            .lock()
-            .unwrap()
             .n_veins_current_epoch
             .clone();
         let n_motherlodes_current_epoch = reward_state
             .clone()
-            .lock()
-            .unwrap()
             .n_motherlodes_current_epoch
             .clone();
 
@@ -318,115 +417,7 @@ impl Category {
     }
 }
 
-pub fn valid_reward(category: Category, reward_state: RewardState) -> Option<bool> {
-    match category {
-        Category::Flake(amount) => match amount {
-            Some(amt) => {
-                if amt < FLAKE_REWARD_RANGE.0 || amt > FLAKE_REWARD_RANGE.1 {
-                    return Some(false);
-                }
-                if reward_state.n_flakes_current_epoch == 0 {
-                    return Some(false);
-                }
-            }
-            None => return Some(false),
-        },
-        Category::Grain(amount) => match amount {
-            Some(amt) => {
-                if amt < GRAIN_REWARD_RANGE.0 || amt > GRAIN_REWARD_RANGE.1 {
-                    return Some(false);
-                }
 
-                if reward_state.n_grains_current_epoch == 0 {
-                    return Some(false);
-                }
-            }
-            None => return Some(false),
-        },
-        Category::Nugget(amount) => match amount {
-            Some(amt) => {
-                if amt < NUGGET_REWARD_RANGE.0 || amt > NUGGET_REWARD_RANGE.1 {
-                    return Some(false);
-                }
-
-                if reward_state.n_nuggets_current_epoch == 0 {
-                    return Some(false);
-                }
-
-                if reward_state.n_nuggets_remaining == 0 {
-                    return Some(false);
-                }
-
-                if reward_state.epoch > NUGGET_FINAL_EPOCH {
-                    return Some(false);
-                }
-
-                if reward_state.epoch == NUGGET_FINAL_EPOCH && reward_state.n_nuggets_remaining > 1
-                {
-                    return Some(false);
-                }
-            }
-            None => return Some(false),
-        },
-        Category::Vein(amount) => match amount {
-            Some(amt) => {
-                if amt < VEIN_REWARD_RANGE.0 || amt > VEIN_REWARD_RANGE.1 {
-                    return Some(false);
-                }
-                if reward_state.n_veins_current_epoch == 0 {
-                    return Some(false);
-                }
-
-                if reward_state.n_veins_remaining == 0 {
-                    return Some(false);
-                }
-
-                if reward_state.epoch > VEIN_FINAL_EPOCH {
-                    return Some(false);
-                }
-
-                if reward_state.epoch == VEIN_FINAL_EPOCH && reward_state.n_veins_remaining > 1 {
-                    return Some(false);
-                }
-            }
-            None => return Some(false),
-        },
-        Category::Motherlode(amount) => match amount {
-            Some(amt) => {
-                if amt < MOTHERLODE_REWARD_RANGE.0 || amt > MOTHERLODE_REWARD_RANGE.1 {
-                    return Some(false);
-                }
-                if reward_state.n_motherlodes_current_epoch == 0 {
-                    return Some(false);
-                }
-
-                if reward_state.n_motherlodes_remaining == 0 {
-                    return Some(false);
-                }
-
-                if reward_state.epoch > MOTHERLODE_FINAL_EPOCH {
-                    return Some(false);
-                }
-
-                if reward_state.epoch == MOTHERLODE_FINAL_EPOCH
-                    && reward_state.n_motherlodes_remaining > 1
-                {
-                    return Some(false);
-                }
-            }
-            None => return Some(false),
-        },
-        Category::Genesis(amount) => match amount {
-            Some(amt) => {
-                if amt != GENESIS_REWARD {
-                    return Some(false);
-                }
-            }
-            None => return Some(false),
-        },
-    }
-    Some(true)
-}
 
 #[cfg(test)]
 mod tests {

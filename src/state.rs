@@ -83,7 +83,7 @@ impl BlockArchive {
         match self.clone() {
             Self::Archive(path) | Self::Full(path) => {
                 let mut db = restore_db(&path);
-                if let Err(_) = db.set(&block.clone().block_height.to_string(), &block.clone()) {
+                if let Err(_) = db.set(&block.clone().height.to_string(), &block.clone()) {
                     println!("Error setting block to block archive db");
                 };
                 if let Err(_) = db.dump() {
@@ -91,8 +91,8 @@ impl BlockArchive {
                 };
             }
             Self::Light((mut hash_option, mut height_option)) => {
-                hash_option = Some(block.clone().block_hash);
-                height_option = Some(block.clone().block_height);
+                hash_option = Some(block.clone().hash);
+                height_option = Some(block.clone().height);
 
                 Self::Light((hash_option, height_option));
             }
@@ -122,7 +122,7 @@ impl BlockArchive {
         match self.clone() {
             Self::Archive(path) | Self::Full(path) => {
                 let mut db = restore_db(&path);
-                if let Err(_) = db.rem(&block.clone().block_height.to_string()) {
+                if let Err(_) = db.rem(&block.clone().height.to_string()) {
                     println!("Error setting block to block archive db");
                 };
                 if let Err(_) = db.dump() {
@@ -130,8 +130,8 @@ impl BlockArchive {
                 };
             }
             Self::Light((mut hash_option, mut height_option)) => {
-                hash_option = Some(block.clone().block_hash);
-                height_option = Some(block.clone().block_height);
+                hash_option = Some(block.clone().hash);
+                height_option = Some(block.clone().height);
 
                 Self::Light((hash_option, height_option));
             }
@@ -262,7 +262,6 @@ impl NetworkState {
         }
         self.revert_db_credits(block);
         self.revert_db_debits(block);
-        self.revert_db_claims(block);
         self.revert_db_reward_state();
         self.revert_db_last_block();
         self.revert_db_last_state();
@@ -286,7 +285,7 @@ impl NetworkState {
     pub fn credit_hash(self, block: &Block) -> String {
         let mut credits = LinkedHashMap::new();
 
-        block.data.iter().for_each(|(_txn_id, txn)| {
+        block.txns.iter().for_each(|(_txn_id, txn)| {
             if let Some(entry) = credits.get_mut(&txn.receiver_address) {
                 *entry += txn.clone().txn_amount
             } else {
@@ -294,12 +293,12 @@ impl NetworkState {
             }
         });
 
-        if let Some(entry) = credits.get_mut(&block.block_reward.miner.clone().unwrap()) {
-            *entry += block.block_reward.amount
+        if let Some(entry) = credits.get_mut(&block.header.block_reward.miner.clone().unwrap()) {
+            *entry += block.header.block_reward.amount
         } else {
             credits.insert(
-                block.block_reward.miner.clone().unwrap(),
-                block.block_reward.amount,
+                block.header.block_reward.miner.clone().unwrap(),
+                block.header.block_reward.amount,
             );
         }
 
@@ -313,7 +312,7 @@ impl NetworkState {
     pub fn debit_hash(self, block: &Block) -> String {
         let mut debits = LinkedHashMap::new();
 
-        block.data.iter().for_each(|(_txn_id, txn)| {
+        block.txns.iter().for_each(|(_txn_id, txn)| {
             if let Some(entry) = debits.get_mut(&txn.sender_address) {
                 *entry += txn.clone().txn_amount
             } else {
@@ -328,27 +327,15 @@ impl NetworkState {
         }
     }
 
-    pub fn claim_hash(self, block: &Block) -> String {
-        let mut claims = LinkedHashMap::new();
-        claims.extend(block.owned_claims.clone());
-
-        if let Some(chs) = self.claims {
-            return digest_bytes(format!("{},{:?}", chs, claims).as_bytes());
-        } else {
-            return digest_bytes(format!("{:?},{:?}", self.claims, claims).as_bytes());
-        }
-    }
-
-    pub fn hash(&mut self, block: Block, uts: &[u8; 16]) -> String {
+    pub fn hash(&mut self, block: Block) -> String {
         let reward_state = self.clone().get_reward_state();
         let credit_hash = self.clone().credit_hash(&block);
         let debit_hash = self.clone().debit_hash(&block);
-        let claim_hash = self.clone().claim_hash(&block);
         let reward_state_hash =
             digest_bytes(format!("{:?},{:?}", self.reward_state, reward_state).as_bytes());
         let payload = format!(
-            "{:?},{:?},{:?},{:?},{:?},{:?}",
-            self.state_hash, credit_hash, debit_hash, claim_hash, reward_state_hash, uts
+            "{:?},{:?},{:?},{:?}",
+            self.state_hash, credit_hash, debit_hash, reward_state_hash
         );
         let new_state_hash = digest_bytes(payload.as_bytes());
         new_state_hash
@@ -452,15 +439,14 @@ impl NetworkState {
         let (
             mut credits,
             mut debits,
-            mut claims,
+            _claims,
             mut block_archive,
             mut reward_state,
             _last_block,
             _last_state,
         ) = NetworkState::restore_state_objects(&db);
-        
 
-        block.data.iter().for_each(|(_txn_id, txn)| {
+        block.txns.iter().for_each(|(_txn_id, txn)| {
             if let Some(entry) = credits.get_mut(&txn.receiver_address) {
                 *entry += txn.clone().txn_amount
             } else {
@@ -474,23 +460,20 @@ impl NetworkState {
             }
         });
 
-        if let Some(entry) = credits.get_mut(&block.block_reward.miner.clone().unwrap()) {
-            *entry += block.block_reward.amount.clone()
+        if let Some(entry) = credits.get_mut(&block.header.block_reward.miner.clone().unwrap()) {
+            *entry += block.header.block_reward.amount.clone()
         } else {
             credits.insert(
-                block.block_reward.miner.clone().unwrap().clone(),
-                block.block_reward.amount.clone(),
+                block.header.block_reward.miner.clone().unwrap().clone(),
+                block.header.block_reward.amount.clone(),
             );
         }
 
         info!(target: "credits", "{:?}", credits);
         info!(target: "debits", "{:?}", debits);
 
-        claims.extend(block.owned_claims.clone());
-        claims.remove(&block.claim.claim_number);
-
         block_archive.update(&block);
-        reward_state.update(block.block_reward.category.clone());
+        reward_state.update(block.header.block_reward.category.clone());
         let last_block = Some(block);
 
         if let Err(_) = db.set("credits", &credits) {
@@ -498,9 +481,6 @@ impl NetworkState {
         };
         if let Err(_) = db.set("debits", &debits) {
             println!("Error setting debits to state")
-        };
-        if let Err(_) = db.set("claims", &claims) {
-            println!("Error setting claims to state")
         };
         if let Err(_) = db.set("blockarchive", &block_archive) {
             println!("Error setting block archive to state")
@@ -536,13 +516,8 @@ impl NetworkState {
         self.debits = Some(dhs);
     }
 
-    pub fn update_claims(&mut self, block: &Block) {
-        let chs = self.clone().claim_hash(block);
-        self.claims = Some(chs);
-    }
-
     pub fn update_reward_state(&mut self, block: &Block) {
-        self.reward_state.update(block.block_reward.category);
+        self.reward_state.update(block.header.block_reward.category);
     }
 
     pub fn update_last_block(&mut self, block: &Block) {
@@ -554,7 +529,7 @@ impl NetworkState {
     }
 
     pub fn update_state_hash(&mut self, block: &Block) {
-        self.state_hash = Some(block.state_hash.clone());
+        self.state_hash = Some(block.hash.clone());
         info!(target: "updating_state_hash", "new_state_hash: {:?}", self.state_hash)
     }
 
@@ -642,21 +617,20 @@ impl NetworkState {
 
     pub fn get_account_claims(&self, pubkey: &str) -> LinkedHashMap<u128, Claim> {
         let mut claims = self.get_claims();
-        claims.retain(|_, claim| claim.current_owner.clone().unwrap() == pubkey.to_string());
-
+        claims.retain(|pk, _| pk.to_string() == pubkey.to_string());
         claims
     }
 
     pub fn revert_db_credits(&self, block: &Block) {
         let mut credits = self.get_credits();
-        block.data.iter().for_each(|(_, txn)| {
+        block.txns.iter().for_each(|(_, txn)| {
             if let Some(entry) = credits.get_mut(&txn.receiver_address) {
                 *entry -= txn.txn_amount;
             }
         });
 
-        if let Some(entry) = credits.get_mut(&block.block_reward.miner.clone().unwrap()) {
-            *entry -= block.block_reward.amount;
+        if let Some(entry) = credits.get_mut(&block.header.block_reward.miner.clone().unwrap()) {
+            *entry -= block.header.block_reward.amount;
         }
 
         let mut db = self.get_ledger_db();
@@ -670,7 +644,7 @@ impl NetworkState {
 
     pub fn revert_db_debits(&self, block: &Block) {
         let mut debits = self.get_debits();
-        block.data.iter().for_each(|(_, txn)| {
+        block.txns.iter().for_each(|(_, txn)| {
             if let Some(entry) = debits.get_mut(&txn.sender_address) {
                 *entry -= txn.txn_amount;
             }
@@ -685,18 +659,6 @@ impl NetworkState {
         };
     }
 
-    pub fn revert_db_claims(&self, block: &Block) {
-        let mut claims = self.get_claims();
-        claims.retain(|k, _| !block.owned_claims.contains_key(&k));
-
-        let mut db = self.get_ledger_db();
-        if let Err(_) = db.set("claims", &claims) {
-            println!("Error reverting claims");
-        };
-        if let Err(_) = db.dump() {
-            println!("Error dumping state");
-        };
-    }
     pub fn revert_db_reward_state(&self) {
         let mut db = self.get_ledger_db();
         let last_state = self.get_last_state();

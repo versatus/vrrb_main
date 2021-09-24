@@ -15,7 +15,7 @@ pub struct AccountState {
     pub claim_counter: LinkedHashMap<String, u128>, // K: pubkey, V: number of claims currently owned.
     pub peer_tracker: LinkedHashMap<String, String>, // K: peer_id, V: pubkey.
     pub txn_pool: Pool<String, Txn>,
-    pub claim_pool: Pool<u128, Claim>,
+    pub claim_pool: Pool<String, Claim>,
     pub last_block: Option<Block>,
 }
 
@@ -26,7 +26,7 @@ pub struct AccountState {
 /// transactions are set into the pending vector and the confirmed transactions
 /// are set in the mineable vector.
 impl AccountState {
-    pub fn start(txn_pool: Pool<String, Txn>, claim_pool: Pool<u128, Claim>) -> AccountState {
+    pub fn start(txn_pool: Pool<String, Txn>, claim_pool: Pool<String, Claim>) -> AccountState {
         AccountState {
             accounts_pk: LinkedHashMap::new(),
             claim_counter: LinkedHashMap::new(),

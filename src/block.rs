@@ -4,6 +4,7 @@ use crate::network::node::MAX_TRANSMIT_SIZE;
 use crate::state::NetworkState;
 use crate::verifiable::Verifiable;
 use crate::{claim::Claim, reward::RewardState, txn::Txn};
+use log::info;
 use ritelinked::LinkedHashMap;
 use serde::{Deserialize, Serialize};
 use sha256::digest_bytes;
@@ -35,10 +36,9 @@ pub struct Block {
 }
 
 impl Block {
-    // Returns a result with either a tuple containing the genesis block and the 
+    // Returns a result with either a tuple containing the genesis block and the
     // updated account state (if successful) or an error (if unsuccessful)
-    pub fn genesis(reward_state: &RewardState, claim: Claim) -> Option<Block> 
-    {
+    pub fn genesis(reward_state: &RewardState, claim: Claim) -> Option<Block> {
         // Get the current time in a unix timestamp duration.
         let header = BlockHeader::genesis(0, reward_state, claim);
         let state_hash = digest_bytes(
@@ -151,26 +151,32 @@ impl Verifiable for Block {
         reward_state: &RewardState,
     ) -> bool {
         if !self.valid_last_hash(last_block) {
+            info!(target: "invalid_block", "invalid last hash");
             return false;
         }
 
         if !self.valid_block_nonce(last_block) {
+            info!(target: "invalid_block", "invalid block nonce");
             return false;
         }
 
         if !self.valid_state_hash(network_state) {
+            info!(target: "invalid_block", "invalid state hash");
             return false;
         }
 
         if !self.valid_block_reward(reward_state) {
+            info!(target: "invalid_block", "invalid block reward");
             return false;
         }
 
         if !self.valid_next_block_reward(reward_state) {
+            info!(target: "invalid_block", "invalid next block reward");
             return false;
         }
 
         if !self.valid_txns() {
+            info!(target: "invalid_block", "invalid txns");
             return false;
         }
 
@@ -184,6 +190,7 @@ impl Verifiable for Block {
     fn valid_state_hash(&self, network_state: &NetworkState) -> bool {
         let mut hashable_state = network_state.clone();
         let hash = hashable_state.hash(self.clone());
+        info!(target: "state_hash", "{:?} == {:?}", hash, self.hash);
         self.hash == hash
     }
 

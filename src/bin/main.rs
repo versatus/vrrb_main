@@ -7,6 +7,7 @@ use rand::Rng;
 use simplelog::{Config, LevelFilter, WriteLogger};
 use std::fs::File;
 use tokio::io::AsyncBufReadExt;
+use tokio::sync::mpsc;
 use vrrb_lib::blockchain::Blockchain;
 use vrrb_lib::handler::{CommandHandler, MessageHandler};
 use vrrb_lib::miner::Miner;
@@ -40,9 +41,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ___________________________________________________________________________________________________
     // setup message and command sender/receiver channels for communication betwen various threads
-    let (to_message_sender, to_message_receiver) = tokio::sync::broadcast::channel(100);
-    let (from_message_sender, from_message_receiver) = tokio::sync::broadcast::channel(100);
-    let (command_sender, command_receiver) = tokio::sync::broadcast::channel(100);
+    let (to_blockchain_sender, mut to_blockchain_receiver) = mpsc::unbounded_channel();
+    let (to_miner_sender, mut to_miner_receiver) = mpsc::unbounded_channel();
+    let (to_message_sender, to_message_receiver) = mpsc::unbounded_channel();
+    let (from_message_sender, from_message_receiver) = mpsc::unbounded_channel();
+    let (command_sender, command_receiver) = mpsc::unbounded_channel();
+    let (to_swarm_sender, mut to_swarm_receiver) = mpsc::unbounded_channel();
+    let (to_wallet_sender, mut to_wallet_receiver) = mpsc::unbounded_channel();
     //____________________________________________________________________________________________________
 
     let wallet = if let Some(secret_key) = std::env::args().nth(4) {
@@ -51,35 +56,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         WalletAccount::new()
     };
 
-    let network_state = NetworkState::restore("test.db");
+    let mut rng = rand::thread_rng();
+    let file_suffix: u32 = rng.gen();
+    let path = if let Some(path) = std::env::args().nth(2) {
+        path
+    } else {
+        format!("test_{}.db", file_suffix)
+    };
+
+    let network_state = NetworkState::restore(&path);
     let reward_state = RewardState::start();
 
     //____________________________________________________________________________________________________
     // Node initialization
-    let to_message_handler = MessageHandler::new(to_message_sender.clone(), from_message_receiver);
+    let to_message_handler = MessageHandler::new(from_message_sender.clone(), to_message_receiver);
     let from_message_handler =
-        MessageHandler::new(from_message_sender.clone(), to_message_receiver);
-    let command_handler = CommandHandler::new(command_sender.clone(), command_receiver);
-    let (swarm_sender, mut swarm_receiver) = tokio::sync::broadcast::channel(100);
-    let mut node = Node::new(
-        node_type,
-        swarm_sender.clone(),
-        to_message_handler,
-        from_message_handler,
-        command_handler,
+        MessageHandler::new(to_message_sender.clone(), from_message_receiver);
+    let command_handler = CommandHandler::new(
+        to_miner_sender.clone(),
+        to_blockchain_sender.clone(),
+        to_swarm_sender.clone(),
+        to_wallet_sender.clone(),
+        command_receiver,
     );
+
+    let mut node = Node::new(node_type, command_handler, to_message_handler);
     let node_id = node.id.clone();
+    let node_key = node.key.clone();
     //____________________________________________________________________________________________________
 
     //____________________________________________________________________________________________________
     // Swarm initialization
     let mut swarm = config_utils::configure_swarm(
-        node.to_message_handler.sender.clone(),
-        node.command_handler.sender.clone(),
+        from_message_handler.sender.clone(),
+        command_sender.clone(),
         node_id.clone(),
-        node.key.clone(),
+        node_key.clone(),
     )
     .await;
+
     let port = rand::thread_rng().gen_range(9292, 19292);
     let addr: Multiaddr = multiaddr!(Ip4([0, 0, 0, 0]), Tcp(port as u16));
     println!("{:?}", &addr);
@@ -111,27 +126,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Swarm event thread
     tokio::task::spawn(async move {
         loop {
-            tokio::select! {
-                event = swarm.next() => {
-                    info!("Unhandled Swarm Event: {:?}", event);
-                }
-                message = swarm_receiver.recv() => {
-                    if let Ok(message) = message {
-                        match message {
-                            Command::SendMessage(message) => {
-                                let message = hex::encode(message);
-                                if let Err(e) = swarm
-                                                    .behaviour_mut()
-                                                    .gossipsub
-                                                    .publish(Topic::new("test-net"), message) {
-                                    println!("Error publishing message: {:?}", e);
-                                };
-                            },
-                            _ => {}
+
+            let evt = {
+                tokio::select! {
+                    event = swarm.next() => {
+                        info!("Unhandled Swarm Event: {:?}", event);
+                        None
+                    },
+                    command = to_swarm_receiver.recv() => {
+                        if let Some(command) = command {
+                            match command {
+                                Command::SendMessage(message) => {
+                                    Some(message)
+                                }
+                                _ => {None}
+                            } 
+                        } else {
+                            None
                         }
                     }
                 }
             };
+
+            if let Some(message) = evt {
+                let encoded = hex::encode(message);
+                if let Err(e) = swarm.behaviour_mut().gossipsub.publish(Topic::new("test-net"), encoded) {
+                    info!("Error sending to network: {:?}", e);
+                };
+            }
+
         }
     });
     //____________________________________________________________________________________________________
@@ -147,14 +170,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     //____________________________________________________________________________________________________
     // Blockchain thread
-    let mut blockchain_command_receiver = command_sender.subscribe();
-    let blockchain_command_sender = command_sender.clone();
     let mut blockchain_network_state = network_state.clone();
-    let mut blockchain_reward_state = reward_state.clone();
+    let blockchain_reward_state = reward_state.clone();
+    let blockchain_to_miner_sender = to_miner_sender.clone();
     tokio::task::spawn(async move {
         let mut blockchain = Blockchain::new("test_chain_db.db");
         loop {
-            if let Ok(command) = blockchain_command_receiver.try_recv() {
+            let miner_sender = blockchain_to_miner_sender.clone();
+            if let Ok(command) = to_blockchain_receiver.try_recv() {
                 match command {
                     Command::PendingBlock(block) => {
                         if let Err(_) = blockchain.process_block(
@@ -162,14 +185,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             &blockchain_reward_state,
                             &block,
                         ) {
-                            if let Err(_) = blockchain_command_sender.send(Command::InvalidBlock(block.clone())) {
+                            info!(target: "invalid_block", "Block invalid, look for next block");
+                            if let Err(_) =
+                                miner_sender.send(Command::InvalidBlock(block.clone()))
+                            {
                                 println!("Error sending command to receiver");
                             };
                         } else {
-                            if let Err(_) = blockchain_command_sender.send(Command::ConfirmedBlock(block.clone())) {
+                            blockchain_network_state.dump(&block);
+                            if let Err(_) = miner_sender
+                                .send(Command::ConfirmedBlock(block.clone()))
+                            {
                                 println!("Error sending command to receiver");
                             }
+
+                            if let Err(_) = miner_sender.send(
+                                Command::StateUpdateCompleted(blockchain_network_state.clone()),
+                            ) {
+                                println!(
+                                    "Error sending state update completed command to receiver"
+                                );
+                            }
                         }
+                    }
+                    Command::StateUpdateCompleted(network_state) => {
+                        blockchain_network_state = network_state.clone();
                     }
                     _ => {}
                 }
@@ -180,11 +220,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     //____________________________________________________________________________________________________
     // Mining thread
-    let mut mining_command_receiver = command_sender.subscribe();
-    let mining_command_sender = command_sender.clone();
     let mining_wallet = wallet.clone();
-    let mut miner_network_state = network_state.clone();
-    let mut miner_reward_state = reward_state.clone();
+    let miner_network_state = network_state.clone();
+    let miner_reward_state = reward_state.clone();
+    let miner_to_miner_sender = to_miner_sender.clone();
+    let miner_to_blockchain_sender = to_blockchain_sender.clone();
+    let miner_to_swarm_sender = to_swarm_sender.clone();
     tokio::task::spawn(async move {
         let mut miner = Miner::start(
             mining_wallet.clone().pubkey,
@@ -193,23 +234,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             miner_network_state,
         );
         loop {
-            if let Ok(command) = mining_command_receiver.try_recv() {
+            let miner_sender = miner_to_miner_sender.clone();
+            let blockchain_sender = miner_to_blockchain_sender.clone();
+            let swarm_sender = miner_to_swarm_sender.clone();
+            if let Ok(command) = to_miner_receiver.try_recv() {
                 match command {
+                    Command::SendMessage(message) => {
+                        if let Err(e) = swarm_sender.send(Command::SendMessage(message))
+                        {
+                            println!("Error sending to swarm receiver: {:?}", e);
+                        }
+                    }
                     Command::MineBlock => {
                         miner.mining = true;
+                        miner.init = true;
                     }
                     Command::ConfirmedBlock(block) => {
                         miner.last_block = Some(block.clone());
-                        miner.mining = true;
                     }
-                    Command::PendingBlock(_) => {
-                        // Stop Mining until it's processed.
-                        miner.mining = false;
+                    Command::ProcessTxn(txn) => {
+                        miner.process_txn(txn);
+                        println!("{:?}", &miner.txn_pool.pending);
                     }
                     Command::InvalidBlock(_) => {
                         miner.mining = true;
                     }
-                    Command::StateUpdateCompleted => {
+                    Command::StateUpdateCompleted(network_state) => {
+                        miner.network_state = network_state.clone();
                         miner.mining = true;
                     }
                     Command::MineGenesis => {
@@ -217,10 +268,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             miner.last_block = Some(block.clone());
                             // Send pending block command.
                             // wait for Confirmed or Invalid block command.
-                            if let Err(_) = mining_command_sender.send(Command::PendingBlock(block))
+                            miner.mining = false;
+                            if let Err(_) = blockchain_sender.send(Command::PendingBlock(block.clone()))
                             {
                                 println!("Error sending to command receiver")
                             }
+                           let message = MessageType::BlockMessage {
+                                block: block.clone(),
+                                sender_id: node_id.to_string().clone(),
+                            };
+
+                            if let Err(e) = swarm_sender.send(Command::SendMessage(message.as_bytes()))
+                            {
+                                println!("Error sending to swarm receiver: {:?}", e);
+                            }
+                            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                         }
                     }
                     _ => {}
@@ -228,67 +290,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             if let Some(block) = miner.mine() {
-                miner.last_block = Some(block.clone());
-                if let Err(_) = mining_command_sender.send(Command::PendingBlock(block.clone())) {
-                    println!("Error sending to command receiver")
+                if let Err(_) = blockchain_sender.send(Command::PendingBlock(block.clone())) {
+                    println!("Error sending to command receiver");
                 }
+
+                let message = MessageType::BlockMessage {
+                    block: block.clone(),
+                    sender_id: node_id.to_string().clone(),
+                };
+
+                if let Err(e) = swarm_sender.send(Command::SendMessage(message.as_bytes()))
+                {
+                    println!("Error sending to swarm receiver: {:?}", e);
+                }
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                miner.mining = false;
             } else {
                 if let None = miner.last_block {
-                    if let Err(_) = mining_command_sender.send(Command::MineGenesis) {
-                        println!("Error sending command to receiver")
-                    };
-                }
-            }
-        }
-    });
-    //____________________________________________________________________________________________________
-
-    //____________________________________________________________________________________________________
-    // State thread
-    let mut state_command_receiver = command_sender.subscribe();
-    let _state_command_sender = command_sender.clone();
-    let mut rng = rand::thread_rng();
-    let file_suffix: u32 = rng.gen();
-    let path = if let Some(path) = std::env::args().nth(2) {
-        path
-    } else {
-        format!("test_{}.db", file_suffix)
-    };
-    tokio::task::spawn(async move {
-        let _network_state = NetworkState::restore(&path);
-        loop {
-            tokio::select! {
-                command = state_command_receiver.recv() => {
-                    if let Ok(command) = command {
-                        match command {
-                            _ => {}
-                        }
-                    }
-                }
-            }
-        }
-    });
-    //____________________________________________________________________________________________________
-
-    //____________________________________________________________________________________________________
-    // Wallet thread
-    let mut wallet_command_receiver = command_sender.subscribe();
-    let wallet_command_sender = command_sender.clone();
-    tokio::task::spawn(async move {
-        loop {
-            tokio::select! {
-                command = wallet_command_receiver.recv() => {
-                    if let Ok(Command::SendTxn(sender_address_number, receiver_address, amount)) = command {
-                        let txn = wallet.clone().send_txn(sender_address_number, receiver_address, amount);
-                        if let Ok(txn) = txn {
-                            let message = MessageType::TxnMessage {
-                                txn,
-                                sender_id: node_id.clone().to_string(),
-                            };
-                            if let Err(e) = wallet_command_sender.send(Command::SendMessage(message.as_bytes())) {
-                                println!("Error sending to command sender: {:?}", e);
-                            };
-                        }
+                    if miner.mining {
+                        if let Err(_) = miner_sender.send(Command::MineGenesis) {
+                            println!("Error sending command to receiver")
+                        };
                     }
                 }
             }
@@ -298,8 +320,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     //____________________________________________________________________________________________________
     // Terminal Interface loop
+    let terminal_to_swarm_sender = to_swarm_sender.clone();
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     loop {
+        let swarm_sender = terminal_to_swarm_sender.clone();
         let evt = {
             tokio::select! {
                 // await an input from the user
@@ -317,9 +341,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // If there is some input from the user, attemmpt to convert the input to
             // a command and send to the command handler.
             if let Some(command) = Command::from_str(&line) {
-                if let Err(_) = command_sender.send(command) {
-                    println!("Error sending command to command receiver");
-                };
+                match command.clone() {
+                    Command::SendTxn(addr_num, receiver, amount) => {
+                        let txn = wallet.clone().send_txn(addr_num, receiver, amount);
+                        if let Ok(txn) = txn {
+                            let message = MessageType::TxnMessage { txn, sender_id: node_id.to_string().clone() };
+                            if let Err(e) = swarm_sender.send(Command::SendMessage(message.as_bytes())) {
+                                println!("Error sending to command receiver: {:?}", e);
+                            };
+                        }
+                    }
+                    _ => {
+                        if let Err(_) = command_sender.send(command) {
+                            println!("Error sending command to command receiver");
+                        };
+                    }
+                }
             }
         }
     }

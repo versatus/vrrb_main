@@ -16,13 +16,13 @@ use libp2p::{identity::Keypair, PeerId};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
-use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 
 pub const MAX_TRANSMIT_SIZE: usize = 2000000;
 
 pub async fn configure_swarm(
-    message_sender: broadcast::Sender<GossipsubMessage>,
-    command_sender: broadcast::Sender<Command>,
+    message_sender: mpsc::UnboundedSender<GossipsubMessage>,
+    command_sender: mpsc::UnboundedSender<Command>,
     local_peer_id: PeerId,
     local_key: Keypair,
 ) -> Swarm<VrrbNetworkBehavior> {

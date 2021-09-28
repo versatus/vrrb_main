@@ -2,14 +2,13 @@
 use crate::account::AccountState;
 use crate::handler::{CommandHandler, MessageHandler};
 use crate::network::command_utils::Command;
+use crate::network::message;
 use crate::network::message_types::MessageType;
 use libp2p::gossipsub::GossipsubMessage;
 use libp2p::{identity, PeerId};
-// use log::info;
-use crate::network::message;
+use log::info;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
-use tokio::sync::broadcast;
 
 pub const MAX_TRANSMIT_SIZE: usize = 2000000;
 
@@ -34,10 +33,8 @@ pub struct Node {
     pub key: identity::Keypair,
     pub id: PeerId,
     pub node_type: NodeAuth,
-    pub swarm_sender: broadcast::Sender<Command>,
-    pub to_message_handler: MessageHandler<GossipsubMessage, MessageType>,
-    pub from_message_handler: MessageHandler<MessageType, GossipsubMessage>,
-    pub command_handler: CommandHandler<Command, Command>,
+    pub command_handler: CommandHandler,
+    pub message_handler: MessageHandler<MessageType, GossipsubMessage>,
 }
 
 impl Node {
@@ -51,10 +48,8 @@ impl Node {
 
     pub fn new(
         node_type: NodeAuth,
-        swarm_sender: broadcast::Sender<Command>,
-        to_message_handler: MessageHandler<GossipsubMessage, MessageType>,
-        from_message_handler: MessageHandler<MessageType, GossipsubMessage>,
-        command_handler: CommandHandler<Command, Command>,
+        command_handler: CommandHandler,
+        message_handler: MessageHandler<MessageType, GossipsubMessage>,
     ) -> Node {
         let local_key = identity::Keypair::generate_ed25519();
         let local_peer_id = PeerId::from(local_key.public());
@@ -63,10 +58,8 @@ impl Node {
             key: local_key,
             id: local_peer_id,
             node_type,
-            swarm_sender,
-            from_message_handler,
-            to_message_handler,
             command_handler,
+            message_handler,
         }
     }
 
@@ -75,22 +68,20 @@ impl Node {
             let evt = {
                 tokio::select! {
                     command = self.command_handler.receiver.recv() => {
-                        if let Ok(command) = command {
+                        if let Some(command) = command {
+                            println!("Command handler received a command: {:?}", command);
                             Some(command)
                         } else {
                             None
                         }
                     }
-                    to_message = self.to_message_handler.receiver.recv() => {
-                        println!("to message handler received message: {:?}", to_message);
-                        None
-                    }
-                    from_message = self.from_message_handler.receiver.recv() => {
-                        println!("from message handler received message: {:?}", from_message);
-                        if let Ok(message) = from_message {
-                            message::process_message(message);
+                    from_message = self.message_handler.receiver.recv() => {
+                        info!("from message handler received message: {:?}", from_message);
+                        if let Some(message) = from_message {
+                           message::process_message(message)
+                        } else {
+                            None
                         }
-                        None
                     }
                 }
             };
@@ -99,29 +90,12 @@ impl Node {
                     Command::SendMessage(message) => {
                         if let Some(message) = MessageType::from_bytes(&message) {
                             if let Err(e) = self
-                                .swarm_sender
+                                .command_handler.to_swarm_sender
                                 .send(Command::SendMessage(message.as_bytes()))
                             {
                                 println!("Error publishing: {:?}", e);
                             }
                         }
-                    }
-                    Command::ForwardCommand(command_string) => {
-                        if let Some(command) = Command::from_str(&command_string) {
-                            if let Err(_) = self.command_handler.sender.send(command) {
-                                println!("Error forwarding command");
-                            };
-                        }
-                    }
-                    Command::Test => {
-                        if let Err(_) = self.swarm_sender.send(Command::SendMessage(
-                            MessageType::Test {
-                                test_string: "This is a test".to_string(),
-                            }
-                            .as_bytes(),
-                        )) {
-                            println!("Error sending message to message handler");
-                        };
                     }
                     Command::Quit => {
                         //TODO:
@@ -135,7 +109,16 @@ impl Node {
 
                         break;
                     }
-                    _ => {}
+                    Command::MineBlock => {
+                        if let Err(e) = self.command_handler.to_mining_sender.send(Command::MineBlock) {
+                            println!("Error sending mine block command to mining thread: {:?}", e);
+                        } else {
+                            println!("Sent mine block command to mining thread");
+                        }
+                    }
+                    _ => {
+                        self.command_handler.handle_command(command);
+                    }
                 }
             } else {
                 continue;

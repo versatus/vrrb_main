@@ -22,7 +22,7 @@ use libp2p::{
 use log::info;
 use std::io::Error;
 use std::time::Duration;
-use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 
 #[derive(NetworkBehaviour)]
 pub struct VrrbNetworkBehavior {
@@ -31,9 +31,9 @@ pub struct VrrbNetworkBehavior {
     pub kademlia: Kademlia<MemoryStore>,
     pub ping: Ping,
     #[behaviour(ignore)]
-    pub command_sender: broadcast::Sender<Command>,
+    pub command_sender: mpsc::UnboundedSender<Command>,
     #[behaviour(ignore)]
-    pub message_sender: broadcast::Sender<GossipsubMessage>,
+    pub message_sender: mpsc::UnboundedSender<GossipsubMessage>,
 }
 
 impl NetworkBehaviourEventProcess<IdentifyEvent> for VrrbNetworkBehavior {
@@ -41,7 +41,6 @@ impl NetworkBehaviourEventProcess<IdentifyEvent> for VrrbNetworkBehavior {
     fn inject_event(&mut self, event: IdentifyEvent) {
         match event {
             IdentifyEvent::Received { peer_id, info } => {
-
                 for addr in info.listen_addrs {
                     self.kademlia.add_address(&peer_id, addr);
                 }
@@ -63,6 +62,7 @@ impl NetworkBehaviourEventProcess<GossipsubEvent> for VrrbNetworkBehavior {
                 message_id: _id,
                 message,
             } => {
+                println!("Received message");
                 if let Err(_) = self.message_sender.send(message) {
                     println!("Error sending message to message handling thread");
                 };

@@ -51,6 +51,10 @@ impl Blockchain {
                     self.parent = self.child.clone();
                     self.child = Some(block.clone());
                     self.chain.push_back(block.header.clone());
+                    if self.block_cache.len() == 100 {
+                        self.block_cache.pop_back();
+                        self.block_cache.insert(block.hash.clone(), block.clone());
+                    }
                     Ok(())
                 } else {
                     self.invalid.insert(block.hash.clone(), block.clone());
@@ -80,7 +84,9 @@ impl Blockchain {
                 Ok(())
             } else {
                 self.invalid.insert(block.hash.clone(), block.clone());
-                Err(Box::new(InvalidBlockError { details: "Invalid genesis".to_string() }))
+                Err(Box::new(InvalidBlockError {
+                    details: "Invalid genesis".to_string(),
+                }))
             }
         }
     }

@@ -119,9 +119,6 @@ pub enum MessageType {
         state_hash: String,
         sender_id: String,
     },
-    Test {
-        test_string: String,
-    }
 }
 
 impl MessageType {

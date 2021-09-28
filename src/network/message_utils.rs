@@ -8,7 +8,7 @@ use crate::network::message;
 use crate::network::message_types::{MessageType, StateBlock};
 use crate::network::node::MAX_TRANSMIT_SIZE;
 use crate::network::node::{Node, NodeAuth};
-use crate::state::{BlockArchive, NetworkState};
+use crate::state::NetworkState;
 use crate::utils::restore_db;
 use crate::validator::ValidatorOptions;
 use crate::verifiable::Verifiable;

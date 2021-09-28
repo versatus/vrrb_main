@@ -2,6 +2,8 @@ use crate::account::AccountState;
 use crate::block::Block;
 use crate::reward::RewardState;
 use crate::state::NetworkState;
+use crate::pool::Pool;
+use crate::txn::Txn;
 
 pub trait Verifiable {
     fn verifiable(&self) -> bool;
@@ -43,7 +45,7 @@ pub trait Verifiable {
         false
     }
 
-    fn valid_txn(&self, _network_state: &NetworkState, _account_state: &AccountState) -> bool {
+    fn valid_txn(&self, _network_state: &NetworkState, _txn_pool: &Pool<String, Txn>) -> bool {
         false
     }
 
@@ -51,11 +53,11 @@ pub trait Verifiable {
         false
     }
 
-    fn valid_amount(&self, _network_state: &NetworkState, _account_state: &AccountState) -> bool {
+    fn valid_amount(&self, _network_state: &NetworkState, _txn_pool: &Pool<String, Txn>) -> bool {
         false
     }
 
-    fn check_double_spend(&self, _account_state: &AccountState) -> bool {
+    fn check_double_spend(&self, _txn_pool: &Pool<String, Txn>) -> bool {
         false
     }
 }

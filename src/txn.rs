@@ -1,17 +1,17 @@
+use crate::pool::Pool;
 use crate::state::NetworkState;
 use crate::verifiable::Verifiable;
 use crate::wallet::WalletAccount;
-use secp256k1::{PublicKey, Signature, Message, Secp256k1};
 use bytebuffer::ByteBuffer;
+use secp256k1::{Message, PublicKey, Secp256k1, Signature};
 use serde::{Deserialize, Serialize};
 use sha256::digest_bytes;
+use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
-use std::collections::HashMap;
-use crate::account::AccountState;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Txn {
@@ -84,26 +84,24 @@ impl Txn {
     pub fn from_string(string: &String) -> Txn {
         serde_json::from_str::<Txn>(string).unwrap()
     }
-
 }
 
 impl Verifiable for Txn {
-
     fn verifiable(&self) -> bool {
         true
     }
 
-    fn valid_txn(&self, network_state: &NetworkState, account_state: &AccountState) -> bool {
+    fn valid_txn(&self, network_state: &NetworkState, txn_pool: &Pool<String, Txn>) -> bool {
         if !self.valid_txn_signature() {
-            return false
+            return false;
         }
 
-        if !self.valid_amount(network_state, account_state) {
-            return false 
+        if !self.valid_amount(network_state, txn_pool) {
+            return false;
         }
 
-        if !self.check_double_spend(account_state) {
-            return false
+        if !self.check_double_spend(txn_pool) {
+            return false;
         }
 
         true
@@ -123,9 +121,9 @@ impl Verifiable for Txn {
         let message_hash = Message::from_slice(message_hash.as_bytes()).unwrap();
         let secp = Secp256k1::new();
         let valid = secp.verify(
-            &message_hash, 
-            &Signature::from_str(&self.txn_signature).unwrap(), 
-            &PublicKey::from_str(&self.sender_public_key).unwrap()
+            &message_hash,
+            &Signature::from_str(&self.txn_signature).unwrap(),
+            &PublicKey::from_str(&self.sender_public_key).unwrap(),
         );
 
         match valid {
@@ -134,12 +132,13 @@ impl Verifiable for Txn {
         }
     }
 
-    fn valid_amount(&self, network_state: &NetworkState, account_state: &AccountState) -> bool {
-
-        let (_, pending_debits) = if let Some((credit_amount, debit_amount)) = account_state.pending_balance(self.sender_address.clone()) {
+    fn valid_amount(&self, network_state: &NetworkState, txn_pool: &Pool<String, Txn>) -> bool {
+        let (_, pending_debits) = if let Some((credit_amount, debit_amount)) =
+            network_state.pending_balance(self.sender_address.clone(), txn_pool)
+        {
             (credit_amount, debit_amount)
         } else {
-            (0,0)
+            (0, 0)
         };
 
         let mut address_balance = network_state.get_balance(&self.sender_address);
@@ -148,22 +147,24 @@ impl Verifiable for Txn {
             amount
         } else {
             println!("Invalid balance, not enough coins!");
-            return false
+            return false;
         };
 
         if address_balance < self.txn_amount {
             println!("Invalid balance, not enough coins");
-            return false
+            return false;
         }
-        
         true
     }
 
-    fn check_double_spend(&self, account_state: &AccountState) -> bool {
-        if let Some(txn) = account_state.txn_pool.pending.get(&self.txn_id) {
-            if txn.txn_id == self.txn_id && (txn.txn_amount != self.txn_amount || txn.receiver_address != self.receiver_address) {
+    fn check_double_spend(&self, txn_pool: &Pool<String, Txn>) -> bool {
+        if let Some(txn) = txn_pool.pending.get(&self.txn_id) {
+            if txn.txn_id == self.txn_id
+                && (txn.txn_amount != self.txn_amount
+                    || txn.receiver_address != self.receiver_address)
+            {
                 println!("Attempted double spend");
-                return false
+                return false;
             }
         };
 

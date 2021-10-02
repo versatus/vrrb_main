@@ -5,7 +5,6 @@ pub mod claim;
 pub mod handler;
 pub mod header;
 pub mod miner;
-pub mod mpu;
 pub mod network;
 pub mod pool;
 pub mod reward;

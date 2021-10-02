@@ -1,10 +1,11 @@
 use crate::block::Block;
+use crate::claim::Claim;
 use crate::network::message_types::StateBlock;
 use crate::state::NetworkState;
-// use log::{info};
 use crate::txn::Txn;
+use crate::validator::TxnValidator;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+// use log::{info};
 
 pub const NEWTXN: &str = "NEW_TXN";
 pub const SENDTXN: &str = "SENDTXN";
@@ -23,24 +24,24 @@ pub const TEST: &str = "TEST";
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub enum Command {
     SendTxn(u32, String, u128), // address number, receiver address, amount
+    ProcessTxn(Txn),
+    ProcessTxnValidator(TxnValidator),
+    ConfirmedBlock(Block),
+    PendingBlock(Block),
+    InvalidBlock(Block),
+    ProcessClaim(Claim),
+    CheckStateUpdateStatus((u128, Block, u128)),
+    StateUpdateCompleted(NetworkState),
+    StoreStateDbChunk(StateBlock, Vec<u8>, u32, u32),
+    SendState(String, u128),
+    SendMessage(Vec<u8>),
     MineBlock,
     MineGenesis,
     StopMine,
     GetState,
-    ProcessTxn(Txn),
-    ConfirmedBlock(Block),
-    PendingBlock(Block),
-    InvalidBlock(Block),
-    CheckStateUpdateStatus((u128, Block, u128)),
-    StateUpdateCompleted(NetworkState),
-    StoreStateDbChunk(StateBlock, Vec<u8>, u32, u32, u128),
-    PruneMiners(HashSet<String>),
     ProcessBacklog,
     SendAddress,
-    SendState(String),
-    RemovePeer(String),
-    NewPeer(String, String),
-    SendMessage(Vec<u8>),
+    NonceUp,
     Quit,
 }
 
@@ -63,14 +64,6 @@ impl Command {
             }
         } else if args.len() == 3 {
             match args[0] {
-                _ => {
-                    println!("Invalid command string!");
-                    return None;
-                }
-            }
-        } else if args.len() == 2 {
-            match args[0] {
-                SENDSTATE => return Some(Command::SendState(args[1].to_string())),
                 _ => {
                     println!("Invalid command string!");
                     return None;

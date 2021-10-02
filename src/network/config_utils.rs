@@ -25,6 +25,8 @@ pub async fn configure_swarm(
     command_sender: mpsc::UnboundedSender<Command>,
     local_peer_id: PeerId,
     local_key: Keypair,
+    pubkey: String,
+    address: String,
 ) -> Swarm<VrrbNetworkBehavior> {
     let message_id_fn = |message: &GossipsubMessage| {
         let mut s = DefaultHasher::new();
@@ -89,6 +91,8 @@ pub async fn configure_swarm(
         ping,
         command_sender: command_sender.clone(),
         message_sender: message_sender.clone(),
+        pubkey,
+        address
     };
 
     let transport = build_transport(local_key).await.unwrap();

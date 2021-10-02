@@ -1,8 +1,8 @@
-use crate::account::AccountState;
 use crate::block::Block;
+use crate::blockchain::{InvalidBlockError, InvalidBlockErrorReason};
+use crate::pool::Pool;
 use crate::reward::RewardState;
 use crate::state::NetworkState;
-use crate::pool::Pool;
 use crate::txn::Txn;
 
 pub trait Verifiable {
@@ -13,8 +13,10 @@ pub trait Verifiable {
         _last_block: &Block,
         _network_state: &NetworkState,
         _reward_state: &RewardState,
-    ) -> bool {
-        false
+    ) -> Result<(), InvalidBlockError> {
+        Err(InvalidBlockError {
+            details: InvalidBlockErrorReason::General,
+        })
     }
 
     fn valid_genesis(&self, _network_state: &NetworkState, _reward_state: &RewardState) -> bool {

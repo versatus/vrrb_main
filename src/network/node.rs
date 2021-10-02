@@ -6,7 +6,6 @@ use crate::network::message;
 use crate::network::message_types::MessageType;
 use libp2p::gossipsub::GossipsubMessage;
 use libp2p::{identity, PeerId};
-use log::info;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 
@@ -69,16 +68,14 @@ impl Node {
                 tokio::select! {
                     command = self.command_handler.receiver.recv() => {
                         if let Some(command) = command {
-                            println!("Command handler received a command: {:?}", command);
                             Some(command)
                         } else {
                             None
                         }
                     }
                     from_message = self.message_handler.receiver.recv() => {
-                        info!("from message handler received message: {:?}", from_message);
                         if let Some(message) = from_message {
-                           message::process_message(message)
+                           message::process_message(message, self.id.clone().to_string())
                         } else {
                             None
                         }
@@ -90,7 +87,8 @@ impl Node {
                     Command::SendMessage(message) => {
                         if let Some(message) = MessageType::from_bytes(&message) {
                             if let Err(e) = self
-                                .command_handler.to_swarm_sender
+                                .command_handler
+                                .to_swarm_sender
                                 .send(Command::SendMessage(message.as_bytes()))
                             {
                                 println!("Error publishing: {:?}", e);
@@ -109,11 +107,45 @@ impl Node {
 
                         break;
                     }
+                    Command::SendAddress => {
+                        if let Err(e) = self
+                            .command_handler
+                            .to_mining_sender
+                            .send(Command::SendAddress)
+                        {
+                            println!("Error sending SendAddress command to miner: {:?}", e);
+                        }
+                    }
                     Command::MineBlock => {
-                        if let Err(e) = self.command_handler.to_mining_sender.send(Command::MineBlock) {
+                        if let Err(e) = self
+                            .command_handler
+                            .to_mining_sender
+                            .send(Command::MineBlock)
+                        {
                             println!("Error sending mine block command to mining thread: {:?}", e);
                         } else {
                             println!("Sent mine block command to mining thread");
+                        }
+                    }
+                    Command::SendState(requested_from, lowest_block) => {
+                        if let Err(e) = self
+                            .command_handler
+                            .to_blockchain_sender
+                            .send(Command::SendState(requested_from, lowest_block))
+                        {
+                            println!("Error sending state request to blockchain thread: {:?}", e);
+                        } else {
+                            println!("Sent state reqeust to blockchain thread.");
+                        }
+                    }
+                    Command::StoreStateDbChunk(object, data, chunk_number, total_chunks) => {
+                        if let Err(e) = self.command_handler.to_blockchain_sender.send(
+                            Command::StoreStateDbChunk(object, data, chunk_number, total_chunks),
+                        ) {
+                            println!(
+                                "Error sending StoreStateDbChunk to blockchain thread: {:?}",
+                                e
+                            );
                         }
                     }
                     _ => {

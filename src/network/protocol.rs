@@ -34,6 +34,10 @@ pub struct VrrbNetworkBehavior {
     pub command_sender: mpsc::UnboundedSender<Command>,
     #[behaviour(ignore)]
     pub message_sender: mpsc::UnboundedSender<GossipsubMessage>,
+    #[behaviour(ignore)]
+    pub pubkey: String,
+    #[behaviour(ignore)]
+    pub address: String,
 }
 
 impl NetworkBehaviourEventProcess<IdentifyEvent> for VrrbNetworkBehavior {
@@ -62,7 +66,6 @@ impl NetworkBehaviourEventProcess<GossipsubEvent> for VrrbNetworkBehavior {
                 message_id: _id,
                 message,
             } => {
-                println!("Received message");
                 if let Err(_) = self.message_sender.send(message) {
                     println!("Error sending message to message handling thread");
                 };

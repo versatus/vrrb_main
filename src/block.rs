@@ -1,3 +1,4 @@
+use crate::blockchain::{InvalidBlockError, InvalidBlockErrorReason};
 use crate::header::BlockHeader;
 use crate::network::chunkable::Chunkable;
 use crate::network::node::MAX_TRANSMIT_SIZE;
@@ -12,17 +13,6 @@ use std::fmt;
 
 const VALIDATOR_THRESHOLD: f64 = 0.60;
 
-pub enum InvalidBlockReason {
-    InvalidStateHash,
-    InvalidBlockHeight,
-    InvalidLastBlockHash,
-    InvalidData(String),
-    InvalidClaim,
-    InvalidBlockHash,
-    InvalidNextBlockReward,
-    InvalidBlockReward,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[repr(C)]
 pub struct Block {
@@ -30,6 +20,7 @@ pub struct Block {
     pub neighbors: Option<Vec<BlockHeader>>,
     pub height: u128,
     pub txns: LinkedHashMap<String, Txn>,
+    pub claims: LinkedHashMap<String, Claim>,
     pub hash: String,
     pub received_at: Option<u128>,
     pub received_from: Option<String>,
@@ -40,7 +31,7 @@ impl Block {
     // updated account state (if successful) or an error (if unsuccessful)
     pub fn genesis(reward_state: &RewardState, claim: Claim) -> Option<Block> {
         // Get the current time in a unix timestamp duration.
-        let header = BlockHeader::genesis(0, reward_state, claim);
+        let header = BlockHeader::genesis(0, reward_state, claim.clone());
         let state_hash = digest_bytes(
             format!(
                 "{},{}",
@@ -50,11 +41,15 @@ impl Block {
             .as_bytes(),
         );
 
+        let mut claims = LinkedHashMap::new();
+        claims.insert(claim.clone().pubkey.clone(), claim);
+
         let genesis = Block {
             header,
             neighbors: None,
             height: 0,
             txns: LinkedHashMap::new(),
+            claims,
             hash: state_hash,
             received_at: None,
             received_from: None,
@@ -73,6 +68,7 @@ impl Block {
         claim: Claim,      // The claim entitling the miner to mine the block.
         last_block: Block, // The last block, which contains the current block reward.
         txns: LinkedHashMap<String, Txn>,
+        claims: LinkedHashMap<String, Claim>,
         reward_state: &RewardState,
         network_state: &NetworkState,
         neighbors: Option<Vec<BlockHeader>>,
@@ -93,6 +89,7 @@ impl Block {
             neighbors,
             height,
             txns,
+            claims,
             hash: header.last_hash.clone(),
             received_at: None,
             received_from: None,
@@ -149,38 +146,49 @@ impl Verifiable for Block {
         last_block: &Block,
         network_state: &NetworkState,
         reward_state: &RewardState,
-    ) -> bool {
+    ) -> Result<(), InvalidBlockError> {
         if !self.valid_last_hash(last_block) {
-            info!(target: "invalid_block", "invalid last hash");
-            return false;
+            return Err(InvalidBlockError {
+                details: InvalidBlockErrorReason::InvalidLastHash
+            });
         }
 
         if !self.valid_block_nonce(last_block) {
-            info!(target: "invalid_block", "invalid block nonce");
-            return false;
+            return Err(InvalidBlockError {
+                details: InvalidBlockErrorReason::InvalidBlockNonce
+            });
         }
 
         if !self.valid_state_hash(network_state) {
-            info!(target: "invalid_block", "invalid state hash");
-            return false;
+            return Err(InvalidBlockError {
+                details: InvalidBlockErrorReason::InvalidStateHash
+            });
         }
 
         if !self.valid_block_reward(reward_state) {
-            info!(target: "invalid_block", "invalid block reward");
-            return false;
+            return Err(
+                InvalidBlockError {
+                    details: InvalidBlockErrorReason::InvalidBlockReward
+                }
+            );
         }
 
         if !self.valid_next_block_reward(reward_state) {
-            info!(target: "invalid_block", "invalid next block reward");
-            return false;
+            return Err(
+                InvalidBlockError {
+                    details: InvalidBlockErrorReason::InvalidBlockReward
+                }
+            )
         }
 
         if !self.valid_txns() {
-            info!(target: "invalid_block", "invalid txns");
-            return false;
+            return Err(
+                InvalidBlockError {
+                    details: InvalidBlockErrorReason::InvalidTxns
+            });
         }
 
-        true
+        Ok(())
     }
 
     fn valid_last_hash(&self, last_block: &Block) -> bool {
@@ -252,7 +260,7 @@ impl Chunkable for Block {
                 });
             Some(chunks_vec)
         } else {
-            None
+            Some(vec![self.clone().as_bytes()])
         }
     }
 }

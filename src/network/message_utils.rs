@@ -10,7 +10,6 @@ use crate::network::node::MAX_TRANSMIT_SIZE;
 use crate::network::node::{Node, NodeAuth};
 use crate::state::NetworkState;
 use crate::utils::restore_db;
-use crate::validator::ValidatorOptions;
 use crate::verifiable::Verifiable;
 use libp2p::gossipsub::error::PublishError;
 use libp2p::gossipsub::IdentTopic as Topic;

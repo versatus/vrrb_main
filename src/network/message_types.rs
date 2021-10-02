@@ -2,7 +2,7 @@ use crate::block::Block;
 use crate::claim::Claim;
 use crate::network::node::NodeAuth;
 use crate::txn::Txn;
-use ritelinked::LinkedHashMap;
+use crate::validator::TxnValidator;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -10,10 +10,6 @@ pub struct StateBlock(pub u128);
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum MessageType {
-    AccountPubkeyMessage {
-        addresses: LinkedHashMap<String, String>,
-        sender_id: String,
-    },
     NetworkStateDataBaseMessage {
         object: StateBlock,
         data: Vec<u8>,
@@ -28,9 +24,7 @@ pub enum MessageType {
         sender_id: String,
     },
     TxnValidatorMessage {
-        txn_id: String,
-        vote: bool,
-        validator_pubkey: String,
+        txn_validator: TxnValidator,
         sender_id: String,
     },
     BlockMessage {
@@ -38,10 +32,16 @@ pub enum MessageType {
         sender_id: String,
     },
     BlockChunkMessage {
+        sender_id: String,
+        requestor: String,
         block_height: u128,
         chunk_number: u128,
         total_chunks: u128,
         data: Vec<u8>,
+    },
+    ClaimMessage {
+        claim: Claim,
+        sender_id: String,
     },
     NeedBlocksMessage {
         blocks_needed: Vec<u128>,
@@ -52,59 +52,11 @@ pub enum MessageType {
         requestor: String,
         sender_id: String,
     },
-    BlockVoteMessage {
-        block: Block,
-        vote: bool,
-        sender_id: String,
-    },
-    ClaimMessage {
-        claim: Claim,
-        sender_id: String,
-    },
-    ClaimStakeMessage {
-        claim: Claim,
-        sender_id: String,
-    },
-    ClaimUnstakeMessage {
-        claim: Claim,
-        sender_id: String,
-    },
-    ClaimForSaleMessage {
-        updated_claim: Claim,
-        sender_id: String,
-    },
-    ClaimSoldMessage {
-        updated_claim: Claim,
-        sender_id: String,
-    },
-    ClaimValidator {
-        claim_number: u128,
-        vote: bool,
-        validator_pubkey: String,
-        sender_id: String,
-    },
-    ExpiredClaimMessage {
-        claim_number: u128,
-        sender_id: String,
-    },
-    VIPMessage {
-        proposal_id: String,
-        sender_id: String,
-        proposal_expiration: u128,
-    },
-    VIPVoteMessage {
-        proposal_id: String,
-        vote: bool,
-        sender_id: String,
-    },
     GetNetworkStateMessage {
         sender_id: String,
         requested_from: String,
         requestor_node_type: NodeAuth,
-    },
-    GetAccountStateMessage {
-        sender_id: String,
-        requested_from: String,
+        lowest_block: u128,
     },
     InvalidBlockMessage {
         block_height: u128,
@@ -114,10 +66,6 @@ pub enum MessageType {
     DisconnectMessage {
         sender_id: String,
         pubkey: String,
-    },
-    StateHashVoteMessage {
-        state_hash: String,
-        sender_id: String,
     },
 }
 

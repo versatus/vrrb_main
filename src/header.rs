@@ -7,6 +7,10 @@ use sha256::digest_bytes;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::u32::{MAX as u32MAX};
 use std::u64::{MAX as u64MAX};
+pub const NANO: u128 = 1;
+pub const MICRO: u128 = NANO * 1000;
+pub const MILLI: u128 = MICRO * 1000;
+pub const SECOND: u128 = MILLI * 1000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockHeader {
@@ -59,6 +63,7 @@ impl BlockHeader {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
+        
         let mut block_reward = last_block.header.next_block_reward;
         block_reward.miner = Some(claim.clone().address);
         let next_block_reward = Reward::new(None, reward_state);

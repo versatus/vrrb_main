@@ -3,6 +3,7 @@ use crate::claim::Claim;
 use crate::network::node::NodeAuth;
 use crate::txn::Txn;
 use crate::validator::TxnValidator;
+use crate::blockchain::InvalidBlockErrorReason;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -47,6 +48,11 @@ pub enum MessageType {
         blocks_needed: Vec<u128>,
         sender_id: String,
     },
+    NeedBlockMessage {
+        block_last_hash: String,
+        sender_id: String,
+        requested_from: String,
+    },
     MissingBlock {
         block: Block,
         requestor: String,
@@ -60,6 +66,7 @@ pub enum MessageType {
     },
     InvalidBlockMessage {
         block_height: u128,
+        reason: InvalidBlockErrorReason,
         miner_id: String,
         sender_id: String,
     },
@@ -67,6 +74,15 @@ pub enum MessageType {
         sender_id: String,
         pubkey: String,
     },
+    NeedGenesisBlock {
+        sender_id: String,
+        requested_from: String,
+    },
+    MissingGenesis {
+        block: Block,
+        requestor: String,
+        sender_id: String,
+    }
 }
 
 impl MessageType {

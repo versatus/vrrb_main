@@ -56,20 +56,21 @@ impl Miner {
     }
 
     pub fn get_lowest_pointer(&mut self, nonce: u128) -> Option<(String, u128)> {
-        let mut claim_map = self.claim_map.clone();
-        claim_map.retain(|_, v| v.eligible);
-        let mut pointers = self
-            .claim_map
+        let claim_map = self.claim_map.clone();
+        let mut pointers = claim_map
             .iter()
             .map(|(_, claim)| return (claim.clone().hash, claim.clone().get_pointer(nonce)))
             .collect::<Vec<_>>();
+
         pointers.retain(|(_, v)| !v.is_none());
+
         let mut raw_pointers = pointers
             .iter()
             .map(|(k, v)| {
                 return (k.clone(), v.unwrap());
             })
             .collect::<Vec<_>>();
+
         if let Some(min) = raw_pointers.clone().iter().min_by_key(|(_, v)| v) {
             raw_pointers.retain(|(_, v)| *v == min.1);
             Some(raw_pointers[0].clone())
@@ -121,7 +122,6 @@ impl Miner {
             new_claim_map.insert(pk.clone(), new_claim.clone());
         });
         self.claim_map = new_claim_map;
-        self.claim.nonce_up();
     }
 
     pub fn process_txn(&mut self, mut txn: Txn) -> TxnValidator {

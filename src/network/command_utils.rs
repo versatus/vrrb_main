@@ -19,6 +19,7 @@ pub const SENDADDRESS: &str = "SENDADR";
 pub const TXNTOPIC: &str = "txn";
 pub const QUIT: &str = "QUIT";
 pub const TEST: &str = "TEST";
+pub const GETBAL: &str = "GETBAL";
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -27,7 +28,7 @@ pub enum Command {
     ProcessTxn(Txn),
     ProcessTxnValidator(TxnValidator),
     ConfirmedBlock(Block),
-    PendingBlock(Block),
+    PendingBlock(Block, String),
     InvalidBlock(Block),
     ProcessClaim(Claim),
     CheckStateUpdateStatus((u128, Block, u128)),
@@ -35,6 +36,8 @@ pub enum Command {
     StoreStateDbChunk(StateBlock, Vec<u8>, u32, u32),
     SendState(String, u128),
     SendMessage(Vec<u8>),
+    GetBalance(u32),
+    SendGenesis(String),
     MineBlock,
     MineGenesis,
     StopMine,
@@ -67,6 +70,14 @@ impl Command {
                 _ => {
                     println!("Invalid command string!");
                     return None;
+                }
+            }
+        } else if args.len() == 2 {
+            match args[0] {
+                GETBAL => return Some(Command::GetBalance(args[1].parse::<u32>().unwrap())),
+                _ => {
+                    println!("Invalid command string");
+                    None
                 }
             }
         } else {

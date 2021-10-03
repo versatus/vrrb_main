@@ -12,16 +12,23 @@ pub fn process_message(message: GossipsubMessage, node_id: String) -> Option<Com
     ) {
         match message.clone() {
             MessageType::TxnMessage { txn, .. } => Some(Command::ProcessTxn(txn)),
-            MessageType::BlockMessage { block, .. } => Some(Command::PendingBlock(block)),
+            MessageType::BlockMessage { block, sender_id, .. } => Some(Command::PendingBlock(block, sender_id)),
             MessageType::TxnValidatorMessage { txn_validator, .. } => {
                 Some(Command::ProcessTxnValidator(txn_validator))
             }
             MessageType::ClaimMessage { claim, .. } => Some(Command::ProcessClaim(claim)),
             MessageType::GetNetworkStateMessage {
+                sender_id,
                 requested_from,
                 lowest_block,
                 ..
-            } => Some(Command::SendState(requested_from, lowest_block)),
+            } => {
+                if requested_from == node_id {
+                    Some(Command::SendState(sender_id, lowest_block))
+                } else {
+                    None
+                }
+            },
             MessageType::BlockChunkMessage {
                 requestor,
                 block_height,
@@ -39,6 +46,12 @@ pub fn process_message(message: GossipsubMessage, node_id: String) -> Option<Com
                     ));
                 }
                 return None;
+            },
+            MessageType::NeedGenesisBlock { sender_id, requested_from } => {
+                if requested_from == node_id {
+                    return Some(Command::SendGenesis(sender_id));
+                }
+                return None
             }
             _ => None,
         }

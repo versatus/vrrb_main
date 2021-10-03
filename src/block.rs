@@ -30,7 +30,7 @@ impl Block {
     // Returns a result with either a tuple containing the genesis block and the
     // updated account state (if successful) or an error (if unsuccessful)
     pub fn genesis(reward_state: &RewardState, claim: Claim) -> Option<Block> {
-        // Get the current time in a unix timestamp duration.
+
         let header = BlockHeader::genesis(0, reward_state, claim.clone());
         let state_hash = digest_bytes(
             format!(

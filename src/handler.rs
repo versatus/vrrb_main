@@ -6,8 +6,7 @@ pub trait Handler<T, V> {
     fn recv(&mut self) -> Option<V>;
 }
 
-// T is MessageType, V is GossipSubMessage in to_message_handler
-// T is GossipSubMessage, V is MessageType in from_message_handler
+
 pub struct MessageHandler<T, V> {
     pub sender: UnboundedSender<T>,
     pub receiver: UnboundedReceiver<V>,
@@ -104,15 +103,25 @@ impl CommandHandler {
             }
             Command::SendState(_requested_from, _lowest_block) => {}
             Command::ConfirmedBlock(_block) => {}
-            Command::PendingBlock(block) => {
+            Command::PendingBlock(block, sender_id) => {
                 if let Err(e) = self
                     .to_blockchain_sender
-                    .send(Command::PendingBlock(block.clone()))
+                    .send(Command::PendingBlock(block.clone(), sender_id))
                 {
                     println!("Error sending pending block to miner: {:?}", e);
                 }
             }
             Command::InvalidBlock(_block) => {}
+            Command::GetBalance(address) => {
+                if let Err(e) = self.to_mining_sender.send(Command::GetBalance(address)) {
+                    println!("Error sending GetBalance command to mining thread: {:?}", e);
+                }
+            }
+            Command::SendGenesis(sender_id) => {
+                if let Err(e) = self.to_blockchain_sender.send(Command::SendGenesis(sender_id)) {
+                    println!("Error sending SendGenesis command to blockchain thread: {:?}", e);
+                }
+            }
             Command::MineGenesis => {}
             Command::MineBlock => { 
                 if let Err(e) = self.to_mining_sender.send(Command::MineBlock) {

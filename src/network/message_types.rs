@@ -1,4 +1,5 @@
 use crate::block::Block;
+use crate::blockchain::StateComponent;
 use crate::claim::Claim;
 use crate::network::node::NodeAuth;
 use crate::txn::Txn;
@@ -63,6 +64,7 @@ pub enum MessageType {
         requested_from: String,
         requestor_node_type: NodeAuth,
         lowest_block: u128,
+        component: StateComponent,
     },
     InvalidBlockMessage {
         block_height: u128,
@@ -80,6 +82,13 @@ pub enum MessageType {
     },
     MissingGenesis {
         block: Block,
+        requestor: String,
+        sender_id: String,
+    },
+    StateComponentChunkMessage {
+        data: Vec<u8>,
+        chunk_number: u32,
+        total_chunks: u32,
         requestor: String,
         sender_id: String,
     }

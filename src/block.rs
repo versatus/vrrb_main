@@ -83,7 +83,9 @@ impl Block {
 
         let header = BlockHeader::new(last_block.clone(), reward_state, claim, txn_hash);
         let height = last_block.height.clone() + 1;
-
+        if header.timestamp - last_block.header.timestamp < 1000000000 {
+            return None
+        } 
         let mut block = Block {
             header: header.clone(),
             neighbors,
@@ -240,14 +242,14 @@ impl Chunkable for Block {
     fn chunk(&self) -> Option<Vec<Vec<u8>>> {
         let bytes_len = self.as_bytes().len();
         if bytes_len > MAX_TRANSMIT_SIZE {
-            let mut n_chunks = bytes_len / (MAX_TRANSMIT_SIZE / 10);
+            let mut n_chunks = bytes_len / MAX_TRANSMIT_SIZE;
             if bytes_len % MAX_TRANSMIT_SIZE != 0 {
                 n_chunks += 1;
             }
             let mut chunks_vec = vec![];
             let mut last_slice_end = 0;
             (1..=bytes_len)
-                .map(|n| n * (MAX_TRANSMIT_SIZE / 10))
+                .map(|n| n * (MAX_TRANSMIT_SIZE))
                 .enumerate()
                 .for_each(|(index, slice_end)| {
                     if index + 1 == n_chunks {

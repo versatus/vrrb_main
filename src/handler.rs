@@ -16,6 +16,7 @@ pub struct CommandHandler {
     pub to_mining_sender: UnboundedSender<Command>,
     pub to_blockchain_sender: UnboundedSender<Command>,
     pub to_swarm_sender: UnboundedSender<Command>,
+    pub to_state_sender: UnboundedSender<Command>,
     pub receiver: UnboundedReceiver<Command>,
 }
 
@@ -30,12 +31,14 @@ impl CommandHandler {
         to_mining_sender: UnboundedSender<Command>,
         to_blockchain_sender: UnboundedSender<Command>,
         to_swarm_sender: UnboundedSender<Command>,
+        to_state_sender: UnboundedSender<Command>,
         receiver: UnboundedReceiver<Command>,
     ) -> CommandHandler {
         CommandHandler {
             to_mining_sender,
             to_blockchain_sender,
             to_swarm_sender,
+            to_state_sender,
             receiver,
         }
     }
@@ -102,6 +105,16 @@ impl CommandHandler {
                 }
             }
             Command::SendState(_requested_from, _lowest_block) => {}
+            Command::SendStateComponents(requested_from, component) => {
+                if let Err(e) = self.to_state_sender.send(Command::SendStateComponents(requested_from, component)) {
+                    println!("Error sending SendStateComponenets Command to state receiver: {:?}", e);
+                }
+            }
+            Command::StoreStateComponentChunk(data, chunk_number, total_chunks) => {
+                if let Err(e) = self.to_state_sender.send(Command::StoreStateComponentChunk(data, chunk_number, total_chunks)) {
+                    println!("Error sending StoreStateComponentChunk to state receiver: {:?}", e);
+                }
+            }
             Command::ConfirmedBlock(_block) => {}
             Command::PendingBlock(block, sender_id) => {
                 if let Err(e) = self

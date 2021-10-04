@@ -1,3 +1,4 @@
+use crate::blockchain::StateComponent;
 use crate::network::command_utils::Command;
 use crate::network::message_types::{MessageType, StateBlock};
 use libp2p::gossipsub::GossipsubMessage;
@@ -12,7 +13,9 @@ pub fn process_message(message: GossipsubMessage, node_id: String) -> Option<Com
     ) {
         match message.clone() {
             MessageType::TxnMessage { txn, .. } => Some(Command::ProcessTxn(txn)),
-            MessageType::BlockMessage { block, sender_id, .. } => Some(Command::PendingBlock(block, sender_id)),
+            MessageType::BlockMessage {
+                block, sender_id, ..
+            } => Some(Command::PendingBlock(block, sender_id)),
             MessageType::TxnValidatorMessage { txn_validator, .. } => {
                 Some(Command::ProcessTxnValidator(txn_validator))
             }
@@ -21,14 +24,29 @@ pub fn process_message(message: GossipsubMessage, node_id: String) -> Option<Com
                 sender_id,
                 requested_from,
                 lowest_block,
+                component,
                 ..
             } => {
                 if requested_from == node_id {
-                    Some(Command::SendState(sender_id, lowest_block))
+                    match component {
+                        StateComponent::NetworkState => {
+                            Some(Command::SendStateComponents(sender_id, component))
+                        }
+                        StateComponent::Blockchain => {
+                            Some(Command::SendStateComponents(sender_id, component))
+                        }
+                        StateComponent::Ledger => {
+                            Some(Command::SendStateComponents(sender_id, component))
+                        }
+                        StateComponent::All => {
+                            Some(Command::SendStateComponents(sender_id, component))
+                        }
+                        _ => Some(Command::SendState(sender_id, lowest_block)),
+                    }
                 } else {
                     None
                 }
-            },
+            }
             MessageType::BlockChunkMessage {
                 requestor,
                 block_height,
@@ -46,12 +64,27 @@ pub fn process_message(message: GossipsubMessage, node_id: String) -> Option<Com
                     ));
                 }
                 return None;
-            },
-            MessageType::NeedGenesisBlock { sender_id, requested_from } => {
+            }
+            MessageType::NeedGenesisBlock {
+                sender_id,
+                requested_from,
+            } => {
                 if requested_from == node_id {
                     return Some(Command::SendGenesis(sender_id));
                 }
-                return None
+                return None;
+            }
+            MessageType::StateComponentChunkMessage {
+                data,
+                chunk_number,
+                total_chunks,
+                requestor,
+                ..
+            } => {
+                if requestor == node_id {
+                    return Some(Command::StoreStateComponentChunk(data, chunk_number, total_chunks))
+                }
+                None
             }
             _ => None,
         }

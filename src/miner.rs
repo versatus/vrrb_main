@@ -182,7 +182,6 @@ impl Miner {
         };
 
         validators.retain(|_, v| *v);
-        println!("{:?} > {:?}", validators.len(), self.claim_map.len() / 3);
         if validators.len() > self.claim_map.len() / 3 {
             if let Some((k, v)) = self.txn_pool.pending.remove_entry(&txn_id) {
                 self.txn_pool.confirmed.insert(k, v);

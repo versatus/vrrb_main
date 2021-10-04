@@ -1,12 +1,12 @@
 use crate::block::Block;
 use crate::header::BlockHeader;
+use crate::network::chunkable::Chunkable;
 use crate::network::command_utils::Command;
 use crate::network::message_types::MessageType;
-use crate::network::node::NodeAuth;
+use crate::network::node::MAX_TRANSMIT_SIZE;
 use crate::reward::RewardState;
 use crate::state::NetworkState;
 use crate::verifiable::Verifiable;
-use crate::network::chunkable::Chunkable;
 use pickledb::{PickleDb, PickleDbDumpPolicy, SerializationMethod};
 use ritelinked::LinkedHashMap;
 use serde::{Deserialize, Serialize};
@@ -40,6 +40,15 @@ pub enum InvalidBlockErrorReason {
     InvalidBlockReward,
     InvalidTxns,
     General,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Hash, Eq, PartialEq)]
+pub enum StateComponent {
+    All,
+    Ledger,
+    NetworkState,
+    Blockchain,
+    Archive,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,14 +97,48 @@ impl Blockchain {
             let block = db.get::<Block>(k);
             if let Some(block) = block {
                 if let Err(e) = cloned_db.set(k, &block) {
-                    println!("Error setting block with last_hash {} to cloned_db: {:?}", k, e);
+                    println!(
+                        "Error setting block with last_hash {} to cloned_db: {:?}",
+                        k, e
+                    );
                 }
             }
         });
 
         drop(db);
-        
         cloned_db
+    }
+
+    pub fn chain_db_to_string(&self) -> String {
+        let db = self.clone_chain_db();
+        let mut db_map = LinkedHashMap::new();
+        let keys = db.get_all();
+
+        for key in keys.iter() {
+            let value = db.get::<Block>(&key).unwrap();
+            let k = key.clone();
+            db_map.insert(k, value);
+        }
+
+        serde_json::to_string(&db_map).unwrap()
+    }
+
+    pub fn chain_db_to_bytes(&self) -> Vec<u8> {
+        self.chain_db_to_string().as_bytes().to_vec()
+    }
+
+    pub fn chain_db_from_bytes(&self, data: &[u8]) -> PickleDb {
+        let db_map = serde_json::from_slice::<LinkedHashMap<String, Block>>(data).unwrap();
+
+        let mut db = PickleDb::new_bin(self.clone().chain_db, PickleDbDumpPolicy::DumpUponRequest);
+
+        db_map.iter().for_each(|(k, v)| {
+            if let Err(e) = db.set(&k, &v) {
+                println!("Error setting block in database: {:?}", e);
+            };
+        });
+
+        db
     }
 
     pub fn dump(&self, block: &Block) -> Result<(), Box<dyn Error>> {
@@ -183,73 +226,11 @@ impl Blockchain {
     }
 
     pub fn stash_future_blocks(&mut self, block: &Block) {
-        self
-            .future_blocks
+        self.future_blocks
             .insert(block.clone().header.last_hash, block.clone());
     }
 
-    pub fn handle_invalid_block(
-        &mut self,
-        block: &Block,
-        reason: InvalidBlockErrorReason,
-        swarm_sender: tokio::sync::mpsc::UnboundedSender<Command>,
-        node_id: String,
-        node_type: NodeAuth,
-        block_miner: String,
-    ) {
-        match reason {
-            InvalidBlockErrorReason::BlockOutOfSequence => {
-                // Stash block in blockchain.future_blocks
-                // Request state update once. Set "updating_state" field
-                // in blockchain to true, so that it doesn't request it on
-                // receipt of new future blocks which will also be invalid.
-                if !self.updating_state {
-                    // send state request and set blockchain.updating state to true;
-                    println!("Error: {:?}", reason);
-                    if let Some((_, v)) = self.future_blocks.front() {
-                        let message = MessageType::GetNetworkStateMessage {
-                            sender_id: node_id,
-                            requested_from: block_miner,
-                            requestor_node_type: node_type.clone(),
-                            lowest_block: v.header.block_height,
-                        };
-
-                        if let Err(e) = swarm_sender.send(Command::SendMessage(message.as_bytes()))
-                        {
-                            println!(
-                                "Error sending state update request to swarm sender: {:?}",
-                                e
-                            );
-                        };
-
-                        self.updating_state = true;
-                    }
-                }
-            }
-            _ => {
-                println!("{:?}", reason);
-                if self.chain.len() - 1 > block.clone().header.block_height as usize {
-                    //Inform miner that you have a longer chain than they do. Stash
-                    // this block in the blockchain.invalid map
-                    self.invalid
-                        .insert(block.clone().header.last_hash, block.clone());
-                    self.send_invalid_block_message(
-                        block,
-                        reason,
-                        block_miner,
-                        node_id,
-                        swarm_sender.clone(),
-                    );
-                } else {
-                    // Inform network of the blocks you are missing, i.e. the blocks
-                    // between the current block height and blockchain.child block height.
-                    self.future_blocks
-                        .insert(block.clone().header.last_hash, block.clone());
-                    self.send_missing_blocks_message(block, node_id, swarm_sender);
-                }
-            }
-        }
-    }
+    pub fn handle_invalid_block() {}
 
     pub fn send_invalid_block_message(
         &self,
@@ -340,6 +321,18 @@ impl Blockchain {
             }
         });
     }
+
+    pub fn as_bytes(&self) -> Vec<u8> {
+        self.to_string().as_bytes().to_vec()
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Blockchain {
+        serde_json::from_slice::<Blockchain>(&data).unwrap()
+    }
+
+    pub fn to_string(&self) -> String {
+        serde_json::to_string(self).unwrap()
+    }
 }
 
 impl InvalidBlockErrorReason {
@@ -381,6 +374,35 @@ impl Error for InvalidBlockError {
 impl Error for InvalidBlockErrorReason {
     fn description(&self) -> &str {
         &self.to_str()
+    }
+}
+
+impl Chunkable for Blockchain {
+    fn chunk(&self) -> Option<Vec<Vec<u8>>> {
+        let bytes_len = self.as_bytes().len();
+        if bytes_len > MAX_TRANSMIT_SIZE {
+            let mut n_chunks = bytes_len / MAX_TRANSMIT_SIZE;
+            if bytes_len % MAX_TRANSMIT_SIZE != 0 {
+                n_chunks += 1;
+            }
+            let mut chunks_vec = vec![];
+            let mut last_slice_end = 0;
+            (1..=bytes_len)
+                .map(|n| n * MAX_TRANSMIT_SIZE)
+                .enumerate()
+                .for_each(|(index, slice_end)| {
+                    if index + 1 == n_chunks {
+                        chunks_vec.push(self.clone().as_bytes()[last_slice_end..].to_vec());
+                    } else {
+                        chunks_vec
+                            .push(self.clone().as_bytes()[last_slice_end..slice_end].to_vec());
+                        last_slice_end = slice_end;
+                    }
+                });
+            Some(chunks_vec)
+        } else {
+            Some(vec![self.clone().as_bytes()])
+        }
     }
 }
 

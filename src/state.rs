@@ -1,11 +1,27 @@
 use crate::pool::Pool;
 use crate::txn::Txn;
 use crate::{block::Block, claim::Claim, reward::RewardState};
+use crate::network::node::MAX_TRANSMIT_SIZE;
+use crate::network::chunkable::Chunkable;
 use log::info;
 use pickledb::{PickleDb, PickleDbDumpPolicy, SerializationMethod};
 use ritelinked::LinkedHashMap;
 use serde::{Deserialize, Serialize};
 use sha256::digest_bytes;
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Ledger {
+    pub credits: LinkedHashMap<String, u128>,
+    pub debits: LinkedHashMap<String, u128>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Components {
+    pub blockchain: Vec<u8>,
+    pub ledger: Vec<u8>,
+    pub network_state: Vec<u8>,
+    pub archive: Option<Vec<u8>>,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NetworkState {
@@ -115,11 +131,10 @@ impl NetworkState {
     }
 
     pub fn hash(&mut self, block: Block) -> String {
-        let reward_state = self.clone().get_reward_state();
         let credit_hash = self.clone().credit_hash(&block);
         let debit_hash = self.clone().debit_hash(&block);
         let reward_state_hash =
-            digest_bytes(format!("{:?},{:?}", self.reward_state, reward_state).as_bytes());
+            digest_bytes(format!("{:?}", self.reward_state).as_bytes());
         let payload = format!(
             "{:?},{:?},{:?},{:?}",
             self.state_hash, credit_hash, debit_hash, reward_state_hash
@@ -158,7 +173,6 @@ impl NetworkState {
 
     pub fn dump(&mut self, block: &Block) {
         let mut db = self.get_ledger_db();
-
         let (mut credits, mut debits, mut reward_state) = NetworkState::restore_state_objects(&db);
 
         block.txns.iter().for_each(|(_txn_id, txn)| {
@@ -311,6 +325,22 @@ impl NetworkState {
             return 0u128;
         }
     }
+    pub fn update_ledger(&mut self, ledger: Ledger, reward_state: RewardState) {
+        let mut db = self.get_ledger_db();
+        if let Err(_) = db.set("credits", &ledger.credits) {
+            println!("Error setting credits to ledger");
+        }
+        if let Err(_) = db.set("debits", &ledger.debits) {
+            println!("Error setting debits to ledger");
+        }
+        if let Err(_) = db.set("rewardstate", &reward_state) {
+            println!("Error setting reward state to ledger");
+        }
+
+        if let Err(_) = db.dump() {
+            println!("Error dumping ledger to db");
+        }
+    }
 
     pub fn pending_balance(&self, _address: String, _txn_pool: &Pool<String, Txn>) -> Option<(u128, u128)> {
         None
@@ -370,6 +400,82 @@ impl NetworkState {
 
     pub fn from_string(string: &String) -> NetworkState {
         serde_json::from_str::<NetworkState>(&string).unwrap()
+    }
+
+    pub fn db_to_ledger(&self) -> Ledger {
+        let credits = self.get_credits();
+        let debits = self.get_debits();
+
+        Ledger {
+            credits,
+            debits,
+        }
+    }
+}
+
+impl Ledger {
+
+    pub fn as_bytes(&self) -> Vec<u8> {
+        self.to_string().as_bytes().to_vec()
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Ledger {
+        serde_json::from_slice::<Ledger>(data).unwrap()
+    }
+
+    pub fn to_string(&self) -> String {
+        serde_json::to_string(self).unwrap()
+    }
+
+    pub fn from_string(string: &String) -> Ledger {
+        serde_json::from_str::<Ledger>(&string).unwrap()
+    }
+}
+
+impl Components {
+        pub fn as_bytes(&self) -> Vec<u8> {
+        self.to_string().as_bytes().to_vec()
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Components {
+        serde_json::from_slice::<Components>(data).unwrap()
+    }
+
+    pub fn to_string(&self) -> String {
+        serde_json::to_string(self).unwrap()
+    }
+
+    pub fn from_string(string: &String) -> Components {
+        serde_json::from_str::<Components>(&string).unwrap()
+    }
+}
+
+impl Chunkable for Components {
+    fn chunk(&self) -> Option<Vec<Vec<u8>>> {
+        let bytes_len = self.as_bytes().len();
+        if bytes_len > MAX_TRANSMIT_SIZE {
+            let mut n_chunks = bytes_len / MAX_TRANSMIT_SIZE;
+            if bytes_len % MAX_TRANSMIT_SIZE != 0 {
+                n_chunks += 1;
+            }
+            let mut chunks_vec = vec![];
+            let mut last_slice_end = 0;
+            (1..=n_chunks)
+                .map(|n| n * MAX_TRANSMIT_SIZE)
+                .enumerate()
+                .for_each(|(index, slice_end)| {
+                    if index + 1 == n_chunks {
+                        chunks_vec.push(self.clone().as_bytes()[last_slice_end..].to_vec());
+                    } else {
+                        chunks_vec
+                            .push(self.clone().as_bytes()[last_slice_end..slice_end].to_vec());
+                        last_slice_end = slice_end;
+                    }
+                });
+            Some(chunks_vec)
+        } else {
+            Some(vec![self.clone().as_bytes()])
+        }
     }
 }
 

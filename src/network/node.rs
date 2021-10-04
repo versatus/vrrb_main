@@ -9,7 +9,7 @@ use libp2p::{identity, PeerId};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 
-pub const MAX_TRANSMIT_SIZE: usize = 2000000;
+pub const MAX_TRANSMIT_SIZE: usize = 65000;
 
 #[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize, Clone)]

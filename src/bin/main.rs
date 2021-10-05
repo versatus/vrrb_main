@@ -23,6 +23,7 @@ use vrrb_lib::state::Components;
 use vrrb_lib::state::NetworkState;
 use vrrb_lib::wallet::WalletAccount;
 use vrrb_lib::state::Ledger;
+use vrrb_lib::block::Block;
 use ritelinked::LinkedHashMap;
 
 pub const NANO: u128 = 1;
@@ -281,18 +282,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         "Error sending state update completed command to receiver"
                                     );
                                 }
-                                info!("Blockchain length: {:?}", blockchain.chain.len());
                             }
                         }
                     }
                     Command::GetStateComponents(requestor, components) => {
                         match components {
                             StateComponent::All => {
-                                let current_blockchain = blockchain.clone().as_bytes();
-                                let current_ledger = blockchain_network_state.clone().db_to_ledger().as_bytes();
-                                let current_network_state = blockchain_network_state.clone().as_bytes();
+                                let genesis_bytes = if let Some(genesis) = blockchain.clone().genesis {
+                                    Some(genesis.clone().as_bytes())
+                                } else {
+                                    None
+                                };
+                                let child_bytes = if let Some(block) = blockchain.clone().child {
+                                    Some(block.clone().as_bytes())
+                                } else {
+                                    None
+                                };
+                                let parent_bytes = if let Some(block) = blockchain.clone().parent {
+                                    Some(block.clone().as_bytes())
+                                } else {
+                                    None
+                                };
+                                let current_ledger = Some(blockchain_network_state.clone().db_to_ledger().as_bytes());
+                                let current_network_state = Some(blockchain_network_state.clone().as_bytes());
                                 let components = Components {
-                                    blockchain: current_blockchain,
+                                    genesis: genesis_bytes,
+                                    child: child_bytes,
+                                    parent: parent_bytes,
+                                    blockchain: None,
                                     ledger: current_ledger,
                                     network_state: current_network_state,
                                     archive: None,
@@ -308,22 +325,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     Command::StateUpdateComponents(components) => {
-                        let mut new_blockchain = Blockchain::from_bytes(&components.blockchain);
-                        let mut new_network_state = NetworkState::from_bytes(&components.network_state);
-                        let new_ledger = Ledger::from_bytes(&components.ledger);
+                        if let Some(bytes) = components.genesis {
+                            blockchain.genesis = Some(Block::from_bytes(&bytes))
+                        }
+
+                        if let Some(bytes) = components.child {
+                            blockchain.child = Some(Block::from_bytes(&bytes))
+                        }
+                        
+                        if let Some(bytes) = components.parent {
+                            blockchain.parent = Some(Block::from_bytes(&bytes))
+                        }
+                        
+                        if let Some(bytes) = components.blockchain {
+                            let mut new_blockchain = Blockchain::from_bytes(&bytes);
+                            new_blockchain.future_blocks = blockchain.clone().future_blocks;
+                            new_blockchain.chain_db = blockchain.clone().chain_db;
+                            blockchain = new_blockchain;
+                        }
+                        
+                        if let Some(bytes) = components.network_state {
+                            let mut new_network_state = NetworkState::from_bytes(&bytes);
+                            new_network_state.path = blockchain_network_state.path;
+                            blockchain_reward_state = new_network_state.reward_state;
+                            blockchain_network_state = new_network_state;
+                        }
+
+                        if let Some(bytes) = components.ledger {
+                            let new_ledger = Ledger::from_bytes(&bytes);
+                            blockchain_network_state.update_ledger(new_ledger, blockchain_reward_state);
+                        }
+
                         if let Some(bytes) = components.archive {
                             let mut new_db = blockchain.chain_db_from_bytes(&bytes);
                             if let Err(e) = new_db.dump() {
                                 println!("Error dumping db update: {:?}", e);
                             }
                         }
-                        new_blockchain.future_blocks = blockchain.clone().future_blocks;
-                        new_blockchain.chain_db = blockchain.clone().chain_db;
-                        blockchain_reward_state = new_network_state.reward_state;
-                        new_network_state.path = blockchain_network_state.path;
-                        blockchain_network_state = new_network_state;
-                        blockchain_network_state.update_ledger(new_ledger, blockchain_reward_state.clone());
-                        blockchain = new_blockchain;
 
                         if let Err(e) = blockchain_sender.send(Command::ProcessBacklog) {
                             println!("Error sending process backlog command to blockchain receiver: {:?}", e);
@@ -357,6 +395,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     Command::StateUpdateCompleted(network_state) => {
                         blockchain_network_state = network_state.clone();
+                    }
+                    Command::GetHeight => {
+                        println!("Blockchain Height: {}", blockchain.chain.len());
                     }
                     _ => {}
                 }
@@ -432,6 +473,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 );
                                             }
                                         }
+                                    } else {
+                                        miner.current_nonce_counter += 1;
+                                        if miner.current_nonce_counter > 1000000 {
+                                            println!("Miner abandoned claim");
+                                            println!("Before abandonment: {}", &miner.claim_map.len());
+                                            miner.abandoned_claim(hash);
+                                            println!("After abandonment: {}", &miner.claim_map.len())
+                                            
+                                        }
+                                        if let Err(e) = miner_sender.send(Command::MineBlock) {
+                                            println!(
+                                                "Error sending miner sender MineBlock: {:?}",
+                                                e
+                                            );
+                                        }
                                     }
                                 } else {
                                     if let Err(e) = miner_sender.send(Command::NonceUp) {
@@ -446,6 +502,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     Command::ConfirmedBlock(block) => {
+                        miner.current_nonce_counter = 0;
                         if let Category::Motherlode(_) = block.header.block_reward.category {
                             println!("*****{:?}*****\n", &block.header.block_reward.category);
                         }
@@ -612,6 +669,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     } else {
                         state_chunk_cache.insert(chunk_number, data);
                     }
+                }
+                Command::ConfirmedBlock(_) => {
+                    // Dump block to block archive.
                 }
                 _ => {}
             }

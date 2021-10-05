@@ -6,7 +6,6 @@ use crate::state::{NetworkState, Components};
 use crate::txn::Txn;
 use crate::validator::TxnValidator;
 use serde::{Deserialize, Serialize};
-// use log::{info};
 
 pub const NEWTXN: &str = "NEW_TXN";
 pub const SENDTXN: &str = "SENDTXN";
@@ -21,6 +20,7 @@ pub const TXNTOPIC: &str = "txn";
 pub const QUIT: &str = "QUIT";
 pub const TEST: &str = "TEST";
 pub const GETBAL: &str = "GETBAL";
+pub const GETHEIGHT: &str = "GETHEIGHT";
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -45,6 +45,7 @@ pub enum Command {
     StoreStateComponentChunk(Vec<u8>, u32, u32),
     StateUpdateComponents(Components),
     UpdateLastBlock(Block),
+    GetHeight,
     MineBlock,
     MineGenesis,
     StopMine,
@@ -101,6 +102,7 @@ impl Command {
                 MINEBLOCK => return Some(Command::MineBlock),
                 STOPMINE => return Some(Command::StopMine),
                 SENDADDRESS => return Some(Command::SendAddress),
+                GETHEIGHT => return Some(Command::GetHeight),
                 QUIT => return Some(Command::Quit),
                 _ => {
                     println!("Invalid command string");

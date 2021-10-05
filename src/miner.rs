@@ -26,6 +26,7 @@ pub struct Miner {
     pub reward_state: RewardState,
     pub network_state: NetworkState,
     pub neighbors: Option<Vec<BlockHeader>>,
+    pub current_nonce_counter: u128,
     pub n_miners: u128,
     pub init: bool,
 }
@@ -48,6 +49,7 @@ impl Miner {
             reward_state,
             network_state,
             neighbors: None,
+            current_nonce_counter: 0,
             n_miners,
             init: false,
         };
@@ -187,6 +189,11 @@ impl Miner {
                 self.txn_pool.confirmed.insert(k, v);
             }
         }
+    }
+    pub fn abandoned_claim(&mut self, hash: String) {
+        self.claim_map.retain(|_, v| {
+            v.hash != hash
+        });
     }
 }
 

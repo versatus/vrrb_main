@@ -5,7 +5,6 @@ use crate::network::node::MAX_TRANSMIT_SIZE;
 use crate::state::NetworkState;
 use crate::verifiable::Verifiable;
 use crate::{claim::Claim, reward::RewardState, txn::Txn};
-use log::info;
 use ritelinked::LinkedHashMap;
 use serde::{Deserialize, Serialize};
 use sha256::digest_bytes;
@@ -30,7 +29,6 @@ impl Block {
     // Returns a result with either a tuple containing the genesis block and the
     // updated account state (if successful) or an error (if unsuccessful)
     pub fn genesis(reward_state: &RewardState, claim: Claim) -> Option<Block> {
-
         let header = BlockHeader::genesis(0, reward_state, claim.clone());
         let state_hash = digest_bytes(
             format!(
@@ -83,9 +81,9 @@ impl Block {
 
         let header = BlockHeader::new(last_block.clone(), reward_state, claim, txn_hash);
         let height = last_block.height.clone() + 1;
-        if header.timestamp - last_block.header.timestamp < 1000000000 {
-            return None
-        } 
+        // if header.timestamp - last_block.header.timestamp < 1000000000 {
+        //     return None;
+        // }
         let mut block = Block {
             header: header.clone(),
             neighbors,
@@ -151,42 +149,37 @@ impl Verifiable for Block {
     ) -> Result<(), InvalidBlockError> {
         if !self.valid_last_hash(last_block) {
             return Err(InvalidBlockError {
-                details: InvalidBlockErrorReason::InvalidLastHash
+                details: InvalidBlockErrorReason::InvalidLastHash,
             });
         }
 
         if !self.valid_block_nonce(last_block) {
             return Err(InvalidBlockError {
-                details: InvalidBlockErrorReason::InvalidBlockNonce
+                details: InvalidBlockErrorReason::InvalidBlockNonce,
             });
         }
 
         if !self.valid_state_hash(network_state) {
             return Err(InvalidBlockError {
-                details: InvalidBlockErrorReason::InvalidStateHash
+                details: InvalidBlockErrorReason::InvalidStateHash,
             });
         }
 
         if !self.valid_block_reward(reward_state) {
-            return Err(
-                InvalidBlockError {
-                    details: InvalidBlockErrorReason::InvalidBlockReward
-                }
-            );
+            return Err(InvalidBlockError {
+                details: InvalidBlockErrorReason::InvalidBlockReward,
+            });
         }
 
         if !self.valid_next_block_reward(reward_state) {
-            return Err(
-                InvalidBlockError {
-                    details: InvalidBlockErrorReason::InvalidBlockReward
-                }
-            )
+            return Err(InvalidBlockError {
+                details: InvalidBlockErrorReason::InvalidBlockReward,
+            });
         }
 
         if !self.valid_txns() {
-            return Err(
-                InvalidBlockError {
-                    details: InvalidBlockErrorReason::InvalidTxns
+            return Err(InvalidBlockError {
+                details: InvalidBlockErrorReason::InvalidTxns,
             });
         }
 
@@ -200,7 +193,6 @@ impl Verifiable for Block {
     fn valid_state_hash(&self, network_state: &NetworkState) -> bool {
         let mut hashable_state = network_state.clone();
         let hash = hashable_state.hash(self.clone());
-        info!(target: "state_hash", "{:?} == {:?}", hash, self.hash);
         self.hash == hash
     }
 

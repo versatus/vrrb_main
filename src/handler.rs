@@ -136,6 +136,11 @@ impl CommandHandler {
                 }
             }
             Command::MineGenesis => {}
+            Command::GetHeight => {
+                if let Err(e) = self.to_blockchain_sender.send(Command::GetHeight) {
+                    println!("Error sending GetHeight command to blockchain thread: {:?}", e);
+                }
+            }
             Command::MineBlock => { 
                 if let Err(e) = self.to_mining_sender.send(Command::MineBlock) {
                     println!("Error sending Mine Block command to miner: {:?}", e);

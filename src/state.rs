@@ -3,7 +3,6 @@ use crate::txn::Txn;
 use crate::{block::Block, claim::Claim, reward::RewardState};
 use crate::network::node::MAX_TRANSMIT_SIZE;
 use crate::network::chunkable::Chunkable;
-use log::info;
 use pickledb::{PickleDb, PickleDbDumpPolicy, SerializationMethod};
 use ritelinked::LinkedHashMap;
 use serde::{Deserialize, Serialize};
@@ -17,9 +16,12 @@ pub struct Ledger {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Components {
-    pub blockchain: Vec<u8>,
-    pub ledger: Vec<u8>,
-    pub network_state: Vec<u8>,
+    pub genesis: Option<Vec<u8>>,
+    pub child: Option<Vec<u8>>,
+    pub parent: Option<Vec<u8>>,
+    pub blockchain: Option<Vec<u8>>,
+    pub ledger: Option<Vec<u8>>,
+    pub network_state: Option<Vec<u8>>,
     pub archive: Option<Vec<u8>>,
 }
 
@@ -197,9 +199,6 @@ impl NetworkState {
                 block.header.block_reward.amount.clone(),
             );
         }
-
-        info!(target: "credits", "{:?}", credits);
-        info!(target: "debits", "{:?}", debits);
 
         reward_state.update(block.header.block_reward.category.clone());
         self.update_state_hash(&block);

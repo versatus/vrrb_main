@@ -19,7 +19,6 @@ use libp2p::{
     yamux::YamuxConfig,
     NetworkBehaviour, PeerId, Transport,
 };
-use log::info;
 use std::io::Error;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -50,9 +49,7 @@ impl NetworkBehaviourEventProcess<IdentifyEvent> for VrrbNetworkBehavior {
                 }
                 self.kademlia.bootstrap().unwrap();
             }
-            IdentifyEvent::Error { peer_id, error } => {
-                info!(target: "protocol_error", "Encountered an error: {:?} -> {:?}", error, peer_id);
-            }
+            IdentifyEvent::Error { .. } => {}
             _ => {}
         }
     }
@@ -85,7 +82,6 @@ impl NetworkBehaviourEventProcess<PingEvent> for VrrbNetworkBehavior {
                     Err(failure) => {
                         match failure {
                             PingFailure::Timeout => {
-                                info!(target: "failed ping", "pinged {} and was a failure", &peer.to_string());
                                 //TODO: Dial again and try again, keep track of failures and
                                 // if it fails three times then drop peer.
                                 self.kademlia.remove_peer(&peer);
@@ -96,7 +92,6 @@ impl NetworkBehaviourEventProcess<PingEvent> for VrrbNetworkBehavior {
                                 }
                             }
                             PingFailure::Other { .. } => {
-                                info!(target: "failed ping", "pinged {} and was a failure", &peer.to_string());
                                 self.kademlia.remove_peer(&peer);
                             }
                         }

@@ -8,6 +8,7 @@ use crate::txn::Txn;
 use crate::validator::TxnValidator;
 use crate::verifiable::Verifiable;
 use ritelinked::LinkedHashMap;
+use sha256::digest_bytes;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
@@ -107,12 +108,15 @@ impl Miner {
     }
 
     pub fn mine(&mut self) -> Option<Block> {
+        let claim_map_hash =
+            digest_bytes(serde_json::to_string(&self.claim_map).unwrap().as_bytes());
         if let Some(last_block) = self.last_block.clone() {
             return Block::mine(
                 self.clone().claim,
                 last_block.clone(),
                 self.clone().txn_pool.confirmed.clone(),
                 self.clone().claim_pool.confirmed.clone(),
+                Some(claim_map_hash),
                 &self.clone().reward_state.clone(),
                 &self.clone().network_state.clone(),
                 self.clone().neighbors.clone(),
@@ -202,7 +206,6 @@ impl Miner {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        
         if let Some(time) = timestamp.checked_sub(self.current_nonce_timer) {
             time / SECOND
         } else {

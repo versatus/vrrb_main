@@ -25,6 +25,7 @@ use vrrb_lib::state::Components;
 use vrrb_lib::state::Ledger;
 use vrrb_lib::state::NetworkState;
 use vrrb_lib::wallet::WalletAccount;
+use sha256::digest_bytes;
 
 pub const NANO: u128 = 1;
 pub const MICRO: u128 = NANO * 1000;
@@ -477,9 +478,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             }
                                         }
                                     } else {
-
-                                        println!("Time Elapsed: {}", miner.check_time_elapsed());
-                                        
+                                       
                                         if miner.check_time_elapsed() > 30 {
                                             println!("Claim map before abandonment: {}", miner.claim_map.len());
                                             miner.abandoned_claim(hash);
@@ -508,6 +507,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     Command::ConfirmedBlock(block) => {
                         miner.current_nonce_timer = block.header.timestamp;
+                        let claim_map_hash = digest_bytes(&serde_json::to_string(&miner.claim_map).unwrap().as_bytes());
+                        if let Some(hash) = &block.header.claim_map_hash {
+                            if hash != &claim_map_hash {
+                                println!("Different claim states");
+                            }
+                        }
                         if let Category::Motherlode(_) = block.header.block_reward.category {
                             println!("*****{:?}*****\n", &block.header.block_reward.category);
                         }

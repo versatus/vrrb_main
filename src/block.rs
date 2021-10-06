@@ -72,6 +72,7 @@ impl Block {
         last_block: Block, // The last block, which contains the current block reward.
         txns: LinkedHashMap<String, Txn>,
         claims: LinkedHashMap<String, Claim>,
+        claim_map_hash: Option<String>,
         reward_state: &RewardState,
         network_state: &NetworkState,
         neighbors: Option<Vec<BlockHeader>>, 
@@ -84,10 +85,14 @@ impl Block {
             digest_bytes(&txn_vec)
         };
 
-        let header = BlockHeader::new(last_block.clone(), reward_state, claim, txn_hash);
+        let header = BlockHeader::new(last_block.clone(), reward_state, claim, txn_hash, claim_map_hash);
         let height = last_block.height.clone() + 1;
-        if (header.timestamp - last_block.header.timestamp) / SECOND < 1 {
-            return None;
+        if let Some(time) = header.timestamp.checked_sub(last_block.header.timestamp) {
+            if time / SECOND < 1 {
+                return None 
+            }
+        } else {
+            return None
         }
         let mut block = Block {
             header: header.clone(),

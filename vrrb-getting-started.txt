@@ -29,17 +29,17 @@
 
 6. run the following command in your terminal
 
-	start ./vrrb_bin.exe /ip4/3.144.126.178/tcp/10516 
+	start ./vrrb_bin.exe /ip4/3.144.126.178/tcp/19292 
 	(for windows cmd)
 	
 	OR  
 	
-	./vrrb_bin.exe /ip4/3.144.126.178/tcp/10516 
+	./vrrb_bin.exe /ip4/3.144.126.178/tcp/19292
 	(for windows powershell)
 
 	OR 
 
-	./vrrb_bin /ip4/3.144.126.178/tcp/10516
+	./vrrb_bin /ip4/3.144.126.178/tcp/19292
 	(for macOs)
 
 7. You should see a Secret Key, a public key and an address... Send me your address via email or text.

@@ -11,6 +11,12 @@ use ritelinked::LinkedHashMap;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+pub const NANO: u128 = 1;
+pub const MICRO: u128 = NANO * 1000;
+pub const MILLI: u128 = MICRO * 1000;
+pub const SECOND: u128 = MILLI * 1000;
 
 #[derive(Debug)]
 pub struct NoLowestPointerError(String);
@@ -26,7 +32,7 @@ pub struct Miner {
     pub reward_state: RewardState,
     pub network_state: NetworkState,
     pub neighbors: Option<Vec<BlockHeader>>,
-    pub current_nonce_counter: u128,
+    pub current_nonce_timer: u128,
     pub n_miners: u128,
     pub init: bool,
 }
@@ -49,7 +55,7 @@ impl Miner {
             reward_state,
             network_state,
             neighbors: None,
-            current_nonce_counter: 0,
+            current_nonce_timer: 0,
             n_miners,
             init: false,
         };
@@ -110,7 +116,7 @@ impl Miner {
                 &self.clone().reward_state.clone(),
                 &self.clone().network_state.clone(),
                 self.clone().neighbors.clone(),
-            )
+            );
         }
 
         None
@@ -190,10 +196,27 @@ impl Miner {
             }
         }
     }
+
+    pub fn check_time_elapsed(&self) -> u128 {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        
+        if let Some(time) = timestamp.checked_sub(self.current_nonce_timer) {
+            time / SECOND
+        } else {
+            0u128
+        }
+    }
+
     pub fn abandoned_claim(&mut self, hash: String) {
-        self.claim_map.retain(|_, v| {
-            v.hash != hash
-        });
+        self.claim_map.retain(|_, v| v.hash != hash);
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        self.current_nonce_timer = timestamp;
     }
 }
 

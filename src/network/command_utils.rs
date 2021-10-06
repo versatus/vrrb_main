@@ -45,6 +45,7 @@ pub enum Command {
     StoreStateComponentChunk(Vec<u8>, u32, u32),
     StateUpdateComponents(Components),
     UpdateLastBlock(Block),
+    ClaimAbandoned(Claim),
     GetHeight,
     MineBlock,
     MineGenesis,

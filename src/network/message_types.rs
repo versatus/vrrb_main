@@ -91,7 +91,13 @@ pub enum MessageType {
         total_chunks: u32,
         requestor: String,
         sender_id: String,
+    },
+    ClaimAbandonedMessage {
+        claim: Claim,
+        timer_start: u128,
+        timer_end: u128,
     }
+
 }
 
 impl MessageType {

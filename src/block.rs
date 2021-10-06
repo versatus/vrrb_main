@@ -10,6 +10,11 @@ use serde::{Deserialize, Serialize};
 use sha256::digest_bytes;
 use std::fmt;
 
+pub const NANO: u128 = 1;
+pub const MICRO: u128 = NANO * 1000;
+pub const MILLI: u128 = MICRO * 1000;
+pub const SECOND: u128 = MILLI * 1000;
+
 const VALIDATOR_THRESHOLD: f64 = 0.60;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -69,7 +74,7 @@ impl Block {
         claims: LinkedHashMap<String, Claim>,
         reward_state: &RewardState,
         network_state: &NetworkState,
-        neighbors: Option<Vec<BlockHeader>>,
+        neighbors: Option<Vec<BlockHeader>>, 
     ) -> Option<Block> {
         let txn_hash = {
             let mut txn_vec = vec![];
@@ -81,9 +86,9 @@ impl Block {
 
         let header = BlockHeader::new(last_block.clone(), reward_state, claim, txn_hash);
         let height = last_block.height.clone() + 1;
-        // if header.timestamp - last_block.header.timestamp < 1000000000 {
-        //     return None;
-        // }
+        if (header.timestamp - last_block.header.timestamp) / SECOND < 1 {
+            return None;
+        }
         let mut block = Block {
             header: header.clone(),
             neighbors,

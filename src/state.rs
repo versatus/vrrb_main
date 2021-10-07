@@ -255,16 +255,20 @@ impl NetworkState {
 
     pub fn abandoned_claim(&mut self, hash: String) {
         let mut db = self.get_ledger_db();
-        if let Some(mut claims) = db.get::<LinkedHashMap<String, Claim>>("claims") {
-            claims.retain(|_, v| v.hash != hash);
+        let (_, _, _, mut claims) = NetworkState::restore_state_objects(&db);
 
-            if let Err(e) = db.set("claims", &claims) {
-                println!("Error setting claims to db: {:?}", e);
-            }
+        claims.retain(|_, v| {
+            v.hash != hash
+        });
 
-            if let Err(e) = db.dump() {
-                println!("Error dumping db to file: {:?}", e);
-            }
+        if let Err(_) = db.set("claims", &claims) {
+            println!("Error setting claims to state")
+        };
+        
+        println!("Abandoned claim: {:?}", claims);
+
+        if let Err(e) = db.dump() {
+            println!("Error dumping state to file: {:?}", e)
         }
     }
 

@@ -37,6 +37,7 @@ pub struct Miner {
     pub n_miners: u128,
     pub init: bool,
     pub abandoned_claim_counter: LinkedHashMap<String, Claim>,
+    pub abandoned_claim: Option<Claim>,
 }
 
 impl Miner {
@@ -61,6 +62,7 @@ impl Miner {
             n_miners,
             init: false,
             abandoned_claim_counter: LinkedHashMap::new(),
+            abandoned_claim: None,
         };
 
         miner
@@ -121,6 +123,7 @@ impl Miner {
                 &self.clone().reward_state.clone(),
                 &self.clone().network_state.clone(),
                 self.clone().neighbors.clone(),
+                self.abandoned_claim.clone(),
             );
         }
 
@@ -203,15 +206,19 @@ impl Miner {
     }
 
     pub fn check_time_elapsed(&self) -> u128 {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        let timestamp = self.get_timestamp();
         if let Some(time) = timestamp.checked_sub(self.current_nonce_timer) {
             time / SECOND
         } else {
             0u128
         }
+    }
+
+    pub fn get_timestamp(&self) -> u128 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
     }
 
     pub fn abandoned_claim(&mut self, hash: String) {

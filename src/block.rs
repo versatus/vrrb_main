@@ -28,6 +28,7 @@ pub struct Block {
     pub hash: String,
     pub received_at: Option<u128>,
     pub received_from: Option<String>,
+    pub abandoned_claim: Option<Claim>,
 }
 
 impl Block {
@@ -56,6 +57,7 @@ impl Block {
             hash: state_hash,
             received_at: None,
             received_from: None,
+            abandoned_claim: None,
         };
 
         // Update the account state with the miner and new block, this will also set the values to the
@@ -75,7 +77,8 @@ impl Block {
         claim_map_hash: Option<String>,
         reward_state: &RewardState,
         network_state: &NetworkState,
-        neighbors: Option<Vec<BlockHeader>>, 
+        neighbors: Option<Vec<BlockHeader>>,
+        abandoned_claim: Option<Claim>,
     ) -> Option<Block> {
         let txn_hash = {
             let mut txn_vec = vec![];
@@ -103,6 +106,7 @@ impl Block {
             hash: header.last_hash.clone(),
             received_at: None,
             received_from: None,
+            abandoned_claim,
         };
 
         let mut hashable_state = network_state.clone();

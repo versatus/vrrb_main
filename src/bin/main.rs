@@ -466,7 +466,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 sender_id: node_id.clone().to_string(),
                                             };
 
-                                            if let Err(e) = miner_sender
+                                            if let Err(e) = swarm_sender
                                                 .send(Command::SendMessage(message.as_bytes()))
                                             {
                                                 println!("Error sending SendMessage command to swarm: {:?}", e);
@@ -490,6 +490,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                     } else {
                                         if miner.check_time_elapsed() > 30 {
+                                            miner.current_nonce_timer = miner.get_timestamp();
                                             let mut abandoned_claim_map = miner.claim_map.clone();
                                             abandoned_claim_map.retain(|_, v| v.hash == hash);
 
@@ -517,6 +518,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     / (miner.claim_map.len() as f64 - 1.0)
                                                     > VALIDATOR_THRESHOLD
                                                 {
+                                                    miner.claim_map.retain(|_, v| v.hash != hash);
                                                     if let Err(e) = blockchain_sender.send(
                                                         Command::ClaimAbandoned(
                                                             miner.claim.pubkey.clone(),
@@ -653,6 +655,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Command::NonceUp => {
                         println!("*********NONCE UP*********");
                         miner.nonce_up();
+                        println!("Claim Map: {:?}", miner.claim_map);
                         if let Err(e) = miner_sender.send(Command::MineBlock) {
                             println!("Error sending MineBlock command to miner: {:?}", e);
                         }

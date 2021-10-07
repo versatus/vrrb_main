@@ -6,7 +6,6 @@ pub trait Handler<T, V> {
     fn recv(&mut self) -> Option<V>;
 }
 
-
 pub struct MessageHandler<T, V> {
     pub sender: UnboundedSender<T>,
     pub receiver: UnboundedReceiver<V>,
@@ -74,7 +73,10 @@ impl CommandHandler {
             }
             Command::ProcessClaim(claim) => {
                 if let Err(e) = self.to_mining_sender.send(Command::ProcessClaim(claim)) {
-                    println!("Error sending new claim to mining receiver for processing: {:?}", e);
+                    println!(
+                        "Error sending new claim to mining receiver for processing: {:?}",
+                        e
+                    );
                 }
             }
             Command::StateUpdateCompleted(network_state) => {
@@ -88,12 +90,7 @@ impl CommandHandler {
                     );
                 }
             }
-            Command::StoreStateDbChunk(
-                _object,
-                _chunk,
-                _chunk_number,
-                _total_chunks,
-            ) => {}
+            Command::StoreStateDbChunk(_object, _chunk, _chunk_number, _total_chunks) => {}
             Command::ProcessBacklog => {}
             Command::CheckStateUpdateStatus((_block_height, _block, _last_block)) => {}
             Command::Quit => {
@@ -106,13 +103,26 @@ impl CommandHandler {
             }
             Command::SendState(_requested_from, _lowest_block) => {}
             Command::SendStateComponents(requested_from, component) => {
-                if let Err(e) = self.to_state_sender.send(Command::SendStateComponents(requested_from, component)) {
-                    println!("Error sending SendStateComponenets Command to state receiver: {:?}", e);
+                if let Err(e) = self
+                    .to_state_sender
+                    .send(Command::SendStateComponents(requested_from, component))
+                {
+                    println!(
+                        "Error sending SendStateComponenets Command to state receiver: {:?}",
+                        e
+                    );
                 }
             }
             Command::StoreStateComponentChunk(data, chunk_number, total_chunks) => {
-                if let Err(e) = self.to_state_sender.send(Command::StoreStateComponentChunk(data, chunk_number, total_chunks)) {
-                    println!("Error sending StoreStateComponentChunk to state receiver: {:?}", e);
+                if let Err(e) = self.to_state_sender.send(Command::StoreStateComponentChunk(
+                    data,
+                    chunk_number,
+                    total_chunks,
+                )) {
+                    println!(
+                        "Error sending StoreStateComponentChunk to state receiver: {:?}",
+                        e
+                    );
                 }
             }
             Command::ConfirmedBlock(_block) => {}
@@ -131,24 +141,36 @@ impl CommandHandler {
                 }
             }
             Command::SendGenesis(sender_id) => {
-                if let Err(e) = self.to_blockchain_sender.send(Command::SendGenesis(sender_id)) {
-                    println!("Error sending SendGenesis command to blockchain thread: {:?}", e);
+                if let Err(e) = self
+                    .to_blockchain_sender
+                    .send(Command::SendGenesis(sender_id))
+                {
+                    println!(
+                        "Error sending SendGenesis command to blockchain thread: {:?}",
+                        e
+                    );
                 }
             }
             Command::MineGenesis => {}
             Command::GetHeight => {
                 if let Err(e) = self.to_blockchain_sender.send(Command::GetHeight) {
-                    println!("Error sending GetHeight command to blockchain thread: {:?}", e);
+                    println!(
+                        "Error sending GetHeight command to blockchain thread: {:?}",
+                        e
+                    );
                 }
             }
-            Command::MineBlock => { 
+            Command::MineBlock => {
                 if let Err(e) = self.to_mining_sender.send(Command::MineBlock) {
                     println!("Error sending Mine Block command to miner: {:?}", e);
                 }
             }
             Command::ClaimAbandoned(sender_id, claim) => {
-                if let Err(e) = self.to_mining_sender.send(Command::ClaimAbandoned(sender_id, claim)) {
-                    println!("Error sending ")
+                if let Err(e) = self
+                    .to_mining_sender
+                    .send(Command::ClaimAbandoned(sender_id, claim))
+                {
+                    println!("Error sending claim abandoned command to miner: {:?}", e)
                 }
             }
             _ => {}

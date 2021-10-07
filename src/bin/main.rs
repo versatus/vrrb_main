@@ -551,15 +551,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     Command::ConfirmedBlock(block) => {
                         miner.current_nonce_timer = block.header.timestamp;
-                        let claim_map_hash = digest_bytes(
-                            &serde_json::to_string(&miner.claim_map).unwrap().as_bytes(),
-                        );
-                        if let Some(hash) = &block.header.claim_map_hash {
-                            if hash != &claim_map_hash {
-                                println!("Different claim states");
-                                println!("Claim Map: {:?}", miner.claim_map);
-                            }
-                        }
+
                         if let Category::Motherlode(_) = block.header.block_reward.category {
                             println!("*****{:?}*****\n", &block.header.block_reward.category);
                         }
@@ -587,6 +579,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             block.header.claim.clone().pubkey,
                             block.header.claim.clone(),
                         );
+
+                        let claim_map_hash = digest_bytes(
+                            &serde_json::to_string(&miner.claim_map).unwrap().as_bytes(),
+                        );
+                        if let Some(hash) = &block.header.claim_map_hash {
+                            if hash != &claim_map_hash {
+                                println!("Different claim states");
+                                println!("Claim Map: {:?}", miner.claim_map);
+                            }
+                        }
+
                     }
                     Command::ProcessTxn(txn) => {
                         let txn_validator = miner.process_txn(txn.clone());

@@ -672,6 +672,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 / (miner.claim_map.len() as f64 - 1.0)
                                 > VALIDATOR_THRESHOLD
                             {
+                                miner.claim_map.retain(|_, v| v.hash != claim.hash);
                                 if let Err(e) =
                                     blockchain_sender.send(Command::ClaimAbandoned(pubkey, claim))
                                 {

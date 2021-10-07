@@ -411,7 +411,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         )) {
                             println!("Error sending updated network state to miner: {:?}", e);
                         }
-                        
                     }
                     Command::GetHeight => {
                         println!("Blockchain Height: {}", blockchain.chain.len());
@@ -499,13 +498,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     claim: v.clone(),
                                                     sender_id: miner.claim.pubkey.clone(),
                                                 };
-                                                
-                                                miner.abandoned_claim_counter.insert(miner.claim.pubkey.clone(), v.clone());
 
+                                                miner
+                                                    .abandoned_claim_counter
+                                                    .insert(miner.claim.pubkey.clone(), v.clone());
                                                 if let Err(e) = swarm_sender
                                                     .send(Command::SendMessage(message.as_bytes()))
                                                 {
                                                     println!("Error sending ClaimAbandoned message to swarm: {:?}", e);
+                                                }
+
+                                                let mut abandoned_claim_map =
+                                                    miner.abandoned_claim_counter.clone();
+                                                abandoned_claim_map
+                                                    .retain(|_, claim| v.hash == claim.hash);
+
+                                                if abandoned_claim_map.len() as f64
+                                                    / (miner.claim_map.len() as f64 - 1.0)
+                                                    > VALIDATOR_THRESHOLD
+                                                {
+                                                    if let Err(e) = blockchain_sender.send(
+                                                        Command::ClaimAbandoned(
+                                                            miner.claim.pubkey.clone(),
+                                                            v.clone(),
+                                                        ),
+                                                    ) {
+                                                        println!("Error forwarding confirmed abandoned claim to blockchain: {:?}", e);
+                                                    }
                                                 }
                                             }
                                         }
@@ -635,12 +654,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     Command::ClaimAbandoned(pubkey, claim) => {
                         if let Some(_) = miner.claim_map.get(&pubkey) {
-                            miner.abandoned_claim_counter.insert(pubkey.clone(), claim.clone());
+                            miner
+                                .abandoned_claim_counter
+                                .insert(pubkey.clone(), claim.clone());
                             let mut abandoned_claim_map = miner.abandoned_claim_counter.clone();
                             abandoned_claim_map.retain(|_, v| v.hash == claim.hash);
 
-                            if abandoned_claim_map.len() as f64 / (miner.claim_map.len() as f64 - 1.0) > VALIDATOR_THRESHOLD {
-                                if let Err(e) = blockchain_sender.send(Command::ClaimAbandoned(pubkey, claim)) {
+                            if abandoned_claim_map.len() as f64
+                                / (miner.claim_map.len() as f64 - 1.0)
+                                > VALIDATOR_THRESHOLD
+                            {
+                                if let Err(e) =
+                                    blockchain_sender.send(Command::ClaimAbandoned(pubkey, claim))
+                                {
                                     println!("Error forwarding confirmed abandoned claim to blockchain: {:?}", e);
                                 }
                             }

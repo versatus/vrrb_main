@@ -404,6 +404,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Command::StateUpdateCompleted(network_state) => {
                         blockchain_network_state = network_state.clone();
                     }
+                    Command::ClaimAbandoned(hash) => {
+                        blockchain_network_state.abandoned_claim(hash);
+                    }
                     Command::GetHeight => {
                         println!("Blockchain Height: {}", blockchain.chain.len());
                     }
@@ -484,7 +487,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                        
                                         if miner.check_time_elapsed() > 30 {
                                             println!("Claim map before abandonment: {}", miner.claim_map.len());
-                                            miner.abandoned_claim(hash);
+                                            miner.abandoned_claim(hash.clone());
+                                            if let Err(e) = blockchain_sender.send(Command::ClaimAbandoned(hash.clone())) {
+                                                println!("Error sending ClaimAbandoned command to blockchain: {:?}", e)
+                                            }
                                             println!("Claim map after abandonment: {}", miner.claim_map.len());
                                         }
                                         
@@ -528,9 +534,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         new_claims = new_claims
                             .iter()
                             .map(|(k, v)| {
-                                let mut claim = v.clone();
-                                claim.eligible = true;
-                                return (k.clone(), claim.clone());
+                                return (k.clone(), v.clone());
                             })
                             .collect();
                         new_claims.iter().for_each(|(k, v)| {

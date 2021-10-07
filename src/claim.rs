@@ -9,7 +9,6 @@ pub struct Claim {
     pub hash: String,
     pub start: Option<u8>,
     pub nonce: u128,
-    pub eligible: bool,
 }
 
 impl Claim {
@@ -31,7 +30,6 @@ impl Claim {
             hash: hash,
             start: None,
             nonce: claim_nonce,
-            eligible: false,
         }
     }
 

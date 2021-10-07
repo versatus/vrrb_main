@@ -253,6 +253,23 @@ impl NetworkState {
         }
     }
 
+    pub fn abandoned_claim(&mut self, hash: String) {
+        let mut db = self.get_ledger_db();
+        let mut claims = self.get_claims();
+        claims.retain(|_, v| {
+            v.hash == hash
+        });
+
+        if let Some((k, _)) = claims.front() {
+            if let Err(e) = db.rem(k) {
+                println!("Error removing abandoned claim from db: {:?}", e);
+            }
+            if let Err(e) = db.dump() {
+                println!("Error dumping updated db to file: {:?}", e);
+            }
+        }
+    }
+
     pub fn get_ledger_db(&self) -> PickleDb {
         match PickleDb::load_bin(self.path.clone(), PickleDbDumpPolicy::DumpUponRequest) {
             Ok(nst) => return nst,

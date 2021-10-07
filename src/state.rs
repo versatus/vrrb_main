@@ -1,8 +1,8 @@
+use crate::network::chunkable::Chunkable;
+use crate::network::node::MAX_TRANSMIT_SIZE;
 use crate::pool::Pool;
 use crate::txn::Txn;
 use crate::{block::Block, claim::Claim, reward::RewardState};
-use crate::network::node::MAX_TRANSMIT_SIZE;
-use crate::network::chunkable::Chunkable;
 use pickledb::{PickleDb, PickleDbDumpPolicy, SerializationMethod};
 use ritelinked::LinkedHashMap;
 use serde::{Deserialize, Serialize};
@@ -12,6 +12,7 @@ use sha256::digest_bytes;
 pub struct Ledger {
     pub credits: LinkedHashMap<String, u128>,
     pub debits: LinkedHashMap<String, u128>,
+    pub claims: LinkedHashMap<String, Claim>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -50,7 +51,8 @@ impl NetworkState {
             ),
         };
 
-        let (credits_map, debits_map, reward_state) = NetworkState::restore_state_objects(&db);
+        let (credits_map, debits_map, reward_state, _claims) =
+            NetworkState::restore_state_objects(&db);
 
         let credits = digest_bytes(format!("{:?}", &credits_map).as_bytes());
         let debits = digest_bytes(format!("{:?}", &credits_map).as_bytes());
@@ -135,8 +137,7 @@ impl NetworkState {
     pub fn hash(&mut self, block: Block) -> String {
         let credit_hash = self.clone().credit_hash(&block);
         let debit_hash = self.clone().debit_hash(&block);
-        let reward_state_hash =
-            digest_bytes(format!("{:?}", self.reward_state).as_bytes());
+        let reward_state_hash = digest_bytes(format!("{:?}", self.reward_state).as_bytes());
         let payload = format!(
             "{:?},{:?},{:?},{:?}",
             self.state_hash, credit_hash, debit_hash, reward_state_hash
@@ -151,6 +152,7 @@ impl NetworkState {
         LinkedHashMap<String, u128>,
         LinkedHashMap<String, u128>,
         RewardState,
+        LinkedHashMap<String, Claim>,
     ) {
         let credits: LinkedHashMap<String, u128> = if let Some(map) = db.get("credits") {
             map
@@ -170,12 +172,19 @@ impl NetworkState {
             RewardState::start()
         };
 
-        (credits, debits, reward_state)
+        let claims: LinkedHashMap<String, Claim> = if let Some(claims) = db.get("claims") {
+            claims
+        } else {
+            LinkedHashMap::new()
+        };
+
+        (credits, debits, reward_state, claims)
     }
 
     pub fn dump(&mut self, block: &Block) {
         let mut db = self.get_ledger_db();
-        let (mut credits, mut debits, mut reward_state) = NetworkState::restore_state_objects(&db);
+        let (mut credits, mut debits, mut reward_state, mut claims) =
+            NetworkState::restore_state_objects(&db);
 
         block.txns.iter().for_each(|(_txn_id, txn)| {
             if let Some(entry) = credits.get_mut(&txn.receiver_address) {
@@ -190,6 +199,15 @@ impl NetworkState {
                 debits.insert(txn.clone().sender_address, txn.clone().txn_amount);
             }
         });
+
+        block.claims.iter().for_each(|(k, v)| {
+            claims.insert(k.clone(), v.clone());
+        });
+
+        claims.insert(
+            block.header.claim.clone().pubkey,
+            block.header.claim.clone(),
+        );
 
         if let Some(entry) = credits.get_mut(&block.header.block_reward.miner.clone().unwrap()) {
             *entry += block.header.block_reward.amount.clone()
@@ -214,8 +232,24 @@ impl NetworkState {
         if let Err(_) = db.set("rewardstate", &reward_state) {
             println!("Error setting reward state to state")
         };
+        if let Err(_) = db.set("claims", &claims) {
+            println!("Error setting claims to state");
+        };
         if let Err(e) = db.dump() {
             println!("Error dumping state to file: {:?}", e)
+        }
+    }
+
+    pub fn nonce_up(&mut self) {
+        let mut new_claim_map = LinkedHashMap::new();
+        self.get_claims().clone().iter().for_each(|(pk, claim)| {
+            let mut new_claim = claim.clone();
+            new_claim.nonce_up();
+            new_claim_map.insert(pk.clone(), new_claim.clone());
+        });
+        let mut db = self.get_ledger_db();
+        if let Err(e) = db.set("claims", &new_claim_map) {
+            println!("Error setting nonced up claims to database: {:?}", e);
         }
     }
 
@@ -269,9 +303,9 @@ impl NetworkState {
         debits
     }
 
-    pub fn get_claims(&self) -> LinkedHashMap<u128, Claim> {
+    pub fn get_claims(&self) -> LinkedHashMap<String, Claim> {
         let db = self.get_ledger_db();
-        let claims: LinkedHashMap<u128, Claim> = if let Some(map) = db.get("claims") {
+        let claims: LinkedHashMap<String, Claim> = if let Some(map) = db.get("claims") {
             map
         } else {
             LinkedHashMap::new()
@@ -335,13 +369,43 @@ impl NetworkState {
         if let Err(_) = db.set("rewardstate", &reward_state) {
             println!("Error setting reward state to ledger");
         }
-
+        if let Err(_) = db.set("claims", &ledger.claims) {
+            println!("Error setting claims to ledger");
+        }
         if let Err(_) = db.dump() {
             println!("Error dumping ledger to db");
         }
     }
 
-    pub fn pending_balance(&self, _address: String, _txn_pool: &Pool<String, Txn>) -> Option<(u128, u128)> {
+    pub fn get_lowest_pointer(&mut self, nonce: u128) -> Option<(String, u128)> {
+        let claim_map = self.get_claims();
+        let mut pointers = claim_map
+            .iter()
+            .map(|(_, claim)| return (claim.clone().hash, claim.clone().get_pointer(nonce)))
+            .collect::<Vec<_>>();
+
+        pointers.retain(|(_, v)| !v.is_none());
+
+        let mut raw_pointers = pointers
+            .iter()
+            .map(|(k, v)| {
+                return (k.clone(), v.unwrap());
+            })
+            .collect::<Vec<_>>();
+
+        if let Some(min) = raw_pointers.clone().iter().min_by_key(|(_, v)| v) {
+            raw_pointers.retain(|(_, v)| *v == min.1);
+            Some(raw_pointers[0].clone())
+        } else {
+            None
+        }
+    }
+
+    pub fn pending_balance(
+        &self,
+        _address: String,
+        _txn_pool: &Pool<String, Txn>,
+    ) -> Option<(u128, u128)> {
         None
     }
 
@@ -404,16 +468,17 @@ impl NetworkState {
     pub fn db_to_ledger(&self) -> Ledger {
         let credits = self.get_credits();
         let debits = self.get_debits();
+        let claims = self.get_claims();
 
         Ledger {
             credits,
             debits,
+            claims,
         }
     }
 }
 
 impl Ledger {
-
     pub fn as_bytes(&self) -> Vec<u8> {
         self.to_string().as_bytes().to_vec()
     }
@@ -432,7 +497,7 @@ impl Ledger {
 }
 
 impl Components {
-        pub fn as_bytes(&self) -> Vec<u8> {
+    pub fn as_bytes(&self) -> Vec<u8> {
         self.to_string().as_bytes().to_vec()
     }
 

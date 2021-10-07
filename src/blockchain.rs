@@ -230,8 +230,6 @@ impl Blockchain {
             .insert(block.clone().header.last_hash, block.clone());
     }
 
-    pub fn handle_invalid_block() {}
-
     pub fn send_invalid_block_message(
         &self,
         block: &Block,

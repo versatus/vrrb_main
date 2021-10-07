@@ -396,6 +396,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                         println!("Backlog processed");
+                        if let Err(e) = miner_sender.send(Command::StateUpdateCompleted(blockchain_network_state.clone())) {
+                            println!("Error sending updated network state to miner: {:?}", e);
+                        }
                         blockchain.updating_state = false;
                     }
                     Command::StateUpdateCompleted(network_state) => {
@@ -511,6 +514,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Some(hash) = &block.header.claim_map_hash {
                             if hash != &claim_map_hash {
                                 println!("Different claim states");
+                                println!("Claim Map: {:?}", miner.claim_map);
                             }
                         }
                         if let Category::Motherlode(_) = block.header.block_reward.category {
@@ -563,6 +567,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Command::InvalidBlock(_) => {}
                     Command::StateUpdateCompleted(network_state) => {
                         miner.network_state = network_state.clone();
+                        miner.claim_map = miner.network_state.get_claims();
                         if miner.mining {
                             if let Err(e) = miner_sender.send(Command::MineBlock) {
                                 println!("Error sending MineBlock command to miner: {:?}", e);

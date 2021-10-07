@@ -47,6 +47,10 @@ pub trait Verifiable {
         false
     }
 
+    fn valid_claim_pointer(&self, _network_state: &mut NetworkState) -> bool {
+        false
+    }
+
     fn valid_txn(&self, _network_state: &NetworkState, _txn_pool: &Pool<String, Txn>) -> bool {
         false
     }

@@ -583,7 +583,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         // if it did change, make sure that it HAD to change.
                         // If it did have to change (nonce up) and your local claim map is different
                         // nonce up the local claim map until it is in consensus.
-                        miner.claim_map.insert(
+                        miner.claim_map.replace(
                             block.header.claim.clone().pubkey,
                             block.header.claim.clone(),
                         );

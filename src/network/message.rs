@@ -86,6 +86,12 @@ pub fn process_message(message: GossipsubMessage, node_id: String) -> Option<Com
                 }
                 None
             }
+            MessageType::ClaimAbandonedMessage {
+                claim,
+                sender_id,
+            } => {
+                return Some(Command::ClaimAbandoned(sender_id, claim))
+            }
             _ => None,
         }
     } else {

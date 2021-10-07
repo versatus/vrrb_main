@@ -36,6 +36,7 @@ pub struct Miner {
     pub current_nonce_timer: u128,
     pub n_miners: u128,
     pub init: bool,
+    pub abandoned_claim_counter: LinkedHashMap<String, Claim>,
 }
 
 impl Miner {
@@ -59,6 +60,7 @@ impl Miner {
             current_nonce_timer: 0,
             n_miners,
             init: false,
+            abandoned_claim_counter: LinkedHashMap::new(),
         };
 
         miner

@@ -146,6 +146,11 @@ impl CommandHandler {
                     println!("Error sending Mine Block command to miner: {:?}", e);
                 }
             }
+            Command::ClaimAbandoned(sender_id, claim) => {
+                if let Err(e) = self.to_mining_sender.send(Command::ClaimAbandoned(sender_id, claim)) {
+                    println!("Error sending ")
+                }
+            }
             _ => {}
         }
     }

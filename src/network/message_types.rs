@@ -94,8 +94,7 @@ pub enum MessageType {
     },
     ClaimAbandonedMessage {
         claim: Claim,
-        timer_start: u128,
-        timer_end: u128,
+        sender_id: String,
     }
 
 }

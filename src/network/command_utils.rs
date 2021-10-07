@@ -1,8 +1,8 @@
-use crate::blockchain::StateComponent;
 use crate::block::Block;
+use crate::blockchain::StateComponent;
 use crate::claim::Claim;
 use crate::network::message_types::StateBlock;
-use crate::state::{NetworkState, Components};
+use crate::state::{Components, NetworkState};
 use crate::txn::Txn;
 use crate::validator::TxnValidator;
 use serde::{Deserialize, Serialize};
@@ -45,7 +45,7 @@ pub enum Command {
     StoreStateComponentChunk(Vec<u8>, u32, u32),
     StateUpdateComponents(Components),
     UpdateLastBlock(Block),
-    ClaimAbandoned(String),
+    ClaimAbandoned(String, Claim),
     GetHeight,
     MineBlock,
     MineGenesis,
@@ -63,7 +63,6 @@ impl Command {
         if args.len() == 4 {
             match args[0] {
                 SENDTXN => {
-                    
                     return Some(Command::SendTxn(
                         args[1].parse::<u32>().unwrap(),
                         args[2].to_string(),
@@ -86,12 +85,12 @@ impl Command {
             match args[0] {
                 GETBAL => {
                     if let Ok(num) = args[1].parse::<u32>() {
-                        return Some(Command::GetBalance(num))
+                        return Some(Command::GetBalance(num));
                     } else {
                         println!("Invalid command string");
                         None
                     }
-                },
+                }
                 _ => {
                     println!("Invalid command string");
                     None

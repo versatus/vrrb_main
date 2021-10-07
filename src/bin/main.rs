@@ -5,6 +5,7 @@ use libp2p::Multiaddr;
 use log::info;
 use rand::Rng;
 use ritelinked::LinkedHashMap;
+use sha256::digest_bytes;
 use simplelog::{Config, LevelFilter, WriteLogger};
 use std::fs::File;
 use std::thread;
@@ -25,8 +26,8 @@ use vrrb_lib::state::Components;
 use vrrb_lib::state::Ledger;
 use vrrb_lib::state::NetworkState;
 use vrrb_lib::wallet::WalletAccount;
-use sha256::digest_bytes;
 
+const VALIDATOR_THRESHOLD: f64 = 0.60;
 pub const NANO: u128 = 1;
 pub const MICRO: u128 = NANO * 1000;
 pub const MILLI: u128 = MICRO * 1000;
@@ -43,10 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         path
     } else {
         std::fs::create_dir_all("./data/vrrb")?;
-        format!(
-            "./data/vrrb/vrrb_log_file_{}.log",
-            log_file_suffix
-        )
+        format!("./data/vrrb/vrrb_log_file_{}.log", log_file_suffix)
     };
     let _ = WriteLogger::init(
         LevelFilter::Info,
@@ -396,7 +394,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                         println!("Backlog processed");
-                        if let Err(e) = miner_sender.send(Command::StateUpdateCompleted(blockchain_network_state.clone())) {
+                        if let Err(e) = miner_sender.send(Command::StateUpdateCompleted(
+                            blockchain_network_state.clone(),
+                        )) {
                             println!("Error sending updated network state to miner: {:?}", e);
                         }
                         blockchain.updating_state = false;
@@ -404,8 +404,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Command::StateUpdateCompleted(network_state) => {
                         blockchain_network_state = network_state.clone();
                     }
-                    Command::ClaimAbandoned(hash) => {
-                        blockchain_network_state.abandoned_claim(hash);
+                    Command::ClaimAbandoned(_, claim) => {
+                        blockchain_network_state.abandoned_claim(claim.hash);
+                        if let Err(e) = miner_sender.send(Command::StateUpdateCompleted(
+                            blockchain_network_state.clone(),
+                        )) {
+                            println!("Error sending updated network state to miner: {:?}", e);
+                        }
+                        
                     }
                     Command::GetHeight => {
                         println!("Blockchain Height: {}", blockchain.chain.len());
@@ -484,24 +490,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             }
                                         }
                                     } else {
-                                       
                                         if miner.check_time_elapsed() > 30 {
-                                            println!("Claim map before abandonment: {}", miner.claim_map.len());
-                                            miner.abandoned_claim(hash.clone());
-                                            if let Err(e) = blockchain_sender.send(Command::ClaimAbandoned(hash.clone())) {
-                                                println!("Error sending ClaimAbandoned command to blockchain: {:?}", e)
+                                            let mut abandoned_claim_map = miner.claim_map.clone();
+                                            abandoned_claim_map.retain(|_, v| v.hash == hash);
+
+                                            if let Some((_, v)) = abandoned_claim_map.front() {
+                                                let message = MessageType::ClaimAbandonedMessage {
+                                                    claim: v.clone(),
+                                                    sender_id: miner.claim.pubkey.clone(),
+                                                };
+
+                                                if let Err(e) = swarm_sender
+                                                    .send(Command::SendMessage(message.as_bytes()))
+                                                {
+                                                    println!("Error sending ClaimAbandoned message to swarm: {:?}", e);
+                                                }
                                             }
-                                            println!("Claim map after abandonment: {}", miner.claim_map.len());
                                         }
-                                        
                                         if let Err(e) = miner_sender.send(Command::MineBlock) {
                                             println!(
                                                 "Error sending miner sender MineBlock: {:?}",
                                                 e
                                             );
                                         }
-                                        
-                                    } 
+                                    }
                                 } else {
                                     if let Err(e) = miner_sender.send(Command::NonceUp) {
                                         println!("Error sending NonceUp command to miner: {:?}", e);
@@ -516,7 +528,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     Command::ConfirmedBlock(block) => {
                         miner.current_nonce_timer = block.header.timestamp;
-                        let claim_map_hash = digest_bytes(&serde_json::to_string(&miner.claim_map).unwrap().as_bytes());
+                        let claim_map_hash = digest_bytes(
+                            &serde_json::to_string(&miner.claim_map).unwrap().as_bytes(),
+                        );
                         if let Some(hash) = &block.header.claim_map_hash {
                             if hash != &claim_map_hash {
                                 println!("Different claim states");
@@ -615,6 +629,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         miner.nonce_up();
                         if let Err(e) = miner_sender.send(Command::MineBlock) {
                             println!("Error sending MineBlock command to miner: {:?}", e);
+                        }
+                    }
+                    Command::ClaimAbandoned(pubkey, claim) => {
+                        if let Some(_) = miner.claim_map.get(&pubkey) {
+                            miner.abandoned_claim_counter.insert(pubkey.clone(), claim.clone());
+                            let mut abandoned_claim_map = miner.abandoned_claim_counter.clone();
+                            abandoned_claim_map.retain(|_, v| v.hash == claim.hash);
+
+                            if abandoned_claim_map.len() as f64 / (miner.claim_map.len() as f64 - 1.0) > VALIDATOR_THRESHOLD {
+                                if let Err(e) = blockchain_sender.send(Command::ClaimAbandoned(pubkey, claim)) {
+                                    println!("Error forwarding confirmed abandoned claim to blockchain: {:?}", e);
+                                }
+                            }
                         }
                     }
                     Command::GetBalance(address_number) => {

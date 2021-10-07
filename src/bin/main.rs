@@ -499,6 +499,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     claim: v.clone(),
                                                     sender_id: miner.claim.pubkey.clone(),
                                                 };
+                                                
+                                                miner.abandoned_claim_counter.insert(miner.claim.pubkey.clone(), v.clone());
 
                                                 if let Err(e) = swarm_sender
                                                     .send(Command::SendMessage(message.as_bytes()))

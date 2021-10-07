@@ -576,6 +576,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             miner.claim_pool.confirmed.remove(k);
                             miner.claim_map.insert(k.clone(), v.clone());
                         });
+
+                        // Check if the miner's claim nonce changed,
+                        // if it did change, make sure that it HAD to change.
+                        // If it did have to change (nonce up) and your local claim map is different
+                        // nonce up the local claim map until it is in consensus.
                         miner.claim_map.insert(
                             block.header.claim.clone().pubkey,
                             block.header.claim.clone(),

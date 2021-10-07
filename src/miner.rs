@@ -101,7 +101,6 @@ impl Miner {
     }
 
     pub fn genesis(&mut self) -> Option<Block> {
-        self.claim.eligible = true;
         self.claim_map
             .insert(self.claim.pubkey.clone(), self.claim.clone());
         Block::genesis(&self.reward_state.clone(), self.claim.clone())

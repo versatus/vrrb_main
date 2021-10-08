@@ -586,10 +586,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Some(hash) = &block.header.claim_map_hash {
                             if hash != &claim_map_hash {
                                 println!("Different claim states");
-                                println!("Claim Map: {:?}", miner.claim_map);
                             }
                         }
-
                     }
                     Command::ProcessTxn(txn) => {
                         let txn_validator = miner.process_txn(txn.clone());
@@ -656,9 +654,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     Command::NonceUp => {
-                        println!("*********NONCE UP*********");
                         miner.nonce_up();
-                        println!("Claim Map: {:?}", miner.claim_map);
                         if let Err(e) = miner_sender.send(Command::MineBlock) {
                             println!("Error sending MineBlock command to miner: {:?}", e);
                         }

@@ -264,8 +264,6 @@ impl NetworkState {
         if let Err(_) = db.set("claims", &claims) {
             println!("Error setting claims to state")
         };
-        
-        println!("Abandoned claim: {:?}", claims);
 
         if let Err(e) = db.dump() {
             println!("Error dumping state to file: {:?}", e)

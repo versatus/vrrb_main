@@ -245,18 +245,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             }
                                         }
                                     }
-                                    InvalidBlockErrorReason::InvalidBlockHeight => {
-                                        // request missing blocks if it's higher than yours
-                                        // inform miner you have longer chain if it's lower than yours
-                                        // so that they can request missing blocks.
+                                    InvalidBlockErrorReason::InvalidBlockNonce => {
+                                        
                                     }
-                                    InvalidBlockErrorReason::InvalidBlockNonce => {}
                                     InvalidBlockErrorReason::InvalidBlockReward => {}
                                     InvalidBlockErrorReason::InvalidLastHash => {}
                                     InvalidBlockErrorReason::InvalidStateHash => {}
                                     InvalidBlockErrorReason::InvalidClaim => {}
                                     InvalidBlockErrorReason::InvalidTxns => {}
                                     InvalidBlockErrorReason::General => {}
+                                    _ => {}
                                 }
 
                                 if let Err(_) =

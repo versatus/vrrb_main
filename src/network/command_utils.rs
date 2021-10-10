@@ -46,6 +46,7 @@ pub enum Command {
     StateUpdateComponents(Components),
     UpdateLastBlock(Block),
     ClaimAbandoned(String, Claim),
+    SlashClaims(Vec<String>),
     GetHeight,
     MineBlock,
     MineGenesis,

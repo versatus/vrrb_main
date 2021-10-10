@@ -25,6 +25,7 @@ pub struct Txn {
     pub txn_payload: String,
     pub txn_signature: String,
     pub validators: HashMap<String, bool>,
+    pub nonce: u128,
 }
 
 impl Txn {
@@ -33,16 +34,18 @@ impl Txn {
         sender_address: String,
         receiver: String,
         amount: u128,
+        nonce: u128,
     ) -> Txn {
         let time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
 
         let payload = format!(
-            "{},{},{},{},{}",
+            "{},{},{},{},{},{}",
             &time.as_nanos().to_string(),
             &sender_address,
             &sender.lock().unwrap().pubkey.clone(),
             &receiver,
-            &amount.to_string()
+            &amount.to_string(),
+            &nonce
         );
         let signature = sender.lock().unwrap().sign(&payload).unwrap();
         let uid_payload = format!(
@@ -63,6 +66,7 @@ impl Txn {
             txn_payload: payload,
             txn_signature: signature.to_string(),
             validators: HashMap::new(),
+            nonce,
         }
     }
 
@@ -168,6 +172,11 @@ impl Verifiable for Txn {
             }
         };
 
+        true
+    }
+
+    fn check_txn_nonce(&self, _network_state: &NetworkState) -> bool {
+        //TODO: Add get_account_txn_nonce to network state to get the txn nonce
         true
     }
 }

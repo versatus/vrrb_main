@@ -47,7 +47,15 @@ pub trait Verifiable {
         false
     }
 
-    fn valid_claim_pointer(&self, _network_state: &mut NetworkState) -> bool {
+    fn valid_claim_pointer(&self, _network_state: &NetworkState) -> bool {
+        false
+    }
+
+    fn valid_block_claim(&self, _network_state: &NetworkState) -> bool {
+        false
+    }
+
+    fn valid_block_signature(&self) -> bool {
         false
     }
 
@@ -64,6 +72,10 @@ pub trait Verifiable {
     }
 
     fn check_double_spend(&self, _txn_pool: &Pool<String, Txn>) -> bool {
+        false
+    }
+
+    fn check_txn_nonce(&self, _network_state: &NetworkState) -> bool {
         false
     }
 }

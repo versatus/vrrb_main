@@ -34,8 +34,8 @@ pub struct Block {
 impl Block {
     // Returns a result with either a tuple containing the genesis block and the
     // updated account state (if successful) or an error (if unsuccessful)
-    pub fn genesis(reward_state: &RewardState, claim: Claim) -> Option<Block> {
-        let header = BlockHeader::genesis(0, reward_state, claim.clone());
+    pub fn genesis(reward_state: &RewardState, claim: Claim, secret_key: String) -> Option<Block> {
+        let header = BlockHeader::genesis(0, reward_state, claim.clone(), secret_key);
         let state_hash = digest_bytes(
             format!(
                 "{},{}",
@@ -79,6 +79,7 @@ impl Block {
         network_state: &NetworkState,
         neighbors: Option<Vec<BlockHeader>>,
         abandoned_claim: Option<Claim>,
+        signature: String,
     ) -> Option<Block> {
         let txn_hash = {
             let mut txn_vec = vec![];
@@ -88,14 +89,34 @@ impl Block {
             digest_bytes(&txn_vec)
         };
 
-        let header = BlockHeader::new(last_block.clone(), reward_state, claim, txn_hash, claim_map_hash);
+        let neighbors_hash = {
+            let mut neighbors_vec = vec![];
+            if let Some(neighbors) = &neighbors {
+                neighbors.iter().for_each(|v| {
+                    neighbors_vec.extend(v.as_bytes());
+                });
+                Some(digest_bytes(&neighbors_vec))
+            } else {
+                None
+            }
+        };
+
+        let header = BlockHeader::new(
+            last_block.clone(),
+            reward_state,
+            claim,
+            txn_hash,
+            claim_map_hash,
+            neighbors_hash,
+            signature,
+        );
         let height = last_block.height.clone() + 1;
         if let Some(time) = header.timestamp.checked_sub(last_block.header.timestamp) {
             if time / SECOND < 1 {
-                return None 
+                return None;
             }
         } else {
-            return None
+            return None;
         }
         let mut block = Block {
             header: header.clone(),
@@ -197,6 +218,18 @@ impl Verifiable for Block {
             });
         }
 
+        if !self.valid_claim_pointer(network_state) {
+            return Err(InvalidBlockError {
+                details: InvalidBlockErrorReason::InvalidClaimPointers,
+            });
+        }
+
+        if !self.valid_block_claim(network_state) {
+            return Err(InvalidBlockError {
+                details: InvalidBlockErrorReason::InvalidClaim,
+            });
+        }
+
         Ok(())
     }
 
@@ -241,6 +274,75 @@ impl Verifiable for Block {
 
     fn valid_block_nonce(&self, last_block: &Block) -> bool {
         self.header.block_nonce == last_block.header.next_block_nonce
+    }
+
+    fn valid_claim_pointer(&self, network_state: &NetworkState) -> bool {
+        if let Some((hash, pointers)) =
+            network_state.get_lowest_pointer(self.header.block_nonce as u128)
+        {
+            if hash == self.header.claim.hash {
+                if let Some(claim_pointer) = self
+                    .header
+                    .claim
+                    .get_pointer(self.header.block_nonce as u128)
+                {
+                    if pointers == claim_pointer {
+                        return true;
+                    } else {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    }
+
+    fn valid_block_signature(&self) -> bool {
+        if let Ok(true) = self.header.verify() {
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    fn valid_block_claim(&self, network_state: &NetworkState) -> bool {
+        let claims = network_state.get_claims();
+        if let None = claims.get(&self.header.claim.pubkey) {
+            return false;
+        }
+        let recreated_claim = Claim::new(
+            self.header.claim.pubkey.clone(),
+            self.header.claim.address.clone(),
+            self.header.claim.nonce,
+        );
+
+        if recreated_claim.hash != self.header.claim.hash {
+            return false;
+        }
+
+        let network_state_claim = claims.get(&self.header.claim.pubkey).unwrap();
+
+        if network_state_claim.pubkey != self.header.claim.pubkey {
+            return false;
+        }
+        if network_state_claim.address != self.header.claim.address {
+            return false;
+        }
+
+        if network_state_claim.hash != self.header.claim.hash {
+            return false;
+        }
+
+        if network_state_claim.nonce != self.header.claim.nonce {
+            return false;
+        }
+
+        return true;
     }
 }
 

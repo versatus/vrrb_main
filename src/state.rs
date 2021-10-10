@@ -394,7 +394,7 @@ impl NetworkState {
         }
     }
 
-    pub fn get_lowest_pointer(&mut self, nonce: u128) -> Option<(String, u128)> {
+    pub fn get_lowest_pointer(&self, nonce: u128) -> Option<(String, u128)> {
         let claim_map = self.get_claims();
         let mut pointers = claim_map
             .iter()
@@ -415,6 +415,25 @@ impl NetworkState {
             Some(raw_pointers[0].clone())
         } else {
             None
+        }
+    }
+
+    pub fn slash_claims(&mut self, bad_validators: Vec<String>) {
+        let mut db = self.get_ledger_db();
+        let (_, _, _, mut claims) = NetworkState::restore_state_objects(&db);
+
+        bad_validators.iter().for_each(|k| {
+            if let Some(claim) = claims.get_mut(&k.to_string()) {
+                claim.eligible = false;
+            }
+        });
+
+        if let Err(_) = db.set("claims", &claims) {
+            println!("Error setting claims to state")
+        };
+
+        if let Err(e) = db.dump() {
+            println!("Error dumping state to file: {:?}", e)
         }
     }
 

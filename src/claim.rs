@@ -9,6 +9,7 @@ pub struct Claim {
     pub hash: String,
     pub start: Option<u8>,
     pub nonce: u128,
+    pub eligible: bool,
 }
 
 impl Claim {
@@ -30,6 +31,7 @@ impl Claim {
             hash: hash,
             start: None,
             nonce: claim_nonce,
+            eligible: true,
         }
     }
 
@@ -49,7 +51,7 @@ impl Claim {
         self.hash = hash;
     }
 
-    pub fn get_pointer(&mut self, nonce: u128) -> Option<u128> {
+    pub fn get_pointer(&self, nonce: u128) -> Option<u128> {
         let nonce_hex = format!("{:x}", nonce);
         let nonce_string_len = nonce_hex.chars().count();
         let mut pointers = vec![];

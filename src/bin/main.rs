@@ -5,7 +5,6 @@ use libp2p::Multiaddr;
 use log::info;
 use rand::Rng;
 use ritelinked::LinkedHashMap;
-use sha256::digest_bytes;
 use simplelog::{Config, LevelFilter, WriteLogger};
 use std::fs::File;
 use std::thread;
@@ -245,15 +244,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             }
                                         }
                                     }
-                                    InvalidBlockErrorReason::InvalidBlockNonce => {
-                                        
-                                    }
-                                    InvalidBlockErrorReason::InvalidBlockReward => {}
-                                    InvalidBlockErrorReason::InvalidLastHash => {}
-                                    InvalidBlockErrorReason::InvalidStateHash => {}
-                                    InvalidBlockErrorReason::InvalidClaim => {}
-                                    InvalidBlockErrorReason::InvalidTxns => {}
-                                    InvalidBlockErrorReason::General => {}
                                     _ => {}
                                 }
 
@@ -410,6 +400,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             println!("Error sending updated network state to miner: {:?}", e);
                         }
                     }
+                    Command::SlashClaims(bad_validators) => {
+                        blockchain_network_state.slash_claims(bad_validators);
+                    }
                     Command::GetHeight => {
                         println!("Blockchain Height: {}", blockchain.chain.len());
                     }
@@ -430,7 +423,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let miner_to_swarm_sender = to_swarm_sender.clone();
     thread::spawn(move || {
         let mut miner = Miner::start(
-            mining_wallet.clone().pubkey,
+            mining_wallet.clone().get_secretkey(),
+            mining_wallet.clone().get_pubkey(),
             mining_wallet.clone().get_address(1),
             miner_reward_state,
             miner_network_state,
@@ -577,15 +571,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             block.header.claim.clone().pubkey,
                             block.header.claim.clone(),
                         );
-
-                        let claim_map_hash = digest_bytes(
-                            &serde_json::to_string(&miner.claim_map).unwrap().as_bytes(),
-                        );
-                        if let Some(hash) = &block.header.claim_map_hash {
-                            if hash != &claim_map_hash {
-                                println!("Different claim states");
-                            }
-                        }
                     }
                     Command::ProcessTxn(txn) => {
                         let txn_validator = miner.process_txn(txn.clone());
@@ -607,7 +592,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     Command::ProcessTxnValidator(validator) => {
                         miner.process_txn_validator(validator.clone());
-                        miner.check_confirmed(validator.txn.txn_id.clone());
+                        if let Some(bad_validators) =
+                            miner.check_rejected(validator.txn.txn_id.clone())
+                        {
+                            if let Err(e) =
+                                blockchain_sender.send(Command::SlashClaims(bad_validators.clone()))
+                            {
+                                println!(
+                                    "Error sending SlashClaims command to blockchain thread: {:?}",
+                                    e
+                                );
+                            }
+
+                            bad_validators.iter().for_each(|k| {
+                                miner.slash_claim(k.to_string());
+                            });
+                        } else {
+                            miner.check_confirmed(validator.txn.txn_id.clone());
+                        }
                     }
                     Command::InvalidBlock(_) => {}
                     Command::StateUpdateCompleted(network_state) => {

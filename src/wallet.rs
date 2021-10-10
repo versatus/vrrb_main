@@ -33,6 +33,7 @@ pub struct WalletAccount {
     pub total_balances: LinkedHashMap<String, LinkedHashMap<String, u128>>,
     pub available_balances: LinkedHashMap<String, LinkedHashMap<String, u128>>,
     pub claims: LinkedHashMap<u128, Claim>,
+    pub txn_nonce: u128,
 }
 
 impl WalletAccount {
@@ -78,6 +79,7 @@ impl WalletAccount {
             total_balances: total_balances.clone(),
             available_balances: total_balances,
             claims: LinkedHashMap::new(),
+            txn_nonce: 0,
         };
 
         wallet
@@ -95,11 +97,17 @@ impl WalletAccount {
             total_balances: LinkedHashMap::new(),
             available_balances: LinkedHashMap::new(),
             claims: LinkedHashMap::new(),
+            txn_nonce: 0,
         };
 
         wallet.get_new_addresses(1);
 
         wallet
+    }
+
+    pub fn get_txn_nonce(&mut self, _network_state: &NetworkState) {
+        // TODO: add a get_account_txn_nonce() function to network state to update
+        // txn nonce in walet when restored.
     }
 
     pub fn get_new_addresses(&mut self, number_of_addresses: u8) {
@@ -180,6 +188,10 @@ impl WalletAccount {
         self.pubkey.clone()
     }
 
+    pub fn get_secretkey(&self) -> String {
+        self.secretkey.clone()
+    }
+
     pub fn sign(&self, message: &str) -> Result<Signature, Error> {
         let message_bytes = message.as_bytes().to_owned();
         let mut buffer = ByteBuffer::new();
@@ -235,7 +247,7 @@ impl WalletAccount {
     }
 
     pub fn send_txn(
-        self,
+        &mut self,
         address_number: u32,
         receiver: String,
         amount: u128,
@@ -245,13 +257,16 @@ impl WalletAccount {
             self.addresses.get(&address_number).unwrap().clone(),
             receiver,
             amount,
+            self.txn_nonce,
         );
+        self.txn_nonce += 1;
+
         Ok(txn)
     }
 
     pub fn get_address(&mut self, address_number: u32) -> String {
         if let Some(address) = self.addresses.get(&address_number) {
-            return address.to_string()
+            return address.to_string();
         } else {
             while self.addresses.len() < address_number as usize {
                 self.generate_new_address()
@@ -307,6 +322,7 @@ impl Clone for WalletAccount {
             total_balances: self.total_balances.clone(),
             available_balances: self.available_balances.clone(),
             claims: self.claims.clone(),
+            txn_nonce: self.txn_nonce.clone(),
         }
     }
 }

@@ -39,6 +39,7 @@ pub enum InvalidBlockErrorReason {
     InvalidBlockNonce,
     InvalidBlockReward,
     InvalidTxns,
+    InvalidClaimPointers,
     General,
 }
 
@@ -69,6 +70,30 @@ impl Blockchain {
             invalid: LinkedHashMap::new(),
             updating_state: false,
             state_update_cache: LinkedHashMap::new(),
+        }
+    }
+
+    pub fn check_next_block_height(&self, block: &Block) -> bool {
+        if let Some(_) = self.genesis.as_ref() {
+            if let Some(child) = self.child.as_ref() {
+                if child.header.block_height + 1 != block.header.block_height {
+                    return false
+                } else {
+                    return true
+                }
+            } else {
+                if block.header.block_height != 1 {
+                    return false
+                } else {
+                    return true
+                }
+            }
+        } else {
+            if block.header.block_height != 0 {
+                return false
+            } else {
+                return true
+            }
         }
     }
 
@@ -345,6 +370,7 @@ impl InvalidBlockErrorReason {
             Self::InvalidBlockNonce => "invalid block nonce",
             Self::InvalidBlockReward => "invalid block reward",
             Self::InvalidTxns => "invalid txns in block",
+            Self::InvalidClaimPointers => "invalid claim pointers"
         }
     }
 }
@@ -430,6 +456,9 @@ impl fmt::Display for InvalidBlockErrorReason {
             }
             Self::InvalidTxns => {
                 write!(f, "invalid txns in block")
+            }
+            Self::InvalidClaimPointers => {
+                write!(f, "invalid claim pointers")
             }
             Self::General => {
                 write!(f, "general invalid block error")

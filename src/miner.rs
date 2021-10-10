@@ -14,6 +14,7 @@ use std::error::Error;
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const VALIDATOR_THRESHOLD: f64 = 0.60;
 pub const NANO: u128 = 1;
 pub const MICRO: u128 = NANO * 1000;
 pub const MILLI: u128 = MICRO * 1000;
@@ -38,10 +39,12 @@ pub struct Miner {
     pub init: bool,
     pub abandoned_claim_counter: LinkedHashMap<String, Claim>,
     pub abandoned_claim: Option<Claim>,
+    pub secret_key: String,
 }
 
 impl Miner {
     pub fn start(
+        secret_key: String,
         pubkey: String,
         address: String,
         reward_state: RewardState,
@@ -63,6 +66,7 @@ impl Miner {
             init: false,
             abandoned_claim_counter: LinkedHashMap::new(),
             abandoned_claim: None,
+            secret_key,
         };
 
         miner
@@ -107,7 +111,7 @@ impl Miner {
     pub fn genesis(&mut self) -> Option<Block> {
         self.claim_map
             .insert(self.claim.pubkey.clone(), self.claim.clone());
-        Block::genesis(&self.reward_state.clone(), self.claim.clone())
+        Block::genesis(&self.reward_state.clone(), self.claim.clone(), self.secret_key.clone())
     }
 
     pub fn mine(&mut self) -> Option<Block> {
@@ -124,6 +128,7 @@ impl Miner {
                 &self.clone().network_state.clone(),
                 self.clone().neighbors.clone(),
                 self.abandoned_claim.clone(),
+                self.secret_key.clone(),
             );
         }
 
@@ -198,10 +203,39 @@ impl Miner {
         };
 
         validators.retain(|_, v| *v);
-        if validators.len() > self.claim_map.len() / 3 {
+        if validators.len() as f64 / self.claim_map.len() as f64 > VALIDATOR_THRESHOLD {
             if let Some((k, v)) = self.txn_pool.pending.remove_entry(&txn_id) {
                 self.txn_pool.confirmed.insert(k, v);
             }
+        }
+    }
+
+    pub fn check_rejected(&self, txn_id: String) -> Option<Vec<String>> {
+        let mut validators = {
+            if let Some(txn) = self.txn_pool.pending.get(&txn_id) {
+                txn.validators.clone()
+            } else {
+                HashMap::new()
+            }
+        };
+
+        let mut rejected = validators.clone();
+        rejected.retain(|_, v| !*v);
+        validators.retain(|_, v| *v);
+
+        
+        if rejected.len() as f64 / self.claim_map.len() as f64 > 1.0 - VALIDATOR_THRESHOLD {
+            let slash_claims = validators.iter().map(|(k, _)| return k.to_string()).collect::<Vec<_>>();
+            return Some(slash_claims)
+        } else {
+            return None
+        }
+
+    }
+
+    pub fn slash_claim(&mut self, pubkey: String) {
+        if let Some(claim) = self.claim_map.get_mut(&pubkey) {
+            claim.eligible = false;
         }
     }
 

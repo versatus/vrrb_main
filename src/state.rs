@@ -7,6 +7,7 @@ use pickledb::{PickleDb, PickleDbDumpPolicy, SerializationMethod};
 use ritelinked::LinkedHashMap;
 use serde::{Deserialize, Serialize};
 use sha256::digest_bytes;
+use log::info;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Ledger {
@@ -236,7 +237,7 @@ impl NetworkState {
             println!("Error setting claims to state");
         };
         if let Err(e) = db.dump() {
-            println!("Error dumping state to file: {:?}", e)
+            info!("Error dumping state to file: {:?}", e)
         }
     }
 
@@ -266,7 +267,7 @@ impl NetworkState {
         };
 
         if let Err(e) = db.dump() {
-            println!("Error dumping state to file: {:?}", e)
+            info!("Error dumping state to file: {:?}", e)
         }
     }
 
@@ -390,7 +391,7 @@ impl NetworkState {
             println!("Error setting claims to ledger");
         }
         if let Err(_) = db.dump() {
-            println!("Error dumping ledger to db");
+            info!("Error dumping ledger to db");
         }
     }
 
@@ -433,7 +434,7 @@ impl NetworkState {
         };
 
         if let Err(e) = db.dump() {
-            println!("Error dumping state to file: {:?}", e)
+            info!("Error dumping state to file: {:?}", e)
         }
     }
 

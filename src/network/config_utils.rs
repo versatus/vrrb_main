@@ -27,6 +27,7 @@ pub async fn configure_swarm(
     local_key: Keypair,
     pubkey: String,
     address: String,
+    event_path: String,
 ) -> Swarm<VrrbNetworkBehavior> {
     let message_id_fn = |message: &GossipsubMessage| {
         let mut s = DefaultHasher::new();
@@ -35,16 +36,16 @@ pub async fn configure_swarm(
     };
 
     let gossipsub_config = GossipsubConfigBuilder::default()
-        .heartbeat_interval(Duration::from_secs(2))
+        .heartbeat_interval(Duration::from_secs(1))
         .history_length(5)
-        .history_gossip(5)
-        .mesh_n(12)
+        .history_gossip(3)
+        .mesh_n(6)
         .mesh_n_low(4)
-        .mesh_n_high(18)
-        .gossip_lazy(12)
-        .gossip_factor(0.5)
-        .fanout_ttl(Duration::from_secs(120))
-        .check_explicit_peers_ticks(300)
+        .mesh_n_high(12)
+        .gossip_lazy(6)
+        .gossip_factor(0.25)
+        .fanout_ttl(Duration::from_secs(60))
+        .check_explicit_peers_ticks(150)
         .do_px()
         .published_message_ids_cache_time(Duration::from_secs(5))
         .validation_mode(ValidationMode::Strict)
@@ -59,23 +60,17 @@ pub async fn configure_swarm(
         gossipsub_config,
     )
     .expect("Correct configuration");
-    let testnet_topic = Topic::new("test-net");
-    let txn_topic = Topic::new("txn");
-    let claim_topic = Topic::new("claim");
-    let block_topic = Topic::new("block");
-    let validator_topic = Topic::new("validator");
 
+    let testnet_topic = Topic::new("test-net");
     gossipsub.subscribe(&testnet_topic).unwrap();
-    gossipsub.subscribe(&txn_topic).unwrap();
-    gossipsub.subscribe(&claim_topic).unwrap();
-    gossipsub.subscribe(&block_topic).unwrap();
-    gossipsub.subscribe(&validator_topic).unwrap();
+
     let store = MemoryStore::new(local_peer_id);
     let kademlia = Kademlia::new(local_peer_id, store);
-    let identify_config =
-        IdentifyConfig::new("vrrb/test-net/1.0.0".to_string(), local_key.public());
 
+    let identify_config =
+        IdentifyConfig::new("vrrb/test-net/0.1.0".to_string(), local_key.public());
     let identify = Identify::new(identify_config);
+
     let ping_config = PingConfig::new();
     ping_config
         .with_interval(Duration::from_secs(20))
@@ -92,7 +87,8 @@ pub async fn configure_swarm(
         command_sender: command_sender.clone(),
         message_sender: message_sender.clone(),
         pubkey,
-        address
+        address,
+        path: event_path.clone(),
     };
 
     let transport = build_transport(local_key).await.unwrap();

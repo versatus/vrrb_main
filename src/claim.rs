@@ -7,7 +7,6 @@ pub struct Claim {
     pub pubkey: String,
     pub address: String,
     pub hash: String,
-    pub start: Option<u8>,
     pub nonce: u128,
     pub eligible: bool,
 }
@@ -29,7 +28,6 @@ impl Claim {
             pubkey,
             address,
             hash: hash,
-            start: None,
             nonce: claim_nonce,
             eligible: true,
         }
@@ -43,7 +41,7 @@ impl Claim {
             self.nonce.clone()
         };
 
-        let mut hash = self.hash.clone();
+        let mut hash = self.pubkey.clone();
         (0..iters).for_each(|_| {
             hash = digest_bytes(hash.as_bytes());
         });
@@ -76,6 +74,16 @@ impl Claim {
 
     pub fn from_string(claim_string: String) -> Claim {
         serde_json::from_str::<Claim>(&claim_string).unwrap()
+    }
+
+    pub fn get_field_names(&self) -> Vec<String> {
+        vec![
+            "pubkey".to_string(),
+            "address".to_string(),
+            "hash".to_string(),
+            "nonce".to_string(),
+            "eligible".to_string(),
+        ]
     }
 }
 

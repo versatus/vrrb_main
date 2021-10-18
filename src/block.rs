@@ -5,6 +5,7 @@ use crate::network::node::MAX_TRANSMIT_SIZE;
 use crate::state::NetworkState;
 use crate::verifiable::Verifiable;
 use crate::{claim::Claim, reward::RewardState, txn::Txn};
+use log::info;
 use ritelinked::LinkedHashMap;
 use serde::{Deserialize, Serialize};
 use sha256::digest_bytes;
@@ -110,14 +111,9 @@ impl Block {
             neighbors_hash,
             signature,
         );
+
         let height = last_block.height.clone() + 1;
-        if let Some(time) = header.timestamp.checked_sub(last_block.header.timestamp) {
-            if time / SECOND < 1 {
-                return None;
-            }
-        } else {
-            return None;
-        }
+
         let mut block = Block {
             header: header.clone(),
             neighbors,
@@ -183,51 +179,83 @@ impl Verifiable for Block {
         reward_state: &RewardState,
     ) -> Result<(), InvalidBlockError> {
         if !self.valid_last_hash(last_block) {
-            return Err(InvalidBlockError {
+            let e = Err(InvalidBlockError {
                 details: InvalidBlockErrorReason::InvalidLastHash,
             });
+            info!("Invalid block: {:?}", e);
+            info!("Block that's invalid: {:?}", self);
+            info!("Last Valid Block: {:?}", &last_block);
+            return e;
         }
 
         if !self.valid_block_nonce(last_block) {
-            return Err(InvalidBlockError {
+            let e = Err(InvalidBlockError {
                 details: InvalidBlockErrorReason::InvalidBlockNonce,
             });
+            info!("Invalid block: {:?}", e);
+            info!("Block that's invalid: {:?}", self);
+            info!("Last Valid Block: {:?}", &last_block);
+            return e;
         }
 
         if !self.valid_state_hash(network_state) {
-            return Err(InvalidBlockError {
+            let e = Err(InvalidBlockError {
                 details: InvalidBlockErrorReason::InvalidStateHash,
             });
+            info!("Invalid block: {:?}", e);
+            info!("Block that's invalid: {:?}", self);
+            info!("Last Valid Block: {:?}", &last_block);
+            return e;
         }
 
         if !self.valid_block_reward(reward_state) {
-            return Err(InvalidBlockError {
+            let e = Err(InvalidBlockError {
                 details: InvalidBlockErrorReason::InvalidBlockReward,
             });
+            info!("Invalid block: {:?}", e);
+            info!("Block that's invalid: {:?}", self);
+            info!("Last Valid Block: {:?}", &last_block);
+            return e;
         }
 
         if !self.valid_next_block_reward(reward_state) {
-            return Err(InvalidBlockError {
+            let e = Err(InvalidBlockError {
                 details: InvalidBlockErrorReason::InvalidBlockReward,
             });
+            info!("Invalid block: {:?}", e);
+            info!("Block that's invalid: {:?}", self);
+            info!("Last Valid Block: {:?}", &last_block);
+            return e;
         }
 
         if !self.valid_txns() {
-            return Err(InvalidBlockError {
+            let e = Err(InvalidBlockError {
                 details: InvalidBlockErrorReason::InvalidTxns,
             });
+            info!("Invalid block: {:?}", e);
+            info!("Block that's invalid: {:?}", self);
+            info!("Last Valid Block: {:?}", &last_block);
+            return e;
         }
 
         if !self.valid_claim_pointer(network_state) {
-            return Err(InvalidBlockError {
+            let e = Err(InvalidBlockError {
                 details: InvalidBlockErrorReason::InvalidClaimPointers,
             });
+            info!("Invalid block: {:?}", e);
+            info!("Block that's invalid: {:?}", self);
+            info!("Last Valid Block: {:?}", &last_block);
+            return e;
         }
 
         if !self.valid_block_claim(network_state) {
-            return Err(InvalidBlockError {
+            let e = Err(InvalidBlockError {
                 details: InvalidBlockErrorReason::InvalidClaim,
             });
+            info!("Invalid block: {:?}", e);
+            info!("Block that's invalid: {:?}", self);
+            info!("Last Valid Block: {:?}", &last_block);
+            return e;
         }
 
         Ok(())
@@ -322,23 +350,28 @@ impl Verifiable for Block {
         );
 
         if recreated_claim.hash != self.header.claim.hash {
+            info!("Claim hash is incorrect, doesn't match recreated claim hash");
             return false;
         }
 
         let network_state_claim = claims.get(&self.header.claim.pubkey).unwrap();
 
         if network_state_claim.pubkey != self.header.claim.pubkey {
+            info!("Claim pubkey doesn't match records");
             return false;
         }
         if network_state_claim.address != self.header.claim.address {
+            info!("Claim address doesn't match records");
             return false;
         }
 
         if network_state_claim.hash != self.header.claim.hash {
+            info!("Claim hash doesn't match records");
             return false;
         }
 
         if network_state_claim.nonce != self.header.claim.nonce {
+            info!("Claim nonce doesn't match records");
             return false;
         }
 

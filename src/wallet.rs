@@ -28,6 +28,7 @@ const STARTING_BALANCE: u128 = 1000;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WalletAccount {
     secretkey: String,
+    welcome_message: String,
     pub pubkey: String,
     pub addresses: LinkedHashMap<u32, String>,
     pub total_balances: LinkedHashMap<String, LinkedHashMap<String, u128>>,
@@ -58,11 +59,13 @@ impl WalletAccount {
 
         // Print the private key string so that the user can save it.
         // TODO: require a confirmation the private key being saved by the user
-        println!("DO NOT SHARE OR LOSE YOUR SECRET KEY:");
-        println!("SECRET KEY: {:?}\n", &secret_key.to_string());
-        println!("PUBLIC KEY: {:?}\n", &public_key.to_string());
-        println!("ADDRESS: {:?}\n", &address_prefix);
-
+        let welcome_message = format!(
+            "{}\nSECRET KEY: {:?}\nPUBLIC KEY: {:?}\nADDRESS: {}\n",
+            "DO NOT SHARE OR LOSE YOUR SECRET KEY:",
+            &secret_key,
+            &public_key,
+            &address_prefix,
+        );
         let mut addresses = LinkedHashMap::new();
         addresses.insert(1, address_prefix.clone());
 
@@ -74,6 +77,7 @@ impl WalletAccount {
         // Generate a wallet struct by assigning the variables to the fields.
         let wallet = Self {
             secretkey: secret_key.to_string(),
+            welcome_message,
             pubkey: public_key.to_string(),
             addresses,
             total_balances: total_balances.clone(),
@@ -85,13 +89,19 @@ impl WalletAccount {
         wallet
     }
 
+    pub fn get_welcome_message(&self) -> String {
+        self.welcome_message.clone()
+    }
+
     pub fn restore_from_private_key(private_key: String) -> WalletAccount {
         let secretkey = SecretKey::from_str(&private_key).unwrap();
         let secp = Secp256k1::new();
         let pubkey = PublicKey::from_secret_key(&secp, &secretkey);
 
+
         let mut wallet = WalletAccount {
             secretkey: secretkey.to_string(),
+            welcome_message: String::new(),
             pubkey: pubkey.to_string(),
             addresses: LinkedHashMap::new(),
             total_balances: LinkedHashMap::new(),
@@ -101,6 +111,16 @@ impl WalletAccount {
         };
 
         wallet.get_new_addresses(1);
+
+        let welcome_message = format!(
+            "{}\nSECRET KEY: {:?}\nPUBLIC KEY: {:?}\nADDRESS: {}\n",
+            "DO NOT SHARE OR LOSE YOUR SECRET KEY:",
+            &wallet.secretkey,
+            &wallet.pubkey,
+            &wallet.addresses.get(&1).unwrap(),
+        );
+
+        wallet.welcome_message = welcome_message;
 
         wallet
     }
@@ -317,6 +337,7 @@ impl Clone for WalletAccount {
     fn clone(&self) -> WalletAccount {
         WalletAccount {
             secretkey: self.secretkey.clone(),
+            welcome_message: self.welcome_message.clone(),
             pubkey: self.pubkey.clone(),
             addresses: self.addresses.clone(),
             total_balances: self.total_balances.clone(),

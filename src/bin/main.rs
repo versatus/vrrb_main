@@ -26,7 +26,7 @@ use vrrb_lib::state::Ledger;
 use vrrb_lib::state::NetworkState;
 use vrrb_lib::wallet::WalletAccount;
 
-const VALIDATOR_THRESHOLD: f64 = 0.60;
+pub const VALIDATOR_THRESHOLD: f64 = 0.60;
 pub const NANO: u128 = 1;
 pub const MICRO: u128 = NANO * 1000;
 pub const MILLI: u128 = MICRO * 1000;
@@ -107,6 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         node_key.clone(),
         wallet.pubkey.clone().to_string(),
         wallet.clone().get_address(1),
+        "events.db".to_string(),
     )
     .await;
 
@@ -244,7 +245,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             }
                                         }
                                     }
-                                    _ => {}
+                                    _ => {
+                                        if !blockchain.updating_state {
+                                            let lowest_block = {
+                                                if let Some(block) = blockchain.child.clone() {
+                                                    block.clone()
+                                                } else {
+                                                    blockchain.genesis.clone().unwrap()
+                                                }
+                                            };
+                                            println!("Error: {:?}", e);
+                                            if block.header.block_height
+                                                > lowest_block.header.block_height + 1
+                                            {
+                                                let message = MessageType::GetNetworkStateMessage {
+                                                    sender_id: node_id.clone().to_string(),
+                                                    requested_from: sender_id,
+                                                    requestor_node_type: node_type.clone(),
+                                                    lowest_block: lowest_block.header.block_height,
+                                                    component: StateComponent::All,
+                                                };
+
+                                                if let Err(e) = swarm_sender
+                                                    .send(Command::SendMessage(message.as_bytes()))
+                                                {
+                                                    println!("Error sending state update request to swarm sender: {:?}", e);
+                                                };
+
+                                                blockchain.updating_state = true;
+                                            } else {
+                                                // Miner is out of consensus tell them to update their state.
+                                                let message = MessageType::InvalidBlockMessage {
+                                                    block_height: block.header.block_height,
+                                                    reason: e.details,
+                                                    miner_id: sender_id,
+                                                    sender_id: node_id.clone().to_string(),
+                                                };
+                                                if let Err(e) = swarm_sender
+                                                    .send(Command::SendMessage(message.as_bytes()))
+                                                {
+                                                    println!("Error sending state update request to swarm sender: {:?}", e);
+                                                };
+
+                                                blockchain
+                                                    .invalid
+                                                    .insert(block.hash.clone(), block.clone());
+                                            }
+                                        }
+                                    }
                                 }
 
                                 if let Err(_) =

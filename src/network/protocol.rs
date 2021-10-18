@@ -12,16 +12,29 @@ use libp2p::{
     kad::{Kademlia, KademliaEvent, QueryResult},
     mplex::MplexConfig,
     noise,
-    ping::{self, Ping, PingEvent},
+    ping::handler::PingFailure,
+    ping::{Ping, PingEvent},
     swarm::NetworkBehaviourEventProcess,
     tcp::TcpConfig,
     websocket::WsConfig,
     yamux::YamuxConfig,
     NetworkBehaviour, PeerId, Transport,
 };
+use log::info;
+use serde::{Deserialize, Serialize};
+use std::fmt::Debug;
+use std::fs;
 use std::io::Error;
 use std::time::Duration;
 use tokio::sync::mpsc;
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub enum VrrbNetworkEvent {
+    VrrbStarted,
+    VrrbProtocolEvent {
+        event: String
+    }
+}
 
 #[derive(NetworkBehaviour)]
 pub struct VrrbNetworkBehavior {
@@ -37,19 +50,23 @@ pub struct VrrbNetworkBehavior {
     pub pubkey: String,
     #[behaviour(ignore)]
     pub address: String,
+    #[behaviour(ignore)]
+    pub path: String,
 }
 
 impl NetworkBehaviourEventProcess<IdentifyEvent> for VrrbNetworkBehavior {
     // called when 'identify'
     fn inject_event(&mut self, event: IdentifyEvent) {
+        if let Err(_) = write_to_json(self.path.clone(), &event) {
+            info!("Error writing to json in identify event");
+        };
         match event {
             IdentifyEvent::Received { peer_id, info } => {
-                for addr in info.listen_addrs {
-                    self.kademlia.add_address(&peer_id, addr);
+                for addr in &info.listen_addrs {
+                    self.kademlia.add_address(&peer_id, addr.clone());
                 }
                 self.kademlia.bootstrap().unwrap();
             }
-            IdentifyEvent::Error { .. } => {}
             _ => {}
         }
     }
@@ -57,6 +74,9 @@ impl NetworkBehaviourEventProcess<IdentifyEvent> for VrrbNetworkBehavior {
 
 impl NetworkBehaviourEventProcess<GossipsubEvent> for VrrbNetworkBehavior {
     fn inject_event(&mut self, event: GossipsubEvent) {
+        if let Err(_) = write_to_json(self.path.clone(), &event) {
+            info!("Error writing to json in GossipsubEvent");
+        };
         match event {
             GossipsubEvent::Message {
                 propagation_source: _peer_id,
@@ -74,7 +94,9 @@ impl NetworkBehaviourEventProcess<GossipsubEvent> for VrrbNetworkBehavior {
 
 impl NetworkBehaviourEventProcess<PingEvent> for VrrbNetworkBehavior {
     fn inject_event(&mut self, event: PingEvent) {
-        use ping::handler::PingFailure;
+        if let Err(_) = write_to_json(self.path.clone(), &event) {
+            info!("Error writing to json in PingEvent");
+        }
         match event {
             PingEvent { result, peer } => {
                 match result {
@@ -103,8 +125,11 @@ impl NetworkBehaviourEventProcess<PingEvent> for VrrbNetworkBehavior {
 }
 
 impl NetworkBehaviourEventProcess<KademliaEvent> for VrrbNetworkBehavior {
-    fn inject_event(&mut self, message: KademliaEvent) {
-        match message {
+    fn inject_event(&mut self, event: KademliaEvent) {
+        if let Err(_) = write_to_json(self.path.clone(), &event) {
+            info!("Error writing to json in Kademlia Event");
+        }
+        match event {
             KademliaEvent::QueryResult { result, .. } => match result {
                 QueryResult::Bootstrap(Ok(ok)) => {
                     self.kademlia.get_closest_peers(ok.peer);
@@ -207,4 +232,40 @@ pub async fn build_transport(
         .multiplex(SelectUpgrade::new(yamux_config, mplex_config))
         .timeout(Duration::from_secs(30))
         .boxed())
+}
+
+pub fn write_to_json<T: Debug>(path: String, event: &T) -> Result<(), serde_json::Error> {
+    let content = fs::read_to_string(path.clone());
+    if let Ok(string) = content {
+        let result: Result<Vec<VrrbNetworkEvent>, serde_json::Error> =
+            serde_json::from_str(&string);
+        if let Ok(mut events) = result {
+            let new_event = get_event(event);
+            events.push(new_event);
+            if events.len() > 100 {
+                events.remove(0);
+            }
+            let json_vec = serde_json::to_vec(&events);
+            if let Ok(json) = json_vec {
+                if let Err(e) = fs::write(path.clone(), json) {
+                    info!("Error writing event to events.json: {:?}", e);
+                }
+            }
+        } else {
+            let new_event = get_event(event);
+            let events = vec![new_event];
+            let json_vec = serde_json::to_vec(&events);
+            if let Ok(json) = json_vec {
+                if let Err(e) = fs::write(path.clone(), json) {
+                    info!("Error writing event to events.json: {:?}", e);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn get_event<T: Debug>(event: &T) -> VrrbNetworkEvent {
+    let event_string = format!("{:?}", event);
+    VrrbNetworkEvent::VrrbProtocolEvent { event: event_string }
 }

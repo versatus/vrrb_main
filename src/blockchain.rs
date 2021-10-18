@@ -1,4 +1,5 @@
 use crate::block::Block;
+use crate::fields::GettableFields;
 use crate::header::BlockHeader;
 use crate::network::chunkable::Chunkable;
 use crate::network::command_utils::Command;
@@ -77,22 +78,22 @@ impl Blockchain {
         if let Some(_) = self.genesis.as_ref() {
             if let Some(child) = self.child.as_ref() {
                 if child.header.block_height + 1 != block.header.block_height {
-                    return false
+                    return false;
                 } else {
-                    return true
+                    return true;
                 }
             } else {
                 if block.header.block_height != 1 {
-                    return false
+                    return false;
                 } else {
-                    return true
+                    return true;
                 }
             }
         } else {
             if block.header.block_height != 0 {
-                return false
+                return false;
             } else {
-                return true
+                return true;
             }
         }
     }
@@ -193,6 +194,8 @@ impl Blockchain {
         if let Some(genesis_block) = &self.genesis {
             if let Some(last_block) = &self.child {
                 if let Err(e) = block.valid_block(&last_block, network_state, reward_state) {
+                    self.future_blocks
+                        .insert(block.clone().header.last_hash, block.clone());
                     return Err(e);
                 } else {
                     self.parent = self.child.clone();
@@ -356,6 +359,25 @@ impl Blockchain {
     pub fn to_string(&self) -> String {
         serde_json::to_string(self).unwrap()
     }
+
+    pub fn from_string(data: &str) -> Blockchain {
+        serde_json::from_str(data).unwrap()
+    }
+
+    pub fn get_field_names(&self) -> Vec<String> {
+        return vec![
+            "genesis".to_string(),
+            "child".to_string(),
+            "parent".to_string(),
+            "chain".to_string(),
+            "chain_db".to_string(),
+            "block_cache".to_string(),
+            "future_blocks".to_string(),
+            "invalid".to_string(),
+            "updating_state".to_string(),
+            "state_update_cache".to_string(),
+        ];
+    }
 }
 
 impl InvalidBlockErrorReason {
@@ -370,7 +392,7 @@ impl InvalidBlockErrorReason {
             Self::InvalidBlockNonce => "invalid block nonce",
             Self::InvalidBlockReward => "invalid block reward",
             Self::InvalidTxns => "invalid txns in block",
-            Self::InvalidClaimPointers => "invalid claim pointers"
+            Self::InvalidClaimPointers => "invalid claim pointers",
         }
     }
 }
@@ -463,6 +485,41 @@ impl fmt::Display for InvalidBlockErrorReason {
             Self::General => {
                 write!(f, "general invalid block error")
             }
+        }
+    }
+}
+
+impl GettableFields for Blockchain {
+    fn get_field(&self, field: &str) -> Option<String> {
+        match field {
+            "genesis" => {
+                if let Some(genesis) = self.genesis.clone() {
+                    return Some(genesis.to_string());
+                }
+                return None;
+            }
+            "child" => {
+                if let Some(child) = self.child.clone() {
+                    return Some(child.to_string());
+                }
+                return None;
+            }
+            "parent" => {
+                if let Some(parent) = self.parent.clone() {
+                    return Some(parent.to_string());
+                }
+                return None;
+            }
+            "chain" => return Some(serde_json::to_string(&self.chain).unwrap()),
+            "chain_db" => Some(self.chain_db.clone()),
+            "block_cache" => return Some(serde_json::to_string(&self.block_cache).unwrap()),
+            "future_blocks" => return Some(serde_json::to_string(&self.future_blocks).unwrap()),
+            "invalid" => return Some(serde_json::to_string(&self.invalid).unwrap()),
+            "updating_state" => return Some(format!("{}", self.updating_state)),
+            "state_update_cache" => {
+                return Some(serde_json::to_string(&self.state_update_cache).unwrap())
+            }
+            _ => None,
         }
     }
 }

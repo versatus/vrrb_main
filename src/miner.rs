@@ -8,22 +8,30 @@ use crate::txn::Txn;
 use crate::validator::TxnValidator;
 use crate::verifiable::Verifiable;
 use ritelinked::LinkedHashMap;
+use serde::{Deserialize, Serialize};
 use sha256::digest_bytes;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const VALIDATOR_THRESHOLD: f64 = 0.60;
+pub const VALIDATOR_THRESHOLD: f64 = 0.60;
 pub const NANO: u128 = 1;
 pub const MICRO: u128 = NANO * 1000;
 pub const MILLI: u128 = MICRO * 1000;
 pub const SECOND: u128 = MILLI * 1000;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum MinerStatus {
+    Mining,
+    Waiting,
+    Processing,
+}
+
 #[derive(Debug)]
 pub struct NoLowestPointerError(String);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Miner {
     pub claim: Claim,
     pub mining: bool,
@@ -39,7 +47,7 @@ pub struct Miner {
     pub init: bool,
     pub abandoned_claim_counter: LinkedHashMap<String, Claim>,
     pub abandoned_claim: Option<Claim>,
-    pub secret_key: String,
+    secret_key: String,
 }
 
 impl Miner {
@@ -111,7 +119,11 @@ impl Miner {
     pub fn genesis(&mut self) -> Option<Block> {
         self.claim_map
             .insert(self.claim.pubkey.clone(), self.claim.clone());
-        Block::genesis(&self.reward_state.clone(), self.claim.clone(), self.secret_key.clone())
+        Block::genesis(
+            &self.reward_state.clone(),
+            self.claim.clone(),
+            self.secret_key.clone(),
+        )
     }
 
     pub fn mine(&mut self) -> Option<Block> {
@@ -136,6 +148,7 @@ impl Miner {
     }
 
     pub fn nonce_up(&mut self) {
+        self.claim.nonce_up();
         let mut new_claim_map = LinkedHashMap::new();
         self.claim_map.clone().iter().for_each(|(pk, claim)| {
             let mut new_claim = claim.clone();
@@ -203,7 +216,7 @@ impl Miner {
         };
 
         validators.retain(|_, v| *v);
-        if validators.len() as f64 / self.claim_map.len() as f64 > VALIDATOR_THRESHOLD {
+        if validators.len() as f64 / (self.claim_map.len() - 1) as f64 > VALIDATOR_THRESHOLD {
             if let Some((k, v)) = self.txn_pool.pending.remove_entry(&txn_id) {
                 self.txn_pool.confirmed.insert(k, v);
             }
@@ -223,14 +236,15 @@ impl Miner {
         rejected.retain(|_, v| !*v);
         validators.retain(|_, v| *v);
 
-        
         if rejected.len() as f64 / self.claim_map.len() as f64 > 1.0 - VALIDATOR_THRESHOLD {
-            let slash_claims = validators.iter().map(|(k, _)| return k.to_string()).collect::<Vec<_>>();
-            return Some(slash_claims)
+            let slash_claims = validators
+                .iter()
+                .map(|(k, _)| return k.to_string())
+                .collect::<Vec<_>>();
+            return Some(slash_claims);
         } else {
-            return None
+            return None;
         }
-
     }
 
     pub fn slash_claim(&mut self, pubkey: String) {
@@ -262,6 +276,42 @@ impl Miner {
             .unwrap()
             .as_nanos();
         self.current_nonce_timer = timestamp;
+    }
+
+    pub fn to_string(&self) -> String {
+        serde_json::to_string(&self).unwrap()
+    }
+
+    pub fn as_bytes(&self) -> Vec<u8> {
+        self.to_string().as_bytes().to_vec()
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Miner {
+        serde_json::from_slice(data).unwrap()
+    }
+
+    pub fn from_string(data: &str) -> Miner {
+        serde_json::from_str(data).unwrap()
+    }
+
+    pub fn get_field_names(&self) -> Vec<String> {
+        vec![
+            "claim".to_string(),
+            "mining".to_string(),
+            "claim_map".to_string(),
+            "txn_pool".to_string(),
+            "claim_pool".to_string(),
+            "last_block".to_string(),
+            "reward_state".to_string(),
+            "network_state".to_string(),
+            "neighbors".to_string(),
+            "current_nonce_timer".to_string(),
+            "n_miners".to_string(),
+            "init".to_string(),
+            "abandoned_claim_counter".to_string(),
+            "abandoned_claim".to_string(),
+            "secret_key".to_string(),
+        ]
     }
 }
 

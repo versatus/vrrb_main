@@ -1,4 +1,5 @@
 use crate::network::command_utils::Command;
+use log::info;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 pub trait Handler<T, V> {
@@ -161,7 +162,8 @@ impl CommandHandler {
                 }
             }
             Command::MineBlock => {
-                if let Err(e) = self.to_mining_sender.send(Command::MineBlock) {
+                info!("Received mine block command, starting the miner");
+                if let Err(e) = self.to_mining_sender.send(Command::StartMiner) {
                     println!("Error sending Mine Block command to miner: {:?}", e);
                 }
             }

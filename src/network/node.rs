@@ -120,11 +120,9 @@ impl Node {
                         if let Err(e) = self
                             .command_handler
                             .to_mining_sender
-                            .send(Command::MineBlock)
+                            .send(Command::StartMiner)
                         {
                             println!("Error sending mine block command to mining thread: {:?}", e);
-                        } else {
-                            println!("Sent mine block command to mining thread");
                         }
                     }
                     Command::SendState(requested_from, lowest_block) => {
@@ -134,8 +132,6 @@ impl Node {
                             .send(Command::SendState(requested_from, lowest_block))
                         {
                             println!("Error sending state request to blockchain thread: {:?}", e);
-                        } else {
-                            println!("Sent state reqeust to blockchain thread.");
                         }
                     }
                     Command::StoreStateDbChunk(object, data, chunk_number, total_chunks) => {

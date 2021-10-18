@@ -4,7 +4,10 @@ use crate::reward::{Reward, RewardState};
 use bytebuffer::ByteBuffer;
 use rand::Rng;
 use secp256k1::Error;
-use secp256k1::{key::{SecretKey, PublicKey}, Signature};
+use secp256k1::{
+    key::{PublicKey, SecretKey},
+    Signature,
+};
 use secp256k1::{Message, Secp256k1};
 use serde::{Deserialize, Serialize};
 use sha256::digest_bytes;
@@ -164,7 +167,7 @@ impl BlockHeader {
             if let Ok(signature) = Signature::from_str(&self.signature) {
                 signature
             } else {
-                return Err(Error::InvalidSignature)
+                return Err(Error::InvalidSignature);
             }
         };
 
@@ -172,7 +175,7 @@ impl BlockHeader {
             if let Ok(pubkey) = PublicKey::from_str(&self.claim.pubkey) {
                 pubkey
             } else {
-                return Err(Error::InvalidPublicKey)
+                return Err(Error::InvalidPublicKey);
             }
         };
 

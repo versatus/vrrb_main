@@ -37,7 +37,7 @@ pub struct NetworkState {
     pub debits: Option<String>,
     //reward state of the network
     pub reward_state: RewardState,
-    // the last state hash -> sha256 hash of claims, credits, debits & reward state.
+    // the last state hash -> sha256 hash of credits, debits & reward state.
     pub state_hash: Option<String>,
 }
 

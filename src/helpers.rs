@@ -1,21 +1,25 @@
 use crate::block;
 use crate::claim::Claim;
 use crate::header::BlockHeader;
+use crate::network::protocol::VrrbNetworkEvent;
+use crate::pool::Pool;
+use crate::reward::RewardState;
 use crate::state::Ledger;
+use crate::state::NetworkState;
+use crate::txn::Txn;
 use crate::wallet::WalletAccount;
 use libp2p::Multiaddr;
 use ritelinked::LinkedHashMap;
 use std::collections::LinkedList;
+use std::fs;
+use std::io;
+use thiserror::Error;
 use tui::{
     layout::{Alignment, Constraint},
     style::{Color, Modifier, Style},
     text::{Span, Spans},
     widgets::{Block, BorderType, Borders, Cell, List, ListItem, ListState, Paragraph, Row, Table},
 };
-use std::io;
-use thiserror::Error;
-use crate::network::protocol::VrrbNetworkEvent;
-use std::fs;
 
 #[derive(Error, Debug)]
 pub enum JsonError {
@@ -209,18 +213,17 @@ pub fn render_network_data<'a>(path: &String) -> List<'a> {
                 )]))
             })
             .collect();
-        
         let list = List::new(items).block(fields).highlight_style(
             Style::default()
                 .bg(Color::Yellow)
                 .fg(Color::Black)
                 .add_modifier(Modifier::BOLD),
         );
-        
-        return list
+
+        return list;
     } else {
         let list = List::new(vec![ListItem::new(Spans::from(vec![Span::raw("")]))]).block(fields);
-        return list
+        return list;
     }
 }
 
@@ -690,6 +693,82 @@ pub fn render_claim_data<'a>(claim: &Claim) -> Table<'a> {
     table
 }
 
+pub fn render_txn_data<'a>(txn: &Txn) -> Table<'a> {
+    let header_style = Style::default()
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD)
+        .add_modifier(Modifier::UNDERLINED);
+
+    let mut confirmations = txn.validators.clone();
+    let mut rejections = txn.validators.clone();
+
+    confirmations.retain(|_, v| v.clone());
+    rejections.retain(|_, v| !v.clone());
+
+    let table = Table::new(vec![
+        Row::new(vec![
+            Cell::from(Span::raw("Txn Id")),
+            Cell::from(Span::raw(txn.txn_id.clone())),
+        ]),
+        Row::new(vec![
+            Cell::from(Span::raw("Timestamp")),
+            Cell::from(Span::raw(txn.txn_timestamp.to_string())),
+        ]),
+        Row::new(vec![
+            Cell::from(Span::raw("Sender Address")),
+            Cell::from(Span::raw(txn.sender_address.clone())),
+        ]),
+        Row::new(vec![
+            Cell::from(Span::raw("Sender Pubkey")),
+            Cell::from(Span::raw(txn.sender_public_key.clone())),
+        ]),
+        Row::new(vec![
+            Cell::from(Span::raw("Receiver Address")),
+            Cell::from(Span::raw(txn.receiver_address.clone())),
+        ]),
+        Row::new(vec![
+            Cell::from(Span::raw("Token")),
+            Cell::from(Span::raw(format!("{:?}", txn.txn_token.clone()))),
+        ]),
+        Row::new(vec![
+            Cell::from(Span::raw("Amount")),
+            Cell::from(Span::raw(txn.txn_amount.to_string())),
+        ]),
+        Row::new(vec![
+            Cell::from(Span::raw("Payload")),
+            Cell::from(Span::raw(txn.txn_payload.clone())),
+        ]),
+        Row::new(vec![
+            Cell::from(Span::raw("Signature")),
+            Cell::from(Span::raw(txn.txn_signature.clone())),
+        ]),
+        Row::new(vec![
+            Cell::from(Span::raw("Confirmations")),
+            Cell::from(Span::raw(confirmations.len().to_string())),
+        ]),
+        Row::new(vec![
+            Cell::from(Span::raw("Rejections")),
+            Cell::from(Span::raw(rejections.len().to_string())),
+        ]),
+        Row::new(vec![
+            Cell::from(Span::raw("Sender Nonce")),
+            Cell::from(Span::raw(txn.nonce.to_string())),
+        ]),
+    ])
+    .header(Row::new(vec![
+        Cell::from(Span::styled("Field", header_style)),
+        Cell::from(Span::styled("Data", header_style)),
+    ]))
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .style(Style::default().fg(Color::White))
+            .border_type(BorderType::Plain),
+    )
+    .widths(&[Constraint::Percentage(20), Constraint::Percentage(80)]);
+    table
+}
+
 pub fn render_claim_map<'a>(
     claim_map_list_state: &ListState,
     claim_map: &LinkedHashMap<String, Claim>,
@@ -784,6 +863,360 @@ pub fn render_chain_db<'a>(path: &String) -> Paragraph<'a> {
     );
 
     chain_db
+}
+
+pub fn render_txn_pool<'a>(
+    txn_pool_status_list_state: &ListState,
+    txn_pool_list_state: &ListState,
+    txn_pool: &Pool<String, Txn>,
+) -> (List<'a>, List<'a>, Table<'a>) {
+    let status_block = Block::default()
+        .borders(Borders::ALL)
+        .style(Style::default().fg(Color::White))
+        .title("Txn Status")
+        .border_type(BorderType::Plain);
+
+    let txn_block = Block::default()
+        .borders(Borders::ALL)
+        .style(Style::default().fg(Color::White))
+        .title("Txn IDs")
+        .border_type(BorderType::Plain);
+
+    let status_items = vec![
+        ListItem::new(Spans::from(vec![Span::raw("Pending")])),
+        ListItem::new(Spans::from(vec![Span::raw("Confirmed")])),
+    ];
+
+    let status_list = List::new(status_items).block(status_block).highlight_style(
+        Style::default()
+            .bg(Color::Yellow)
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD),
+    );
+
+    let (txn_list, table) = {
+        if let Some(selected) = txn_pool_status_list_state.selected() {
+            if selected == 0 {
+                let txn_items = txn_pool
+                    .pending
+                    .iter()
+                    .map(|(k, _)| {
+                        ListItem::new(Spans::from(vec![Span::styled(k.clone(), Style::default())]))
+                    })
+                    .collect::<Vec<_>>();
+
+                let txn_ids = txn_pool
+                    .pending
+                    .iter()
+                    .map(|(k, _)| return k.clone())
+                    .collect::<Vec<_>>();
+
+                let table = {
+                    if let Some(selected) = txn_pool_list_state.selected() {
+                        let selected_txn_id = {
+                            if txn_ids.len() > 0 {
+                                Some(txn_ids[selected].clone())
+                            } else {
+                                None
+                            }
+                        };
+
+                        if let Some(txn_id) = selected_txn_id {
+                            if let Some(txn) = txn_pool.pending.get(&txn_id) {
+                                render_txn_data(txn)
+                            } else {
+                                render_empty_table()
+                            }
+                        } else {
+                            render_empty_table()
+                        }
+                    } else {
+                        render_empty_table()
+                    }
+                };
+
+                (List::new(txn_items).block(txn_block), table)
+            } else {
+                let txn_items = txn_pool
+                    .confirmed
+                    .iter()
+                    .map(|(k, _)| {
+                        ListItem::new(Spans::from(vec![Span::styled(k.clone(), Style::default())]))
+                    })
+                    .collect::<Vec<_>>();
+
+                let txn_ids = txn_pool
+                    .confirmed
+                    .iter()
+                    .map(|(k, _)| return k.clone())
+                    .collect::<Vec<_>>();
+
+                let table = {
+                    if let Some(selected) = txn_pool_list_state.selected() {
+                        let selected_txn_id = {
+                            if txn_ids.len() > 0 {
+                                Some(txn_ids[selected].clone())
+                            } else {
+                                None
+                            }
+                        };
+
+                        if let Some(txn_id) = selected_txn_id {
+                            if let Some(txn) = txn_pool.confirmed.get(&txn_id) {
+                                render_txn_data(txn)
+                            } else {
+                                render_empty_table()
+                            }
+                        } else {
+                            render_empty_table()
+                        }
+                    } else {
+                        render_empty_table()
+                    }
+                };
+
+                (List::new(txn_items).block(txn_block), table)
+            }
+        } else {
+            let empty_list = render_empty_list();
+            (empty_list.block(txn_block), render_empty_table())
+        }
+    };
+
+    (status_list, txn_list, table)
+}
+
+pub fn render_claim_pool<'a>(
+    claim_pool_status_list_state: &ListState,
+    claim_pool_list_state: &ListState,
+    claim_pool: &Pool<String, Claim>,
+) -> (List<'a>, List<'a>, Table<'a>) {
+    let status_block = Block::default()
+        .borders(Borders::ALL)
+        .style(Style::default().fg(Color::White))
+        .title("Claim Status")
+        .border_type(BorderType::Plain);
+
+    let claim_block = Block::default()
+        .borders(Borders::ALL)
+        .style(Style::default().fg(Color::White))
+        .title("Claim Pubkeys")
+        .border_type(BorderType::Plain);
+
+    let status_items = vec![
+        ListItem::new(Spans::from(vec![Span::raw("Pending")])),
+        ListItem::new(Spans::from(vec![Span::raw("Confirmed")])),
+    ];
+
+    let status_list = List::new(status_items).block(status_block).highlight_style(
+        Style::default()
+            .bg(Color::Yellow)
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD),
+    );
+
+    let (claim_list, table) = {
+        if let Some(selected) = claim_pool_status_list_state.selected() {
+            if selected == 0 {
+                let claim_items = claim_pool
+                    .pending
+                    .iter()
+                    .map(|(k, _)| {
+                        ListItem::new(Spans::from(vec![Span::styled(k.clone(), Style::default())]))
+                    })
+                    .collect::<Vec<_>>();
+
+                let pubkeys = claim_pool
+                    .pending
+                    .iter()
+                    .map(|(k, _)| return k.clone())
+                    .collect::<Vec<_>>();
+
+                let table = {
+                    if let Some(selected) = claim_pool_list_state.selected() {
+                        let selected_claim_pubkey = {
+                            if pubkeys.len() > 0 {
+                                Some(pubkeys[selected].clone())
+                            } else {
+                                None
+                            }
+                        };
+
+                        if let Some(pubkey) = selected_claim_pubkey {
+                            if let Some(claim) = claim_pool.pending.get(&pubkey) {
+                                render_claim_data(claim)
+                            } else {
+                                render_empty_table()
+                            }
+                        } else {
+                            render_empty_table()
+                        }
+                    } else {
+                        render_empty_table()
+                    }
+                };
+
+                (List::new(claim_items).block(claim_block), table)
+            } else {
+                let claim_items = claim_pool
+                    .confirmed
+                    .iter()
+                    .map(|(k, _)| {
+                        ListItem::new(Spans::from(vec![Span::styled(k.clone(), Style::default())]))
+                    })
+                    .collect::<Vec<_>>();
+
+                let pubkeys = claim_pool
+                    .pending
+                    .iter()
+                    .map(|(k, _)| return k.clone())
+                    .collect::<Vec<_>>();
+
+                let table = {
+                    if let Some(selected) = claim_pool_list_state.selected() {
+                        let selected_claim_pubkey = {
+                            if pubkeys.len() > 0 {
+                                Some(pubkeys[selected].clone())
+                            } else {
+                                None
+                            }
+                        };
+
+                        if let Some(pubkey) = selected_claim_pubkey {
+                            if let Some(claim) = claim_pool.confirmed.get(&pubkey) {
+                                render_claim_data(claim)
+                            } else {
+                                render_empty_table()
+                            }
+                        } else {
+                            render_empty_table()
+                        }
+                    } else {
+                        render_empty_table()
+                    }
+                };
+
+                (List::new(claim_items).block(claim_block), table)
+            }
+        } else {
+            let empty_list = render_empty_list();
+            (empty_list.block(claim_block), render_empty_table())
+        }
+    };
+
+    (status_list, claim_list, table)
+}
+
+pub fn render_reward_state<'a>(reward_state: &RewardState) -> Table<'a> {
+    let header_style = Style::default()
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD)
+        .add_modifier(Modifier::UNDERLINED);
+
+    Table::new(vec![
+        Row::new(vec![
+            Cell::from(Span::raw("Epoch")),
+            Cell::from(Span::raw(reward_state.epoch.to_string())),
+        ]),
+        Row::new(vec![
+            Cell::from(Span::raw("Next Epoch Block")),
+            Cell::from(Span::raw(reward_state.next_epoch_block.to_string())),
+        ]),
+        Row::new(vec![
+            Cell::from(Span::raw("Current Block")),
+            Cell::from(Span::raw(reward_state.current_block.to_string())),
+        ]),
+        Row::new(vec![
+            Cell::from(Span::raw("Total Nuggets Remaining")),
+            Cell::from(Span::raw(reward_state.n_nuggets_remaining.to_string())),
+        ]),
+        Row::new(vec![
+            Cell::from(Span::raw("Total Veins Remaining")),
+            Cell::from(Span::raw(reward_state.n_veins_remaining.to_string())),
+        ]),
+        Row::new(vec![
+            Cell::from(Span::raw("Total Motherlodes Remaining")),
+            Cell::from(Span::raw(reward_state.n_motherlodes_remaining.to_string())),
+        ]),
+        Row::new(vec![
+            Cell::from(Span::raw("Current Epoch Flakes Remaining")),
+            Cell::from(Span::raw(reward_state.n_flakes_current_epoch.to_string())),
+        ]),
+        Row::new(vec![
+            Cell::from(Span::raw("Current Epoch Grains Remaining")),
+            Cell::from(Span::raw(reward_state.n_grains_current_epoch.to_string())),
+        ]),
+        Row::new(vec![
+            Cell::from(Span::raw("Current Epoch Nuggets Remaining")),
+            Cell::from(Span::raw(reward_state.n_nuggets_current_epoch.to_string())),
+        ]),
+        Row::new(vec![
+            Cell::from(Span::raw("Current Epoch Veins Remaining")),
+            Cell::from(Span::raw(reward_state.n_veins_current_epoch.to_string())),
+        ]),
+        Row::new(vec![
+            Cell::from(Span::raw("Current Epoch Motherlodes Remaining")),
+            Cell::from(Span::raw(
+                reward_state.n_motherlodes_current_epoch.to_string(),
+            )),
+        ]),
+    ])
+    .header(Row::new(vec![
+        Cell::from(Span::styled("Field", header_style)),
+        Cell::from(Span::styled("Data", header_style)),
+    ]))
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .style(Style::default().fg(Color::White))
+            .border_type(BorderType::Plain),
+    )
+    .widths(&[Constraint::Percentage(35), Constraint::Percentage(65)])
+}
+
+pub fn render_network_state<'a>(network_state: &NetworkState) -> Table<'a> {
+    let header_style = Style::default()
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD)
+        .add_modifier(Modifier::UNDERLINED);
+
+    Table::new(vec![
+        Row::new(vec![
+            Cell::from(Span::raw("Ledger DB Path")),
+            Cell::from(Span::raw(network_state.path.clone())),
+        ]),
+        Row::new(vec![
+            Cell::from(Span::raw("Credit Hash")),
+            Cell::from(Span::raw(format!("{:?}", &network_state.credits))),
+        ]),
+        Row::new(vec![
+            Cell::from(Span::raw("Debit Hash")),
+            Cell::from(Span::raw(format!("{:?}", &network_state.debits))),
+        ]),
+        Row::new(vec![
+            Cell::from(Span::raw("Reward State")),
+            Cell::from(Span::raw("See reward_state Tab in Mining options")),
+        ]),
+        Row::new(vec![
+            Cell::from(Span::raw("Network State Hash")),
+            Cell::from(Span::raw(format!("{:?}", &network_state.state_hash))),
+        ]),
+    ])
+    .header(Row::new(vec![
+        Cell::from(Span::styled("Field", header_style)),
+        Cell::from(Span::styled("Data", header_style)),
+    ]))
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .style(Style::default().fg(Color::White))
+            .border_type(BorderType::Plain),
+    )
+    .widths(&[Constraint::Percentage(35), Constraint::Percentage(65)])
+}
+
+pub fn render_empty_list<'a>() -> List<'a> {
+    List::new(vec![ListItem::new(Spans::from(vec![Span::raw("")]))])
 }
 
 pub fn get_credits(ledger: &Ledger) -> LinkedHashMap<String, u128> {

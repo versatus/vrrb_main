@@ -82,6 +82,7 @@ impl Block {
         abandoned_claim: Option<Claim>,
         signature: String,
     ) -> Option<Block> {
+
         let txn_hash = {
             let mut txn_vec = vec![];
             txns.iter().for_each(|(_, v)| {
@@ -111,6 +112,14 @@ impl Block {
             neighbors_hash,
             signature,
         );
+
+        if let Some(time) = header.timestamp.checked_sub(last_block.header.timestamp) {
+            if (time / SECOND) < 1 {
+                return None
+            }
+        } else {
+            return None
+        }
 
         let height = last_block.height.clone() + 1;
 

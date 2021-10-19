@@ -88,6 +88,23 @@ impl Txn {
     pub fn from_string(string: &String) -> Txn {
         serde_json::from_str::<Txn>(string).unwrap()
     }
+
+    pub fn get_field_names(&self) -> Vec<String> {
+        vec![
+            "txn_id".to_string(),
+            "txn_timestamp".to_string(),
+            "sender_address".to_string(),
+            "sender_public_key".to_string(),
+            "receiver_address".to_string(),
+            "txn_token".to_string(),
+            "txn_amount".to_string(),
+            "txn_payload".to_string(),
+            "txn_signature".to_string(),
+            "txn_signature".to_string(),
+            "validators".to_string(),
+            "nonce".to_string(),
+        ]
+    }
 }
 
 impl Verifiable for Txn {

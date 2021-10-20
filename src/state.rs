@@ -3,11 +3,11 @@ use crate::network::node::MAX_TRANSMIT_SIZE;
 use crate::pool::Pool;
 use crate::txn::Txn;
 use crate::{block::Block, claim::Claim, reward::RewardState};
+use log::info;
 use pickledb::{PickleDb, PickleDbDumpPolicy, SerializationMethod};
 use ritelinked::LinkedHashMap;
 use serde::{Deserialize, Serialize};
 use sha256::digest_bytes;
-use log::info;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Ledger {
@@ -258,9 +258,7 @@ impl NetworkState {
         let mut db = self.get_ledger_db();
         let (_, _, _, mut claims) = NetworkState::restore_state_objects(&db);
 
-        claims.retain(|_, v| {
-            v.hash != hash
-        });
+        claims.retain(|_, v| v.hash != hash);
 
         if let Err(_) = db.set("claims", &claims) {
             println!("Error setting claims to state")

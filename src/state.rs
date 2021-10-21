@@ -3,11 +3,11 @@ use crate::network::node::MAX_TRANSMIT_SIZE;
 use crate::pool::Pool;
 use crate::txn::Txn;
 use crate::{block::Block, claim::Claim, reward::RewardState};
-use pickledb::{PickleDb, PickleDbDumpPolicy, SerializationMethod};
+use log::info;
 use ritelinked::LinkedHashMap;
 use serde::{Deserialize, Serialize};
 use sha256::digest_bytes;
-use log::info;
+use std::fs;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Ledger {
@@ -32,6 +32,7 @@ pub struct NetworkState {
     // Path to database
     pub path: String,
     // hash of the state of credits in the network
+    pub ledger: Vec<u8>,
     pub credits: Option<String>,
     // hash of the state of debits in the network
     pub debits: Option<String>,
@@ -43,39 +44,21 @@ pub struct NetworkState {
 
 impl NetworkState {
     pub fn restore(path: &str) -> NetworkState {
-        let db = match PickleDb::load_bin(path, PickleDbDumpPolicy::DumpUponRequest) {
-            Ok(nst) => nst,
-            Err(_) => PickleDb::new(
-                path,
-                PickleDbDumpPolicy::DumpUponRequest,
-                SerializationMethod::Bin,
-            ),
-        };
 
-        let (credits_map, debits_map, reward_state, _claims) =
-            NetworkState::restore_state_objects(&db);
+        if let Ok(string) = fs::read_to_string(path) {
+            NetworkState::from_bytes(&hex::decode(string).unwrap())
+        } else {
+            let network_state = NetworkState {
+                path: path.to_string(),
+                ledger: Ledger::new().as_bytes(),
+                credits: None,
+                debits: None,
+                reward_state: RewardState::start(),
+                state_hash: None,
+            };
 
-        let credits = digest_bytes(format!("{:?}", &credits_map).as_bytes());
-        let debits = digest_bytes(format!("{:?}", &credits_map).as_bytes());
-
-        NetworkState {
-            path: path.to_string(),
-            credits: {
-                if credits_map.is_empty() {
-                    None
-                } else {
-                    Some(credits)
-                }
-            },
-            debits: {
-                if debits_map.is_empty() {
-                    None
-                } else {
-                    Some(debits)
-                }
-            },
-            reward_state,
-            state_hash: None,
+            network_state.dump_to_file();
+            network_state
         }
     }
 
@@ -119,7 +102,6 @@ impl NetworkState {
 
     pub fn debit_hash(self, block: &Block) -> String {
         let mut debits = LinkedHashMap::new();
-
         block.txns.iter().for_each(|(_txn_id, txn)| {
             if let Some(entry) = debits.get_mut(&txn.sender_address) {
                 *entry += txn.clone().txn_amount
@@ -147,98 +129,59 @@ impl NetworkState {
         new_state_hash
     }
 
-    pub fn restore_state_objects(
-        db: &PickleDb,
-    ) -> (
-        LinkedHashMap<String, u128>,
-        LinkedHashMap<String, u128>,
-        RewardState,
-        LinkedHashMap<String, Claim>,
-    ) {
-        let credits: LinkedHashMap<String, u128> = if let Some(map) = db.get("credits") {
-            map
-        } else {
-            LinkedHashMap::new()
-        };
-
-        let debits: LinkedHashMap<String, u128> = if let Some(map) = db.get("debits") {
-            map
-        } else {
-            LinkedHashMap::new()
-        };
-
-        let reward_state: RewardState = if let Some(reward_state) = db.get("rewardstate") {
-            reward_state
-        } else {
-            RewardState::start()
-        };
-
-        let claims: LinkedHashMap<String, Claim> = if let Some(claims) = db.get("claims") {
-            claims
-        } else {
-            LinkedHashMap::new()
-        };
-
-        (credits, debits, reward_state, claims)
-    }
-
     pub fn dump(&mut self, block: &Block) {
-        let mut db = self.get_ledger_db();
-        let (mut credits, mut debits, mut reward_state, mut claims) =
-            NetworkState::restore_state_objects(&db);
+        let mut ledger = Ledger::from_bytes(&self.ledger);
 
         block.txns.iter().for_each(|(_txn_id, txn)| {
-            if let Some(entry) = credits.get_mut(&txn.receiver_address) {
-                *entry += txn.clone().txn_amount
+            if let Some(entry) = ledger.credits.get_mut(&txn.receiver_address) {
+                *entry += txn.clone().txn_amount;
             } else {
-                credits.insert(txn.clone().receiver_address, txn.clone().txn_amount);
+                ledger
+                    .credits
+                    .insert(txn.clone().receiver_address, txn.clone().txn_amount);
             }
 
-            if let Some(entry) = debits.get_mut(&txn.clone().sender_address) {
-                *entry += txn.txn_amount
+            if let Some(entry) = ledger.debits.get_mut(&txn.clone().sender_address) {
+                *entry += txn.clone().txn_amount;
             } else {
-                debits.insert(txn.clone().sender_address, txn.clone().txn_amount);
+                ledger
+                    .debits
+                    .insert(txn.clone().sender_address, txn.clone().txn_amount);
             }
         });
 
         block.claims.iter().for_each(|(k, v)| {
-            claims.insert(k.clone(), v.clone());
+            ledger.claims.insert(k.clone(), v.clone());
         });
 
-        claims.insert(
+        ledger.claims.insert(
             block.header.claim.clone().pubkey,
             block.header.claim.clone(),
         );
 
-        if let Some(entry) = credits.get_mut(&block.header.block_reward.miner.clone().unwrap()) {
-            *entry += block.header.block_reward.amount.clone()
+        if let Some(entry) = ledger
+            .credits
+            .get_mut(&block.header.block_reward.miner.clone().unwrap())
+        {
+            *entry += block.header.block_reward.amount.clone();
         } else {
-            credits.insert(
+            ledger.credits.insert(
                 block.header.block_reward.miner.clone().unwrap().clone(),
                 block.header.block_reward.amount.clone(),
             );
         }
 
-        reward_state.update(block.header.block_reward.category.clone());
+        self.update_reward_state(&block);
         self.update_state_hash(&block);
         self.update_reward_state(&block);
         self.update_credits_and_debits(&block);
 
-        if let Err(_) = db.set("credits", &credits) {
-            println!("Error setting credits to state")
+        let ledger_hex = hex::encode(ledger.clone().as_bytes());
+        if let Err(_) = fs::write(self.path.clone(), ledger_hex) {
+            info!("Error writing ledger hex to file");
         };
-        if let Err(_) = db.set("debits", &debits) {
-            println!("Error setting debits to state")
-        };
-        if let Err(_) = db.set("rewardstate", &reward_state) {
-            println!("Error setting reward state to state")
-        };
-        if let Err(_) = db.set("claims", &claims) {
-            println!("Error setting claims to state");
-        };
-        if let Err(e) = db.dump() {
-            info!("Error dumping state to file: {:?}", e)
-        }
+
+        self.ledger = ledger.as_bytes();
     }
 
     pub fn nonce_up(&mut self) {
@@ -248,40 +191,19 @@ impl NetworkState {
             new_claim.nonce_up();
             new_claim_map.insert(pk.clone(), new_claim.clone());
         });
-        let mut db = self.get_ledger_db();
-        if let Err(e) = db.set("claims", &new_claim_map) {
-            println!("Error setting nonced up claims to database: {:?}", e);
-        }
     }
 
     pub fn abandoned_claim(&mut self, hash: String) {
-        let mut db = self.get_ledger_db();
-        let (_, _, _, mut claims) = NetworkState::restore_state_objects(&db);
-
-        claims.retain(|_, v| {
-            v.hash != hash
-        });
-
-        if let Err(_) = db.set("claims", &claims) {
-            println!("Error setting claims to state")
-        };
-
-        if let Err(e) = db.dump() {
-            info!("Error dumping state to file: {:?}", e)
-        }
+        let mut ledger = Ledger::from_bytes(&self.ledger.clone());
+        ledger.claims.retain(|_, v| v.hash != hash);
+        self.ledger = ledger.as_bytes();
+        self.dump_to_file();
     }
 
-    pub fn get_ledger_db(&self) -> PickleDb {
-        match PickleDb::load_bin(self.path.clone(), PickleDbDumpPolicy::DumpUponRequest) {
-            Ok(nst) => return nst,
-            Err(_) => {
-                return PickleDb::new(
-                    self.path.clone(),
-                    PickleDbDumpPolicy::DumpUponRequest,
-                    SerializationMethod::Bin,
-                )
-            }
-        };
+    pub fn restore_ledger(&self) -> Ledger {
+        let network_state_hex = fs::read_to_string(self.path.clone()).unwrap();
+        let network_state = NetworkState::from_bytes(&hex::decode(network_state_hex).unwrap());
+        Ledger::from_bytes(&network_state.ledger.clone())
     }
 
     pub fn update_credits_and_debits(&mut self, block: &Block) {
@@ -300,63 +222,19 @@ impl NetworkState {
     }
 
     pub fn get_credits(&self) -> LinkedHashMap<String, u128> {
-        let db = self.get_ledger_db();
-        let credits: LinkedHashMap<String, u128> = if let Some(map) = db.get("credits") {
-            map
-        } else {
-            LinkedHashMap::new()
-        };
-
-        credits
+        Ledger::from_bytes(&self.ledger).credits.clone()
     }
 
     pub fn get_debits(&self) -> LinkedHashMap<String, u128> {
-        let db = self.get_ledger_db();
-        let debits: LinkedHashMap<String, u128> = if let Some(map) = db.get("debits") {
-            map
-        } else {
-            LinkedHashMap::new()
-        };
-
-        debits
+        Ledger::from_bytes(&self.ledger).debits.clone()
     }
 
     pub fn get_claims(&self) -> LinkedHashMap<String, Claim> {
-        let db = self.get_ledger_db();
-        let claims: LinkedHashMap<String, Claim> = if let Some(map) = db.get("claims") {
-            map
-        } else {
-            LinkedHashMap::new()
-        };
-
-        claims
+        Ledger::from_bytes(&self.ledger).claims.clone()
     }
 
     pub fn get_reward_state(&self) -> RewardState {
-        let db = self.get_ledger_db();
-        if let Some(reward_state) = db.get("rewardstate") {
-            return reward_state;
-        } else {
-            RewardState::start()
-        }
-    }
-
-    pub fn get_last_block(&self) -> Option<Block> {
-        let db = self.get_ledger_db();
-        if let Some(last_block) = db.get("lastblock") {
-            return last_block;
-        } else {
-            None
-        }
-    }
-
-    pub fn get_block_archive(&self) -> LinkedHashMap<u128, Block> {
-        let db = self.get_ledger_db();
-        if let Some(block_archive) = db.get("blockarchive") {
-            return block_archive;
-        } else {
-            return LinkedHashMap::new();
-        }
+        self.reward_state
     }
 
     pub fn get_account_credits(&self, address: &str) -> u128 {
@@ -376,23 +254,8 @@ impl NetworkState {
             return 0u128;
         }
     }
-    pub fn update_ledger(&mut self, ledger: Ledger, reward_state: RewardState) {
-        let mut db = self.get_ledger_db();
-        if let Err(_) = db.set("credits", &ledger.credits) {
-            println!("Error setting credits to ledger");
-        }
-        if let Err(_) = db.set("debits", &ledger.debits) {
-            println!("Error setting debits to ledger");
-        }
-        if let Err(_) = db.set("rewardstate", &reward_state) {
-            println!("Error setting reward state to ledger");
-        }
-        if let Err(_) = db.set("claims", &ledger.claims) {
-            println!("Error setting claims to ledger");
-        }
-        if let Err(_) = db.dump() {
-            info!("Error dumping ledger to db");
-        }
+    pub fn update_ledger(&mut self, ledger: Ledger) {
+        self.ledger = ledger.as_bytes();
     }
 
     pub fn get_lowest_pointer(&self, nonce: u128) -> Option<(String, u128)> {
@@ -420,22 +283,14 @@ impl NetworkState {
     }
 
     pub fn slash_claims(&mut self, bad_validators: Vec<String>) {
-        let mut db = self.get_ledger_db();
-        let (_, _, _, mut claims) = NetworkState::restore_state_objects(&db);
-
+        let mut ledger = Ledger::from_bytes(&self.ledger.clone());
         bad_validators.iter().for_each(|k| {
-            if let Some(claim) = claims.get_mut(&k.to_string()) {
+            if let Some(claim) = ledger.claims.get_mut(&k.to_string()) {
                 claim.eligible = false;
             }
         });
-
-        if let Err(_) = db.set("claims", &claims) {
-            println!("Error setting claims to state")
-        };
-
-        if let Err(e) = db.dump() {
-            info!("Error dumping state to file: {:?}", e)
-        }
+        self.ledger = ledger.as_bytes();
+        self.dump_to_file()
     }
 
     pub fn pending_balance(
@@ -444,6 +299,12 @@ impl NetworkState {
         _txn_pool: &Pool<String, Txn>,
     ) -> Option<(u128, u128)> {
         None
+    }
+
+    pub fn dump_to_file(&self) {
+        if let Err(_) = fs::write(self.path.clone(), hex::encode(self.as_bytes())) {
+            info!("Error dumping ledger to file");
+        };
     }
 
     pub fn credits_as_bytes(credits: &LinkedHashMap<String, u128>) -> Vec<u8> {
@@ -516,6 +377,13 @@ impl NetworkState {
 }
 
 impl Ledger {
+    pub fn new() -> Ledger {
+        Ledger {
+            credits: LinkedHashMap::new(),
+            debits: LinkedHashMap::new(),
+            claims: LinkedHashMap::new(),
+        }
+    }
     pub fn as_bytes(&self) -> Vec<u8> {
         self.to_string().as_bytes().to_vec()
     }
@@ -584,6 +452,7 @@ impl Clone for NetworkState {
     fn clone(&self) -> NetworkState {
         NetworkState {
             path: self.path.clone(),
+            ledger: self.ledger.clone(),
             credits: self.credits.clone(),
             debits: self.debits.clone(),
             reward_state: self.reward_state.clone(),
